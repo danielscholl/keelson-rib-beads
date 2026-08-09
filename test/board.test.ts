@@ -92,6 +92,7 @@ function fullMeasurement(): ProjectMeasurement {
       },
       { id: "tl-b", title: "Ready one", status: "open", priority: 0, dependent_count: 3 },
     ]),
+    epicChildren: ok({}),
   };
 }
 
@@ -191,6 +192,18 @@ describe("panel composers", () => {
     // One leverage signal on the card's single meta line.
     expect(JSON.stringify(standalone.items[0])).toContain("unlocks 3");
     expect(legend?.kind).toBe("rows");
+  });
+
+  test("parent-child links pull epic members into the epic panel", () => {
+    const m = fullMeasurement();
+    // tl-b carries no dotted id; only the parent-child edge places it.
+    m.epicChildren = ok({ "tl-f": ["tl-b"] });
+    const plan = composePlan(m, {});
+    const [epicPanel, ...rest] = plan.sections;
+    if (epicPanel?.kind !== "cards") throw new Error("no cards");
+    expect(epicPanel.items.map((i) => i.title)).toEqual(["Ready one", "First child"]);
+    // Nothing is left standalone — only the legend follows.
+    expect(rest.filter((s) => s.kind === "cards").length).toBe(0);
   });
 
   test("a failed measurement alarms instead of rendering empty-and-healthy", () => {

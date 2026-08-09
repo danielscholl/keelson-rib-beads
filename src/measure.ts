@@ -29,6 +29,10 @@ export interface ProjectMeasurement {
   // The whole non-closed backlog (`bd list` default scope: open, in-progress,
   // blocked, deferred) — the board's Plan tree, mirroring the CLI's tree view.
   backlog: Measured<BdIssue[]>;
+  // Epic membership by parent-child dependency links (epic id → child ids):
+  // dotted ids alone miss it, and `bd list` carries no dependency payload —
+  // only `bd show <epic> --include-dependents` names an epic's children.
+  epicChildren: Measured<Record<string, string[]>>;
 }
 
 function asArray(value: unknown): BdIssue[] {
@@ -174,6 +178,30 @@ export async function measureProject(
     ? { ok: true, data: asArray(backlogRes.data) }
     : backlogRes;
 
+  // One bd show per epic in the open backlog (epics are few); a failed lookup
+  // marks the whole map unmeasured rather than presenting partial membership
+  // as complete.
+  let epicChildren: Measured<Record<string, string[]>>;
+  if (!backlog.ok) {
+    epicChildren = unmeasured("backlog unmeasured, so epic membership cannot be read");
+  } else {
+    const map: Record<string, string[]> = {};
+    let failure: string | undefined;
+    for (const epic of backlog.data.filter((i) => i.issue_type === "epic")) {
+      const res = await bd.readJSON<unknown>(cwd, ["show", epic.id, "--include-dependents"]);
+      if (!res.ok) {
+        failure = `bd show ${epic.id}: ${res.error}`;
+        break;
+      }
+      const issue = Array.isArray(res.data) ? (res.data[0] as BdIssue | undefined) : undefined;
+      map[epic.id] = (issue?.dependents ?? [])
+        .filter((d) => (d.dependency_type ?? d.type) === "parent-child")
+        .map((d) => d.id ?? d.issue_id ?? "")
+        .filter(Boolean);
+    }
+    epicChildren = failure ? unmeasured(failure) : { ok: true, data: map };
+  }
+
   return {
     project,
     asOf: now().toISOString(),
@@ -185,5 +213,6 @@ export async function measureProject(
     recentlyClosed,
     stale,
     backlog,
+    epicChildren,
   };
 }

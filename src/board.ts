@@ -66,22 +66,26 @@ export function priorityTone(priority: number | undefined): CanvasTone {
   return "neutral";
 }
 
-// The Plan tree, mirroring `bd list`: children carry dotted ids (tl-65z.6
-// belongs under tl-65z), so parentage is derived from the id itself. Roots
-// order by priority; a root's children stay attached to it as a group.
+// The Plan tree, mirroring `bd list`: parentage comes from dotted ids
+// (tl-65z.6 belongs under tl-65z) plus explicit parent-child edges (epic
+// membership — `childToParent`, from bd show's dependents). Roots order by
+// priority; a root's children stay attached to it as a group.
 export interface PlanGroup {
   root: BdIssue;
   children: BdIssue[];
 }
 
-export function planGroups(backlog: BdIssue[]): PlanGroup[] {
+export function planGroups(
+  backlog: BdIssue[],
+  childToParent?: ReadonlyMap<string, string>,
+): PlanGroup[] {
   const byId = new Map(backlog.map((i) => [i.id, i]));
   const children = new Map<string, BdIssue[]>();
   const roots: BdIssue[] = [];
   for (const issue of backlog) {
     const dot = issue.id.lastIndexOf(".");
-    const parentId = dot > 0 ? issue.id.slice(0, dot) : undefined;
-    if (parentId && byId.has(parentId)) {
+    const parentId = (dot > 0 ? issue.id.slice(0, dot) : undefined) ?? childToParent?.get(issue.id);
+    if (parentId && parentId !== issue.id && byId.has(parentId)) {
       const siblings = children.get(parentId) ?? [];
       siblings.push(issue);
       children.set(parentId, siblings);
@@ -428,7 +432,15 @@ export function composePlan(m: ProjectMeasurement, ctx: PanelContext): Board {
     };
   };
 
-  const groups = planGroups(m.backlog.data);
+  // Epic membership edges; when unmeasured the plan degrades to dotted-id
+  // parentage — every bead still renders, just less grouped.
+  const childToParent = new Map<string, string>();
+  if (m.epicChildren.ok) {
+    for (const [epicId, childIds] of Object.entries(m.epicChildren.data)) {
+      for (const id of childIds) childToParent.set(id, epicId);
+    }
+  }
+  const groups = planGroups(m.backlog.data, childToParent);
   const epicFamilies = groups.filter((g) => g.root.issue_type === "epic");
   const parentFamilies = groups.filter(
     (g) => g.root.issue_type !== "epic" && g.children.length > 0,

@@ -55,6 +55,8 @@ export interface BdLinked {
   priority?: number;
   issue_type?: string;
   type?: string;
+  // "blocks" or "parent-child" — the latter is epic membership.
+  dependency_type?: string;
 }
 
 // `bd epic status --json` nests the epic under an `epic` key with the child
