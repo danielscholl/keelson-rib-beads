@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { expectView } from "@keelson/shared";
 import type { Measured } from "../src/bd";
-import { composeBoard, priorityTone } from "../src/board";
+import { composeBoard, composeNoTrackerBoard, priorityTone } from "../src/board";
 import { BOARD_KEY } from "../src/keys";
 import type { ProjectMeasurement } from "../src/measure";
 
@@ -97,6 +97,19 @@ describe("composeBoard", () => {
     const b = { ...fullMeasurement(), project: { id: "p2", name: "other", rootPath: "/tmp/o" } };
     const board = composeBoard([a, b]);
     expect(JSON.stringify(board)).toContain("other — Pulse");
+  });
+
+  test("a scope without a tracker renders the map, not a fake backlog", () => {
+    const board = composeNoTrackerBoard("default", [{ name: "ed-insights-platform" }]);
+    expect(board.header?.status?.label).toBe("no beads tracker in default");
+    expect(JSON.stringify(board)).toContain("ed-insights-platform");
+    expect(() => expectView(BOARD_KEY, "board")(board)).not.toThrow();
+  });
+
+  test("a scope without a tracker and zero beads projects falls back to the journey", () => {
+    const board = composeNoTrackerBoard("default", []);
+    expect(board.sections[0]?.kind).toBe("journey");
+    expect(() => expectView(BOARD_KEY, "board")(board)).not.toThrow();
   });
 
   test("priority tones follow the P0-error convention", () => {

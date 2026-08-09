@@ -212,31 +212,63 @@ function sectionsForProject(m: ProjectMeasurement, titlePrefix: string): BoardSe
   return sections;
 }
 
+// The scope names a project that carries no beads tracker (the default
+// project, say). Deliberately quiet: an empty board here is the truth, and
+// the row list is the map to somewhere the board has something to say.
+export function composeNoTrackerBoard(
+  projectName: string,
+  beadsProjects: readonly { name: string }[],
+): CanvasBoardView {
+  return {
+    view: "board",
+    title: "Beads backlog",
+    header: {
+      status: { label: `no beads tracker in ${projectName}`, tone: "neutral" },
+      chip: "select a beads project in the picker above",
+    },
+    sections:
+      beadsProjects.length > 0
+        ? [
+            {
+              kind: "rows",
+              title: "Projects with a beads tracker",
+              items: beadsProjects.map((p) => ({
+                chip: { label: "beads", tone: "accent" },
+                text: p.name,
+              })),
+            },
+          ]
+        : [firstRunJourney()],
+  };
+}
+
+function firstRunJourney(): CanvasBoardView["sections"][number] {
+  return {
+    kind: "journey",
+    items: [
+      {
+        title: "Register a project",
+        text: "Add a keelson project whose repository carries a .beads tracker.",
+      },
+      {
+        title: "The board measures it",
+        text: "Ready, in-progress, blocked, epics, momentum and stale work — measured with bd, never inferred.",
+      },
+      {
+        title: "Drive work from chat",
+        text: "beads_ready picks the queue up; the beads-next workflow recommends what to start first.",
+      },
+    ],
+  };
+}
+
 export function composeBoard(measurements: ProjectMeasurement[]): CanvasBoardView {
   if (measurements.length === 0) {
     return {
       view: "board",
       title: "Beads backlog",
       header: { status: { label: "no beads projects", tone: "neutral" } },
-      sections: [
-        {
-          kind: "journey",
-          items: [
-            {
-              title: "Register a project",
-              text: "Add a keelson project whose repository carries a .beads tracker.",
-            },
-            {
-              title: "The board measures it",
-              text: "Ready, in-progress, blocked, epics, momentum and stale work — measured with bd, never inferred.",
-            },
-            {
-              title: "Drive work from chat",
-              text: "beads_ready picks the queue up; the beads-next workflow recommends what to start first.",
-            },
-          ],
-        },
-      ],
+      sections: [firstRunJourney()],
     };
   }
 

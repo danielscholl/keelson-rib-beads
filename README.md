@@ -11,8 +11,11 @@ the data.
 
 ## What it contributes
 
-**A surface.** The *Beads* nav tab renders one deterministic board per beads
-project, composed in-process from `bd` output on a 5-minute cadence:
+**A surface.** The *Beads* nav tab is project-scoped: the host's project
+picker in the surface header chooses which backlog renders, and a project
+without a `.beads` tracker gets an honest empty state that lists the projects
+that have one. The scoped board is composed in-process from `bd` output on a
+5-minute cadence:
 
 - KPI pulse — open / ready / in-progress / blocked / closed
 - The ready queue, priority order, work-in-flight subtracted, with

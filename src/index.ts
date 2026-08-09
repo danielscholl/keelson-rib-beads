@@ -6,10 +6,11 @@
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 
-import type { Rib, RibContext, SnapshotManager } from "@keelson/shared";
+import type { Rib, RibAction, RibContext, SnapshotManager } from "@keelson/shared";
 import { expectView } from "@keelson/shared";
+import { z } from "zod";
 import { BdClient, discoverBeadsProjects } from "./bd";
-import { composeBoard } from "./board";
+import { composeBoard, composeNoTrackerBoard } from "./board";
 import { BEADS_SURFACE_ID, BOARD_KEY } from "./keys";
 import { measureProject } from "./measure";
 import { makeBeadsTools } from "./tools";
@@ -26,6 +27,16 @@ const REFRESH_MS = 300_000;
 // Boot-time compose can race project loading and see no beads projects; one
 // early re-seed repaints the first frame without waiting a full cadence.
 const SEED_RETRY_MS = 15_000;
+
+// The surface is projectScoped: the host renders its shared project picker
+// and posts `select-project` with the chosen project id. The board renders
+// THAT project's backlog — never a concatenation of every beads project.
+// Undefined = no explicit selection yet.
+let scopeId: string | undefined;
+// Captured alongside the snapshot manager so onAction can resolve names.
+let getAllProjects: (() => readonly { id: string; name: string; rootPath: string }[]) | undefined;
+
+const selectProjectPayload = z.object({ scopeId: z.string().min(1).optional() });
 
 function refreshBoard(): void {
   // Fail-soft: a mutation's nudge must never take the tool result down with it.
@@ -50,6 +61,9 @@ const rib: Rib = {
       title: "Beads",
       heading: "Beads backlog",
       subtitle: "Measured with bd — ready, in flight, blocked, and momentum. Never inferred.",
+      // The host's first-class project picker drives the board's scope via
+      // the select-project action handled below.
+      projectScoped: true,
       layout: {
         header: {
           key: BOARD_KEY,
@@ -79,7 +93,10 @@ const rib: Rib = {
         "",
         "## The board",
         "",
-        "The Beads surface shows one deterministic board per project: KPI pulse, the",
+        "The Beads surface is project-scoped: the host's project picker in the surface",
+        "header chooses which backlog renders, and a project without a .beads tracker",
+        "gets an honest empty state listing the projects that have one. The board",
+        "shows one deterministic view of the scoped project: KPI pulse, the",
         "ready queue (priority order, work in flight subtracted, `unlocks N` badges for",
         "leverage), in-progress cards, the blocked union (dependency-blocked plus",
         "status-blocked — either query alone undercounts), epic completion meters, a",
@@ -122,17 +139,22 @@ const rib: Rib = {
     unregisterBoard?.();
     unregisterBoard = undefined;
     snapshots = ctx.getSnapshotManager?.();
+    getAllProjects = () => ctx.getProjects?.() ?? [];
     if (snapshots) {
       unregisterBoard = snapshots.register(
         BOARD_KEY,
         async () => {
-          const measurements = [];
-          // Sequential by construction — the BdClient queue serializes bd
-          // anyway (concurrent bd processes crash embedded Dolt).
-          for (const project of beadsProjects()) {
-            measurements.push(await measureProject(bd, project));
+          const withBeads = beadsProjects();
+          // No explicit selection yet: the honest resting state is the map,
+          // not a concatenation of every backlog.
+          if (!scopeId) return composeNoTrackerBoard("the current scope", withBeads);
+          const scoped = withBeads.find((p) => p.id === scopeId);
+          if (!scoped) {
+            const name =
+              getAllProjects?.().find((p) => p.id === scopeId)?.name ?? "the selected project";
+            return composeNoTrackerBoard(name, withBeads);
           }
-          return composeBoard(measurements);
+          return composeBoard([await measureProject(bd, scoped)]);
         },
         { validate: expectView(BOARD_KEY, "board") },
       );
@@ -148,6 +170,22 @@ const rib: Rib = {
     return makeBeadsTools({ bd, beadsProjects, refreshBoard });
   },
 
+  // The host posts `select-project` when the surface's project chip changes
+  // (and once on mount when an explicit selection exists). Scope, recompose,
+  // and let the frame broadcast repaint the panel.
+  onAction: (action: RibAction) => {
+    if (action.type !== "select-project") {
+      return { ok: false as const, error: `beads does not handle '${action.type}'` };
+    }
+    const parsed = selectProjectPayload.safeParse(action.payload ?? {});
+    if (!parsed.success) {
+      return { ok: false as const, error: "select-project payload must be { scopeId?: string }" };
+    }
+    scopeId = parsed.data.scopeId;
+    refreshBoard();
+    return { ok: true as const };
+  },
+
   dispose(): void {
     if (seedTimer) clearTimeout(seedTimer);
     seedTimer = undefined;
@@ -156,6 +194,10 @@ const rib: Rib = {
     unregisterBoard?.();
     unregisterBoard = undefined;
     snapshots = undefined;
+    // The SPA re-posts the explicit selection on mount, so a re-activation
+    // starts clean rather than trusting stale scope.
+    scopeId = undefined;
+    getAllProjects = undefined;
   },
 };
 

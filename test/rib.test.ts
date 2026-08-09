@@ -20,6 +20,18 @@ describe("rib contract shape", () => {
     expect(surface?.layout.header?.key).toBe(BOARD_KEY);
   });
 
+  test("the surface opts into the host project picker", () => {
+    expect(rib.surfaces?.[0]?.projectScoped).toBe(true);
+  });
+
+  test("select-project scopes; unknown actions fail closed", async () => {
+    const ctx = { getExec: () => ({}) as never };
+    const good = await rib.onAction?.({ type: "select-project", payload: { scopeId: "p1" } }, ctx);
+    expect(good?.ok).toBe(true);
+    const bad = await rib.onAction?.({ type: "explode" }, ctx);
+    expect(bad?.ok).toBe(false);
+  });
+
   test("docs are contributed inline", () => {
     const docs = rib.contributeDocs?.({ getExec: () => ({}) as never });
     expect(docs?.[0]?.title).toBe("Beads");
