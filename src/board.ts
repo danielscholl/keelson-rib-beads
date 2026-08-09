@@ -9,9 +9,11 @@
 // The Beads surface is an overview + inspector: each panel owns one stable
 // spatial role, composed from a shared measurement. Order of attention:
 // pulse → one recommendation (explained, actionable) → in-flight vs
-// needs-attention → the Plan inventory beside the selected-bead inspector →
-// momentum. Selecting any card (action `select-bead`) loads the inspector;
-// long descriptions live THERE, never stretched inside the inventory.
+// needs-attention → the selected-bead inspector → the Plan inventory →
+// momentum. Selecting any card (action `select-bead`) opens the inspector in
+// the canvas drawer (in view no matter how deep the click was) and pins it to
+// the Selected-bead panel; long descriptions live THERE, never stretched
+// inside the inventory.
 //
 // Visual grammar (operator feedback, 2026-08-09): color means STATE (accent
 // ready, ok in-progress, error blocked, warn stale), priority is a quiet
@@ -29,6 +31,11 @@ const PARA_CAP = 24;
 
 type Board = CanvasBoardView;
 type BoardSection = CanvasBoardView["sections"][number];
+// A `columns` section nests LEAF sections only — no columns inside columns.
+type LeafSection = Extract<
+  BoardSection,
+  { kind: "columns" }
+>["columns"][number]["sections"][number];
 
 // What the composers need beyond the measurement itself.
 export interface PanelContext {
@@ -60,8 +67,14 @@ export function priorityTone(priority: number | undefined): CanvasTone {
 }
 
 // The Plan tree, mirroring `bd list`: children carry dotted ids (tl-65z.6
-// belongs under tl-65z), so parentage is derived from the id itself.
-export function planTree(backlog: BdIssue[]): BdIssue[] {
+// belongs under tl-65z), so parentage is derived from the id itself. Roots
+// order by priority; a root's children stay attached to it as a group.
+export interface PlanGroup {
+  root: BdIssue;
+  children: BdIssue[];
+}
+
+export function planGroups(backlog: BdIssue[]): PlanGroup[] {
   const byId = new Map(backlog.map((i) => [i.id, i]));
   const children = new Map<string, BdIssue[]>();
   const roots: BdIssue[] = [];
@@ -77,19 +90,10 @@ export function planTree(backlog: BdIssue[]): BdIssue[] {
     }
   }
   roots.sort(byPriorityThenAge);
-  const ordered: BdIssue[] = [];
-  for (const root of roots) {
-    ordered.push(root);
-    for (const child of (children.get(root.id) ?? []).sort((a, b) => (a.id < b.id ? -1 : 1))) {
-      ordered.push(child);
-    }
-  }
-  return ordered;
-}
-
-function isChildOf(issue: BdIssue, byId: Set<string>): boolean {
-  const dot = issue.id.lastIndexOf(".");
-  return dot > 0 && byId.has(issue.id.slice(0, dot));
+  return roots.map((root) => ({
+    root,
+    children: (children.get(root.id) ?? []).sort((a, b) => (a.id < b.id ? -1 : 1)),
+  }));
 }
 
 // The recommendation: leverage first (dependent_count — finishing it frees
@@ -327,9 +331,13 @@ export function composeAttention(m: ProjectMeasurement, ctx: PanelContext): Boar
       { kind: "rows", items: [{ glyph: "ok", text: "Nothing is blocked or stale." }] },
     ]);
   }
+  // Past a few cards, flow two-up so this panel stops towering over the
+  // (usually short) In-progress panel beside it.
+  const twoUp = shown.length + staleItems.length > 3;
   return board([
     {
       kind: "cards",
+      ...(twoUp ? { grid: true, columns: 2 } : {}),
       ...(blocked.length > shown.length
         ? { title: `Top ${shown.length} of ${blocked.length} blocked` }
         : {}),
@@ -361,10 +369,14 @@ export function composeAttention(m: ProjectMeasurement, ctx: PanelContext): Boar
   ]);
 }
 
-// ── The Plan: the one canonical inventory, as selectable cards. Epics carry
-// a progress meter; children sit beneath with an indent; the accent dot marks
-// startable rows. Clicking a card loads the inspector — descriptions live
-// there, so the inventory never stretches.
+// ── The Plan: the one canonical inventory, as selectable cards flowing in a
+// grid (the panel is full-width; a single column of 40+ cards dwarfed every
+// neighbor). Standalone beads share grid sections in priority order; a parent
+// with children (epics above all) gets its own section so the group reads as
+// one block. Clicking a card opens the inspector — descriptions live there,
+// so the inventory never stretches.
+const PLAN_GRID_COLUMNS = 3;
+
 export function composePlan(m: ProjectMeasurement, ctx: PanelContext): Board {
   if (!m.backlog.ok) return failedBoard("the backlog inventory", m.backlog.error);
   if (m.backlog.data.length === 0) return HIDDEN;
@@ -372,9 +384,6 @@ export function composePlan(m: ProjectMeasurement, ctx: PanelContext): Board {
   const epicProgress = new Map<string, BdEpicRow>(
     (m.epics.ok ? m.epics.data : []).map((row) => [row.epic.id, row]),
   );
-  const ordered = planTree(m.backlog.data);
-  const shown = ordered.slice(0, PLAN_CAP);
-  const ids = new Set(m.backlog.data.map((i) => i.id));
   const stateWord = (i: BdIssue) =>
     i.status === "deferred"
       ? "on hold"
@@ -395,53 +404,79 @@ export function composePlan(m: ProjectMeasurement, ctx: PanelContext): Board {
           : i.status === "deferred"
             ? "info"
             : undefined;
-  return board([
-    {
-      kind: "cards",
-      title:
-        ordered.length > shown.length
-          ? `Showing ${shown.length} of ${ordered.length} — select a card to inspect`
-          : "Select a card to inspect it",
-      items: shown.map((i) => {
-        const isEpic = i.issue_type === "epic";
-        const progress = isEpic ? epicProgress.get(i.id) : undefined;
-        const child = isChildOf(i, ids);
-        const dot = stateDot(i);
-        return {
-          title: `${child ? "└ " : ""}${isEpic ? "▸ " : ""}${i.title}`,
-          pill: { label: i.id, tone: "neutral" as const },
-          ...(dot ? { dot } : {}),
-          selected: ctx.selectedId === i.id,
-          action: { type: "select-bead", payload: { id: i.id } },
-          ...(progress
-            ? {
-                bar: {
-                  value: progress.closed_children,
-                  total: Math.max(progress.total_children, 1),
-                },
-              }
-            : {}),
-          fields: [
-            {
-              value: progress
-                ? `epic · ${progress.closed_children}/${progress.total_children} done${progress.eligible_for_close ? " · ready to close out" : ""}`
-                : `P${i.priority} · ${stateWord(i)}`,
+  const card = (i: BdIssue, child: boolean) => {
+    const isEpic = i.issue_type === "epic";
+    const progress = isEpic ? epicProgress.get(i.id) : undefined;
+    const dot = stateDot(i);
+    return {
+      title: `${child ? "└ " : ""}${isEpic ? "▸ " : ""}${i.title}`,
+      pill: { label: i.id, tone: "neutral" as const },
+      ...(dot ? { dot } : {}),
+      selected: ctx.selectedId === i.id,
+      action: { type: "select-bead", payload: { id: i.id } },
+      ...(progress
+        ? {
+            bar: {
+              value: progress.closed_children,
+              total: Math.max(progress.total_children, 1),
             },
-          ],
-        };
-      }),
-    },
-    {
-      kind: "rows",
-      items: [
+          }
+        : {}),
+      fields: [
         {
-          icon: "ℹ",
-          chip: { label: "how to read this", tone: "neutral" },
-          text: "Dot color is state: teal ready · green in progress · red blocked · blue on hold. ▸ marks an epic (a bundle of related work), └ its children. P0 is most urgent, P4 least. Click a card to open it in the inspector.",
+          value: progress
+            ? `epic · ${progress.closed_children}/${progress.total_children} done${progress.eligible_for_close ? " · ready to close out" : ""}`
+            : `P${i.priority} · ${stateWord(i)}`,
         },
       ],
-    },
-  ]);
+    };
+  };
+
+  const groups = planGroups(m.backlog.data);
+  const total = m.backlog.data.length;
+  const sections: BoardSection[] = [];
+  let shown = 0;
+  let singles: ReturnType<typeof card>[] = [];
+  const flushSingles = () => {
+    if (singles.length === 0) return;
+    sections.push({ kind: "cards", grid: true, columns: PLAN_GRID_COLUMNS, items: singles });
+    singles = [];
+  };
+  for (const group of groups) {
+    if (shown >= PLAN_CAP) break;
+    if (group.children.length === 0) {
+      singles.push(card(group.root, false));
+      shown += 1;
+      continue;
+    }
+    flushSingles();
+    sections.push({
+      kind: "cards",
+      grid: true,
+      columns: PLAN_GRID_COLUMNS,
+      items: [card(group.root, false), ...group.children.map((c) => card(c, true))],
+    });
+    shown += 1 + group.children.length;
+  }
+  flushSingles();
+  const first = sections[0];
+  if (first) {
+    first.title =
+      shown < total
+        ? `Showing ${shown} of ${total} — click any card to open it`
+        : "Click any card to open it";
+  }
+  sections.push({
+    kind: "rows",
+    items: [
+      {
+        icon: "ℹ",
+        chip: { label: "how to read this", tone: "neutral" },
+        text: "Dot color is state: teal ready · green in progress · red blocked · blue on hold. ▸ marks an epic (a bundle of related work), └ its children — a parent and its children share a block. P0 is most urgent, P4 least. Click a card to open it in the inspector.",
+      },
+    ],
+  });
+  return board(sections);
 }
 
 // ── The inspector: the selected bead in full — meta, dependency links both
@@ -470,7 +505,7 @@ export function composeInspect(issue: Measured<BdIssue> | undefined, blocked: Bd
   const waitsOn = linked(i.dependencies);
   const unlocks = linked(i.dependents);
   const blockedBy = blocked.find((b) => b.id === i.id)?.blocked_by ?? [];
-  const meta: BoardSection = {
+  const meta: LeafSection = {
     kind: "rows",
     boxed: true,
     items: [
@@ -483,9 +518,13 @@ export function composeInspect(issue: Measured<BdIssue> | undefined, blocked: Bd
       ...(i.comment_count ? [{ text: "comments", trailing: String(i.comment_count) }] : []),
     ],
   };
-  const sections: BoardSection[] = [meta];
+  // The panel is a full-width band: facts and links in a narrow left column,
+  // prose given the remaining two-thirds — short and wide, never a tall
+  // sliver beside the Plan.
+  const left: LeafSection[] = [meta];
+  const right: LeafSection[] = [];
   if (i.status !== "closed" && i.status !== "in_progress") {
-    sections.push({
+    left.push({
       kind: "actions",
       items: [
         {
@@ -504,14 +543,14 @@ export function composeInspect(issue: Measured<BdIssue> | undefined, blocked: Bd
     });
   }
   if (waitsOn.length || blockedBy.length) {
-    sections.push({
+    left.push({
       kind: "rows",
       title: "Waits on",
       items: (waitsOn.length ? waitsOn : blockedBy).map((text) => ({ icon: "●", text })),
     });
   }
   if (unlocks.length) {
-    sections.push({
+    left.push({
       kind: "rows",
       title: "Unlocks when done",
       items: unlocks.map((text) => ({ icon: "↗", text })),
@@ -523,7 +562,7 @@ export function composeInspect(issue: Measured<BdIssue> | undefined, blocked: Bd
       .trim()
       .split(/\n{2,}/)
       .slice(0, PARA_CAP);
-    sections.push({
+    right.push({
       kind: "rows",
       title: label,
       items: paras.map((p) => ({ text: p })),
@@ -532,6 +571,21 @@ export function composeInspect(issue: Measured<BdIssue> | undefined, blocked: Bd
   prose("Description", i.description);
   prose("Acceptance criteria", i.acceptance_criteria);
   prose("Notes", i.notes);
+  if (right.length === 0) {
+    right.push({
+      kind: "rows",
+      items: [{ glyph: "neutral", text: "No description recorded on this bead." }],
+    });
+  }
+  const sections: BoardSection[] = [
+    {
+      kind: "columns",
+      columns: [
+        { weight: 1, sections: left },
+        { weight: 2, sections: right },
+      ],
+    },
+  ];
   return board(sections, {
     status: {
       label: `${i.id} · ${i.status.replace("_", " ")}`,

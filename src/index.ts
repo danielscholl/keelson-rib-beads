@@ -60,8 +60,11 @@ const REFRESH_MS = 300_000;
 // first frames without waiting a full cadence.
 const SEED_RETRY_MS = 15_000;
 // One bd sweep feeds all seven panels: composers share this cache, and only
-// refreshAll() (cadence, mutation, scope change) pays for a re-measure.
-const MEASURE_TTL_MS = 20_000;
+// refreshAll() (cadence, mutation, scope change) pays for a re-measure —
+// invalidation is event-driven, so the TTL matches the cadence and exists
+// only as a backstop. A short TTL made every selection pay a full serialized
+// bd sweep before the inspector could answer.
+const MEASURE_TTL_MS = REFRESH_MS;
 
 let measureCache: { scopeId: string; at: number; promise: Promise<ProjectMeasurement> } | undefined;
 
@@ -134,9 +137,12 @@ const rib: Rib = {
   ),
 
   // Stable spatial roles: pulse header → recommendation full-width → the
-  // in-flight/attention pair → Plan beside the selected-bead inspector →
-  // momentum, collapsed by default. The rib drives refresh in-process (a
-  // cadence without a workflow binding is inert), so regions declare none.
+  // in-flight/attention pair → the selected-bead inspector as a full-width
+  // band → the Plan grid → momentum, collapsed by default. Surface columns
+  // split evenly and cannot stick, so the inspector never sits beside the
+  // (much taller) Plan — selection opens it in the drawer instead. The rib
+  // drives refresh in-process (a cadence without a workflow binding is
+  // inert), so regions declare none.
   surfaces: [
     {
       id: BEADS_SURFACE_ID,
@@ -176,17 +182,22 @@ const rib: Rib = {
           {
             columns: [
               {
+                key: INSPECT_KEY,
+                title: "Selected bead",
+                glyph: { char: "☰", tone: "neutral" },
+                live: true,
+                collapsible: true,
+              },
+            ],
+          },
+          {
+            columns: [
+              {
                 key: PLAN_KEY,
                 title: "Plan",
                 glyph: { char: "▤", tone: "brand" },
                 live: true,
                 collapsible: true,
-              },
-              {
-                key: INSPECT_KEY,
-                title: "Selected bead",
-                glyph: { char: "☰", tone: "neutral" },
-                live: true,
               },
             ],
           },
@@ -226,10 +237,12 @@ const rib: Rib = {
         "as stable panels: a current-state pulse; ONE recommended-next bead (leverage",
         "first, priority second) with its unlock chain named and Inspect / Start",
         "actions; an in-progress vs needs-attention pair (blocked ranked by how much",
-        "waits on each, stale claims alongside); the Plan — the canonical tree of",
-        "everything not finished, epics carrying n/m progress meters — beside a",
-        "Selected-bead inspector that renders any clicked card's description,",
-        "acceptance criteria, and dependency links; and a collapsed finished-this-week",
+        "waits on each, stale claims alongside); a Selected-bead inspector band that",
+        "renders any clicked card's description, acceptance criteria, and dependency",
+        "links (a click also opens it in the canvas drawer, so the detail is in view",
+        "no matter where on the page the click landed); the Plan — the canonical",
+        "grouped grid of everything not finished, epics carrying n/m progress",
+        "meters; and a collapsed finished-this-week",
         "strip. Color means state, never priority. Every panel is fail-closed: a",
         "failed bd query renders UNMEASURED, never empty-but-healthy. Panels refresh",
         "on a 5-minute cadence; any beads_* mutation recomposes them immediately, and",
@@ -332,10 +345,24 @@ const rib: Rib = {
           return { ok: false as const, error: "select-bead payload must be { id: string }" };
         }
         selectedBeadId = parsed.data.id;
-        // Selection is cheap: the measurement cache still holds, only the
-        // panels carrying a selected ring and the inspector re-render.
-        recomposeKeys([INSPECT_KEY, PLAN_KEY, RECOMMEND_KEY, WIP_KEY, ATTENTION_KEY]);
-        return { ok: true as const };
+        // Compose the inspector BEFORE answering: the open-canvas directive
+        // below opens that snapshot in the drawer, and it must show the bead
+        // just clicked, not the previous frame. Selection is cheap — the
+        // measurement cache holds, only bd show runs.
+        await snapshots?.recompose(INSPECT_KEY).catch(() => undefined);
+        recomposeKeys([PLAN_KEY, RECOMMEND_KEY, WIP_KEY, ATTENTION_KEY]);
+        // Open the inspector in the canvas drawer: a click deep in the Plan
+        // would otherwise update a panel far off-screen — visible feedback
+        // must not depend on scroll position. The Selected-bead panel keeps
+        // the same frame for when the drawer closes.
+        return {
+          ok: true as const,
+          data: {
+            effect: "open-canvas" as const,
+            key: INSPECT_KEY,
+            title: `Bead ${parsed.data.id}`,
+          },
+        };
       }
       case "claim-bead": {
         const parsed = beadPayload.safeParse(action.payload ?? {});

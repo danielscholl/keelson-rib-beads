@@ -170,17 +170,21 @@ describe("panel composers", () => {
     expect(JSON.stringify(att)).toContain("paused by hand — no blocking dependency");
   });
 
-  test("the plan nests children, carries epic meters, and is selectable", () => {
+  test("the plan groups a parent with its children, in a grid, selectable", () => {
     const plan = composePlan(fullMeasurement(), { selectedId: "tl-b" });
     expect(() => validBoard(plan)).not.toThrow();
-    if (plan.sections[0]?.kind !== "cards") throw new Error("no cards");
-    const items = plan.sections[0].items;
-    expect(items.map((i) => i.title)).toEqual(["Ready one", "▸ S1", "└ First child"]);
-    expect(items[0]?.selected).toBe(true);
-    expect(items[0]?.dot).toBe("accent");
-    expect(items[0]?.action?.type).toBe("select-bead");
-    expect(items[1]?.bar).toEqual({ value: 4, total: 4 });
-    expect(JSON.stringify(items[1])).toContain("ready to close out");
+    // Standalone beads flow in one grid section; the parent tl-f and its
+    // child share their own block.
+    const [singles, family] = plan.sections;
+    if (singles?.kind !== "cards" || family?.kind !== "cards") throw new Error("no cards");
+    expect(singles.grid).toBe(true);
+    expect(singles.items.map((i) => i.title)).toEqual(["Ready one"]);
+    expect(singles.items[0]?.selected).toBe(true);
+    expect(singles.items[0]?.dot).toBe("accent");
+    expect(singles.items[0]?.action?.type).toBe("select-bead");
+    expect(family.items.map((i) => i.title)).toEqual(["▸ S1", "└ First child"]);
+    expect(family.items[0]?.bar).toEqual({ value: 4, total: 4 });
+    expect(JSON.stringify(family.items[0])).toContain("ready to close out");
   });
 
   test("a failed measurement alarms instead of rendering empty-and-healthy", () => {
@@ -205,6 +209,8 @@ describe("panel composers", () => {
       [],
     );
     expect(() => validBoard(inspect)).not.toThrow();
+    // Facts left, prose right: the full-width band splits 1:2 internally.
+    expect(inspect.sections[0]?.kind).toBe("columns");
     const flat = JSON.stringify(inspect);
     expect(flat).toContain("First paragraph.");
     expect(flat).toContain("Second paragraph.");
