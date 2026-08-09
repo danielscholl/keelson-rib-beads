@@ -82,9 +82,11 @@ describe("composeBoard", () => {
     expect(board.header?.status?.tone).toBe("ok");
     const kinds = board.sections.map((s) => s.kind);
     expect(kinds).toContain("stats");
-    expect(kinds).toContain("cards");
     expect(kinds).toContain("table");
     expect(kinds).toContain("bars");
+    // Working-now and blocked ride side by side when both are present.
+    const pair = board.sections.find((s) => s.kind === "columns");
+    expect(pair?.columns.map((c) => c.sections[0]?.kind)).toEqual(["cards", "rows"]);
   });
 
   test("a failed section alarms instead of rendering empty-and-healthy", () => {
@@ -100,8 +102,8 @@ describe("composeBoard", () => {
   test("manual status-blocked rows never render an empty waits-on", () => {
     const board = composeBoard([fullMeasurement()]);
     const flat = JSON.stringify(board);
-    expect(flat).toContain("status-blocked (manual)");
-    expect(flat).toContain("waits on tl-b");
+    expect(flat).toContain("paused by hand — no blocking dependency");
+    expect(flat).toContain("waiting on tl-b");
   });
 
   test("no beads projects renders the first-run journey, not an empty board", () => {
@@ -114,13 +116,13 @@ describe("composeBoard", () => {
     const a = fullMeasurement();
     const b = { ...fullMeasurement(), project: { id: "p2", name: "other", rootPath: "/tmp/o" } };
     const board = composeBoard([a, b]);
-    expect(JSON.stringify(board)).toContain("other — Pulse");
+    expect(JSON.stringify(board)).toContain("other — At a glance");
   });
 
   test("the plan tree nests dotted children under their epic, CLI-style", () => {
     const board = composeBoard([fullMeasurement()]);
     const plan = board.sections.find(
-      (s) => s.kind === "rows" && (s.title ?? "").startsWith("Plan"),
+      (s) => s.kind === "rows" && (s.title ?? "").startsWith("The plan"),
     ) as Extract<(typeof board.sections)[number], { kind: "rows" }>;
     const texts = plan.items.map((i) => `${i.icon}${i.text}`);
     // Priority order puts tl-b (P0) first; the deferred child rides under its epic.
@@ -128,6 +130,7 @@ describe("composeBoard", () => {
     expect(plan.items[1]?.detail).toBe("The epic body.");
     expect(plan.items[2]?.detail).toContain("— acceptance —");
     expect(plan.items[2]?.trailing).toContain("deferred");
+    expect(plan.items[0]?.trailing).toContain("🔥 P0");
   });
 
   test("a scope without a tracker renders the map, not a fake backlog", () => {

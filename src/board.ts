@@ -83,6 +83,26 @@ function isChildOf(issue: BdIssue, byId: Set<string>): boolean {
 }
 
 type BoardSection = CanvasBoardView["sections"][number];
+type ColumnsSection = Extract<BoardSection, { kind: "columns" }>;
+// A section that may nest inside a columns wrapper (everything but columns).
+type LeafSection = ColumnsSection["columns"][number]["sections"][number];
+
+// beads-ui's priority emoji — 🔥 Critical, ⚡️ High, 🔧 Medium, 🪶 Low,
+// 💤 Backlog — reads faster than the bare P-number.
+export function priorityEmoji(priority: number | undefined): string {
+  switch (priority) {
+    case 0:
+      return "🔥";
+    case 1:
+      return "⚡️";
+    case 2:
+      return "🔧";
+    case 3:
+      return "🪶";
+    default:
+      return "💤";
+  }
+}
 
 // P0 is a fire, P1 urgent, P2 normal, everything after that is backlog noise.
 // Same mapping the touchline-queue lens established.
@@ -93,7 +113,7 @@ export function priorityTone(priority: number | undefined): CanvasTone {
   return "neutral";
 }
 
-function failedSection(title: string, error: string): BoardSection {
+function failedSection(title: string, error: string): LeafSection {
   return {
     kind: "rows",
     title,
@@ -129,46 +149,57 @@ function sectionsForProject(m: ProjectMeasurement, titlePrefix: string): BoardSe
   const sections: BoardSection[] = [];
   const t = (name: string) => (titlePrefix ? `${titlePrefix} — ${name}` : name);
 
-  // KPI tiles. The blocked tile carries the measured union, never the KPI
-  // line's dependency-only count, which can silently disagree with it.
+  // KPI tiles in plain words. The blocked tile carries the measured union,
+  // never the KPI line's dependency-only count, which can silently disagree.
   if (m.summary.ok) {
     const s = m.summary.data;
     const blockedUnion = m.blocked.ok ? m.blocked.data.length : s.blocked_issues;
     sections.push({
       kind: "stats",
-      title: t("Pulse"),
+      title: t("At a glance"),
       items: [
-        { label: "Open", value: s.open_issues },
+        { label: "Open", value: s.open_issues, sub: "not finished yet" },
         {
-          label: "Ready",
+          label: "Ready to start",
           value: m.ready.ok ? m.ready.data.length : s.ready_issues,
+          sub: "nothing blocks these",
           tone: "accent",
         },
-        { label: "In progress", value: s.in_progress_issues, tone: "ok" },
-        { label: "Blocked", value: blockedUnion, tone: blockedUnion > 0 ? "warn" : "neutral" },
-        { label: "Closed", value: s.closed_issues, sub: "all time" },
+        { label: "In progress", value: s.in_progress_issues, sub: "being worked now", tone: "ok" },
+        {
+          label: "Blocked",
+          value: blockedUnion,
+          sub: "waiting on other work",
+          tone: blockedUnion > 0 ? "warn" : "neutral",
+        },
+        { label: "Finished", value: s.closed_issues, sub: "all time" },
       ],
     });
   } else {
-    sections.push(failedSection(t("Pulse"), m.summary.error));
+    sections.push(failedSection(t("At a glance"), m.summary.error));
   }
 
   // Work already claimed is the most interesting state on the board.
+  let wipSection: LeafSection | undefined;
   if (!m.inProgress.ok) {
-    sections.push(failedSection(t("In progress"), m.inProgress.error));
+    wipSection = failedSection(t("In progress"), m.inProgress.error);
   } else if (m.inProgress.data.length > 0) {
-    sections.push({
+    wipSection = {
       kind: "cards",
-      title: t("In progress"),
+      title: t("Working on now"),
       items: m.inProgress.data.map((i) => ({
         title: i.title,
         pill: { label: i.id, tone: "brand" },
         fields: [
           { label: "assignee", value: i.assignee ?? i.owner ?? "—" },
-          { label: "priority", value: `P${i.priority}`, tone: priorityTone(i.priority) },
+          {
+            label: "priority",
+            value: `${priorityEmoji(i.priority)} P${i.priority}`,
+            tone: priorityTone(i.priority),
+          },
         ],
       })),
-    });
+    };
   }
 
   // The queue: what can start right now, highest priority first. `unlocks`
@@ -179,54 +210,78 @@ function sectionsForProject(m: ProjectMeasurement, titlePrefix: string): BoardSe
     const shown = ready.slice(0, READY_CAP);
     sections.push({
       kind: "table",
-      title: t("Ready"),
+      title: t("Up next — ready to start"),
       columns: [
         { key: "id", label: "ID" },
         { key: "priority", label: "Priority" },
-        { key: "unlocks", label: "Unlocks" },
-        { key: "title", label: "Title" },
+        { key: "unlocks", label: "Frees up" },
+        { key: "title", label: "What" },
       ],
       rows: shown.map((i) => {
         const unlocks = i.dependent_count ?? 0;
         return {
           id: i.id,
-          priority: { badges: [{ text: `P${i.priority}`, tone: priorityTone(i.priority) }] },
+          priority: {
+            badges: [
+              {
+                text: `${priorityEmoji(i.priority)} P${i.priority}`,
+                tone: priorityTone(i.priority),
+              },
+            ],
+          },
           unlocks:
-            unlocks >= 2 ? { badges: [{ text: `unlocks ${unlocks}`, tone: "accent" }] } : unlocks,
+            unlocks >= 2 ? { badges: [{ text: `frees ${unlocks}`, tone: "accent" }] } : unlocks,
           title: i.title,
         };
       }),
-      caption:
+      caption: `${
         ready.length > shown.length
-          ? `Showing ${shown.length} of ${ready.length} ready issues, priority order.`
-          : "Priority order; work in flight already subtracted.",
+          ? `Showing ${shown.length} of ${ready.length} startable items. `
+          : ""
+      }Most urgent first (🔥 P0 → 💤 P4); work already started is not repeated here. "Frees up" counts blocked items that finishing this one would release — a high number is the best place to start.`,
     });
   } else {
-    sections.push(failedSection(t("Ready"), m.ready.error));
+    sections.push(failedSection(t("Up next — ready to start"), m.ready.error));
   }
 
   // Blocked union. A row with no blocked_by names was status-blocked by hand,
   // not by the dependency graph — say so instead of rendering an empty
-  // "waits on".
+  // "waiting on".
+  let blockedSection: LeafSection | undefined;
   if (!m.blocked.ok) {
-    sections.push(failedSection(t("Blocked"), m.blocked.error));
+    blockedSection = failedSection(t("Blocked — waiting on other work"), m.blocked.error);
   } else if (m.blocked.data.length > 0) {
     const blocked = m.blocked.data;
     const shown = blocked.slice(0, BLOCKED_CAP);
-    sections.push({
+    blockedSection = {
       kind: "rows",
       title:
         blocked.length > shown.length
-          ? t(`Blocked — showing ${shown.length} of ${blocked.length}`)
-          : t("Blocked"),
+          ? t(`Blocked — waiting on other work (showing ${shown.length} of ${blocked.length})`)
+          : t("Blocked — waiting on other work"),
       items: shown.map((i) => ({
         chip: { label: i.id, tone: priorityTone(i.priority) },
         text: i.title,
+        detail: issueDetail(i),
         trailing: i.blocked_by?.length
-          ? `waits on ${i.blocked_by.join(", ")}`
-          : "status-blocked (manual)",
+          ? `waiting on ${i.blocked_by.join(", ")}`
+          : "paused by hand — no blocking dependency",
       })),
+    };
+  }
+
+  // Working-now and blocked are both short lists; side by side they read as
+  // the "in flight vs stuck" pair (beads-ui's adjacent lanes) instead of two
+  // full-width strips.
+  if (wipSection && blockedSection) {
+    sections.push({
+      kind: "columns",
+      columns: [{ sections: [wipSection] }, { sections: [blockedSection] }],
     });
+  } else if (wipSection) {
+    sections.push(wipSection);
+  } else if (blockedSection) {
+    sections.push(blockedSection);
   }
 
   // The Plan: the whole non-closed backlog as the CLI's tree — epics with
@@ -239,33 +294,40 @@ function sectionsForProject(m: ProjectMeasurement, titlePrefix: string): BoardSe
     const ordered = planTree(m.backlog.data);
     const shown = ordered.slice(0, PLAN_CAP);
     const ids = new Set(m.backlog.data.map((i) => i.id));
+    const plainStatus: Record<string, string> = {
+      in_progress: "in progress",
+      blocked: "blocked",
+      deferred: "deferred — on hold for now",
+    };
     sections.push({
       kind: "rows",
       title:
         ordered.length > shown.length
-          ? t(`Plan — showing ${shown.length} of ${ordered.length} (ready + blocked + deferred)`)
-          : t("Plan — the full open backlog"),
+          ? t(`The plan — everything not finished (showing ${shown.length} of ${ordered.length})`)
+          : t("The plan — everything not finished"),
       items: shown.map((i) => {
         const child = isChildOf(i, ids);
         const marker = i.issue_type && i.issue_type !== "task" ? `[${i.issue_type}] ` : "";
+        const status = plainStatus[i.status];
         return {
           icon: statusGlyph(i.status),
           chip: { label: i.id, tone: priorityTone(i.priority) },
           text: `${child ? "└ " : ""}${marker}${i.title}`,
-          trailing: `P${i.priority}${i.status === "deferred" ? " · deferred" : ""}`,
+          trailing: `${priorityEmoji(i.priority)} P${i.priority}${status ? ` · ${status}` : ""}`,
           detail: issueDetail(i),
         };
       }),
     });
   }
 
-  // Epic completion, one meter per epic. Tone ok when complete.
+  // Milestone meters — an epic is a bundle of related work; the bar is how
+  // much of the bundle is finished. Tone ok when complete.
   if (!m.epics.ok) {
-    sections.push(failedSection(t("Epics"), m.epics.error));
+    sections.push(failedSection(t("Milestones"), m.epics.error));
   } else if (m.epics.data.length > 0) {
     sections.push({
       kind: "bars",
-      title: t("Epics"),
+      title: t("Milestones — how each bundle of work is going"),
       items: m.epics.data.map((row) => ({
         label: row.epic.title,
         value: row.closed_children,
@@ -274,18 +336,18 @@ function sectionsForProject(m: ProjectMeasurement, titlePrefix: string): BoardSe
           row.total_children > 0 && row.closed_children >= row.total_children
             ? ("ok" as const)
             : ("neutral" as const),
-        trailing: `${row.closed_children}/${row.total_children}${row.eligible_for_close ? " — eligible to close" : ""}`,
+        trailing: `${row.closed_children}/${row.total_children} done${row.eligible_for_close ? " — ready to close out" : ""}`,
       })),
     });
   }
 
   // The momentum strip, not a graveyard: closes from the last few days only.
   if (!m.recentlyClosed.ok) {
-    sections.push(failedSection(t("Recently closed"), m.recentlyClosed.error));
+    sections.push(failedSection(t("Finished recently"), m.recentlyClosed.error));
   } else if (m.recentlyClosed.data.length > 0) {
     sections.push({
       kind: "rows",
-      title: t("Recently closed"),
+      title: t("Finished in the last 7 days"),
       items: m.recentlyClosed.data.slice(0, CLOSED_CAP).map((i) => ({
         chip: { label: i.id, tone: "neutral" },
         text: i.title,
@@ -297,11 +359,11 @@ function sectionsForProject(m: ProjectMeasurement, titlePrefix: string): BoardSe
   // Stale in-progress work is claimed-but-silent — bookkeeping to verify,
   // not proof of work. Omitted entirely when there is none.
   if (!m.stale.ok) {
-    sections.push(failedSection(t("Stale"), m.stale.error));
+    sections.push(failedSection(t("Started but gone quiet"), m.stale.error));
   } else if (m.stale.data.length > 0) {
     sections.push({
       kind: "rows",
-      title: t(`Stale — in progress, untouched ${STALE_DAYS}+ days`),
+      title: t(`Started but quiet for ${STALE_DAYS}+ days — worth checking on`),
       items: m.stale.data.map((i) => ({
         icon: "⚠",
         chip: { label: i.id, tone: "warn" },
@@ -312,6 +374,21 @@ function sectionsForProject(m: ProjectMeasurement, titlePrefix: string): BoardSe
   }
 
   return sections;
+}
+
+// One quiet row at the board's foot: what the symbols mean and where to dig
+// deeper — the reader this board serves has never run bd.
+function legendSection(): BoardSection {
+  return {
+    kind: "rows",
+    items: [
+      {
+        icon: "ℹ",
+        chip: { label: "how to read this", tone: "neutral" },
+        text: "○ open · ◐ in progress · ● blocked · ❄ deferred — click any plan row to unfold its full description. Ask in chat about any id (e.g. “show me tl-4nx”) to go deeper.",
+      },
+    ],
+  };
 }
 
 // The scope names a project that carries no beads tracker (the default
@@ -382,6 +459,7 @@ export function composeBoard(measurements: ProjectMeasurement[]): CanvasBoardVie
 
   const multi = measurements.length > 1;
   const sections = measurements.flatMap((m) => sectionsForProject(m, multi ? m.project.name : ""));
+  sections.push(legendSection());
   // The board names its own scope: the header must answer "which backlog am I
   // looking at" without the reader hunting for the surface's picker chip.
   const scopeName = multi
