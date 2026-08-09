@@ -26,6 +26,9 @@ export interface ProjectMeasurement {
   epics: Measured<BdEpicRow[]>;
   recentlyClosed: Measured<BdIssue[]>;
   stale: Measured<BdIssue[]>;
+  // The whole non-closed backlog (`bd list` default scope: open, in-progress,
+  // blocked, deferred) — the board's Plan tree, mirroring the CLI's tree view.
+  backlog: Measured<BdIssue[]>;
 }
 
 function asArray(value: unknown): BdIssue[] {
@@ -153,6 +156,11 @@ export async function measureProject(
     ? { ok: true, data: asArray(staleRes.data) }
     : staleRes;
 
+  const backlogRes = await bd.readJSON<unknown>(cwd, ["list", "--limit", "0"]);
+  const backlog: Measured<BdIssue[]> = backlogRes.ok
+    ? { ok: true, data: asArray(backlogRes.data) }
+    : backlogRes;
+
   return {
     project,
     asOf: now().toISOString(),
@@ -163,5 +171,6 @@ export async function measureProject(
     epics,
     recentlyClosed,
     stale,
+    backlog,
   };
 }

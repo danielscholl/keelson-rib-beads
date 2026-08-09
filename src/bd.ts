@@ -36,6 +36,9 @@ export interface BdIssue {
   dependency_count?: number;
   dependent_count?: number;
   blocked_by?: string[];
+  description?: string;
+  acceptance_criteria?: string;
+  comment_count?: number;
 }
 
 // `bd epic status --json` nests the epic under an `epic` key with the child

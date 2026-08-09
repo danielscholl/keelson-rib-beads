@@ -52,6 +52,24 @@ function fullMeasurement(): ProjectMeasurement {
       },
     ]),
     stale: ok([]),
+    backlog: ok([
+      {
+        id: "tl-f",
+        title: "S1",
+        status: "open",
+        priority: 1,
+        issue_type: "epic",
+        description: "The epic body.",
+      },
+      {
+        id: "tl-f.1",
+        title: "First child",
+        status: "deferred",
+        priority: 2,
+        acceptance_criteria: "It works.",
+      },
+      { id: "tl-b", title: "Ready one", status: "open", priority: 0 },
+    ]),
   };
 }
 
@@ -97,6 +115,19 @@ describe("composeBoard", () => {
     const b = { ...fullMeasurement(), project: { id: "p2", name: "other", rootPath: "/tmp/o" } };
     const board = composeBoard([a, b]);
     expect(JSON.stringify(board)).toContain("other — Pulse");
+  });
+
+  test("the plan tree nests dotted children under their epic, CLI-style", () => {
+    const board = composeBoard([fullMeasurement()]);
+    const plan = board.sections.find(
+      (s) => s.kind === "rows" && (s.title ?? "").startsWith("Plan"),
+    ) as Extract<(typeof board.sections)[number], { kind: "rows" }>;
+    const texts = plan.items.map((i) => `${i.icon}${i.text}`);
+    // Priority order puts tl-b (P0) first; the deferred child rides under its epic.
+    expect(texts).toEqual(["○Ready one", "○[epic] S1", "❄└ First child"]);
+    expect(plan.items[1]?.detail).toBe("The epic body.");
+    expect(plan.items[2]?.detail).toContain("— acceptance —");
+    expect(plan.items[2]?.trailing).toContain("deferred");
   });
 
   test("a scope without a tracker renders the map, not a fake backlog", () => {

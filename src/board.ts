@@ -9,13 +9,78 @@
 import type { CanvasBoardView, CanvasTone } from "@keelson/shared";
 import type { BdIssue, Measured } from "./bd";
 import type { ProjectMeasurement } from "./measure";
-import { STALE_DAYS } from "./measure";
+import { byPriorityThenAge, STALE_DAYS } from "./measure";
 
 // The ready queue is a glanceable strip, not the whole backlog; the caption
 // says "showing N of M" whenever the cap bites, never implying completeness.
 const READY_CAP = 12;
 const BLOCKED_CAP = 10;
 const CLOSED_CAP = 6;
+const PLAN_CAP = 60;
+// rows.detail is capped at 4,000 chars by the canvas schema.
+const DETAIL_CAP = 3_900;
+
+// The CLI's own status legend: ○ open ◐ in_progress ● blocked ✓ closed ❄ deferred.
+export function statusGlyph(status: string): string {
+  switch (status) {
+    case "in_progress":
+      return "◐";
+    case "blocked":
+      return "●";
+    case "closed":
+      return "✓";
+    case "deferred":
+      return "❄";
+    default:
+      return "○";
+  }
+}
+
+// The drill-in a row expands to: the bead's description and acceptance
+// criteria, verbatim from bd, trimmed to the canvas cap.
+export function issueDetail(issue: BdIssue): string | undefined {
+  const parts: string[] = [];
+  if (issue.description?.trim()) parts.push(issue.description.trim());
+  if (issue.acceptance_criteria?.trim())
+    parts.push(`— acceptance —\n${issue.acceptance_criteria.trim()}`);
+  if (issue.comment_count) parts.push(`(${issue.comment_count} comment(s) — bd show ${issue.id})`);
+  if (parts.length === 0) return undefined;
+  const text = parts.join("\n\n");
+  return text.length > DETAIL_CAP ? `${text.slice(0, DETAIL_CAP - 1)}…` : text;
+}
+
+// The Plan tree, mirroring `bd list`: children carry dotted ids (tl-65z.6
+// belongs under tl-65z), so parentage is derived from the id itself.
+export function planTree(backlog: BdIssue[]): BdIssue[] {
+  const byId = new Map(backlog.map((i) => [i.id, i]));
+  const children = new Map<string, BdIssue[]>();
+  const roots: BdIssue[] = [];
+  for (const issue of backlog) {
+    const dot = issue.id.lastIndexOf(".");
+    const parentId = dot > 0 ? issue.id.slice(0, dot) : undefined;
+    if (parentId && byId.has(parentId)) {
+      const siblings = children.get(parentId) ?? [];
+      siblings.push(issue);
+      children.set(parentId, siblings);
+    } else {
+      roots.push(issue);
+    }
+  }
+  roots.sort(byPriorityThenAge);
+  const ordered: BdIssue[] = [];
+  for (const root of roots) {
+    ordered.push(root);
+    for (const child of (children.get(root.id) ?? []).sort((a, b) => (a.id < b.id ? -1 : 1))) {
+      ordered.push(child);
+    }
+  }
+  return ordered;
+}
+
+function isChildOf(issue: BdIssue, byId: Set<string>): boolean {
+  const dot = issue.id.lastIndexOf(".");
+  return dot > 0 && byId.has(issue.id.slice(0, dot));
+}
 
 type BoardSection = CanvasBoardView["sections"][number];
 
@@ -44,9 +109,16 @@ function failedSection(title: string, error: string): BoardSection {
 }
 
 function anyUnmeasured(m: ProjectMeasurement): boolean {
-  return [m.summary, m.inProgress, m.ready, m.blocked, m.epics, m.recentlyClosed, m.stale].some(
-    (s) => !s.ok,
-  );
+  return [
+    m.summary,
+    m.inProgress,
+    m.ready,
+    m.blocked,
+    m.epics,
+    m.recentlyClosed,
+    m.stale,
+    m.backlog,
+  ].some((s) => !s.ok);
 }
 
 function count(measured: Measured<BdIssue[]>): number {
@@ -154,6 +226,36 @@ function sectionsForProject(m: ProjectMeasurement, titlePrefix: string): BoardSe
           ? `waits on ${i.blocked_by.join(", ")}`
           : "status-blocked (manual)",
       })),
+    });
+  }
+
+  // The Plan: the whole non-closed backlog as the CLI's tree — epics with
+  // their dotted-id children beneath them, status glyphs from bd's own
+  // legend, and each row expandable to the bead's description and acceptance
+  // criteria (the drill-in; `bd show <id>` / beads_show goes deeper).
+  if (!m.backlog.ok) {
+    sections.push(failedSection(t("Plan"), m.backlog.error));
+  } else if (m.backlog.data.length > 0) {
+    const ordered = planTree(m.backlog.data);
+    const shown = ordered.slice(0, PLAN_CAP);
+    const ids = new Set(m.backlog.data.map((i) => i.id));
+    sections.push({
+      kind: "rows",
+      title:
+        ordered.length > shown.length
+          ? t(`Plan — showing ${shown.length} of ${ordered.length} (ready + blocked + deferred)`)
+          : t("Plan — the full open backlog"),
+      items: shown.map((i) => {
+        const child = isChildOf(i, ids);
+        const marker = i.issue_type && i.issue_type !== "task" ? `[${i.issue_type}] ` : "";
+        return {
+          icon: statusGlyph(i.status),
+          chip: { label: i.id, tone: priorityTone(i.priority) },
+          text: `${child ? "└ " : ""}${marker}${i.title}`,
+          trailing: `P${i.priority}${i.status === "deferred" ? " · deferred" : ""}`,
+          detail: issueDetail(i),
+        };
+      }),
     });
   }
 
