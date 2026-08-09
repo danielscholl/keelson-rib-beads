@@ -19,6 +19,13 @@ import { makeBeadsTools } from "./tools";
 // re-boot never runs against a disposed manager.
 let snapshots: SnapshotManager | undefined;
 let unregisterBoard: (() => void) | undefined;
+let refreshTimer: ReturnType<typeof setInterval> | undefined;
+let seedTimer: ReturnType<typeof setTimeout> | undefined;
+
+const REFRESH_MS = 300_000;
+// Boot-time compose can race project loading and see no beads projects; one
+// early re-seed repaints the first frame without waiting a full cadence.
+const SEED_RETRY_MS = 15_000;
 
 function refreshBoard(): void {
   // Fail-soft: a mutation's nudge must never take the tool result down with it.
@@ -33,9 +40,10 @@ const rib: Rib = {
   // CanvasBoardView the composer builds deterministically from bd output.
   views: [{ key: BOARD_KEY, canvasKind: "view", title: "Beads backlog" }],
 
-  // The Beads nav tab: one focal board. serverRefresh + cadence keeps it
-  // current without any workflow; mutations through the beads_* tools nudge
-  // an immediate recompose on top of that.
+  // The Beads nav tab: one focal board. The region binds no workflow, so the
+  // rib drives its own refresh in-process (a cadence without a workflow
+  // binding is inert — the host logs and skips it); mutations through the
+  // beads_* tools nudge an immediate recompose on top of that.
   surfaces: [
     {
       id: BEADS_SURFACE_ID,
@@ -47,8 +55,6 @@ const rib: Rib = {
           key: BOARD_KEY,
           title: "Backlog",
           glyph: { char: "◉", tone: "accent" },
-          serverRefresh: true,
-          cadenceMs: 300_000,
           live: true,
         },
         rows: [],
@@ -130,15 +136,23 @@ const rib: Rib = {
         },
         { validate: expectView(BOARD_KEY, "board") },
       );
-      // Seed the frame so the surface has data on first open rather than
-      // waiting for the first cadence tick. Fail-soft.
+      // Seed the frame so the surface has data on first open, re-seed once
+      // past the project-loading race, then hold the cadence. Fail-soft.
       snapshots.recompose(BOARD_KEY).catch(() => undefined);
+      if (seedTimer) clearTimeout(seedTimer);
+      seedTimer = setTimeout(refreshBoard, SEED_RETRY_MS);
+      if (refreshTimer) clearInterval(refreshTimer);
+      refreshTimer = setInterval(refreshBoard, REFRESH_MS);
     }
 
     return makeBeadsTools({ bd, beadsProjects, refreshBoard });
   },
 
   dispose(): void {
+    if (seedTimer) clearTimeout(seedTimer);
+    seedTimer = undefined;
+    if (refreshTimer) clearInterval(refreshTimer);
+    refreshTimer = undefined;
     unregisterBoard?.();
     unregisterBoard = undefined;
     snapshots = undefined;
