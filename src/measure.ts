@@ -69,6 +69,19 @@ export function recentCloses(closed: BdIssue[], now: Date, days = RECENT_CLOSE_D
     .sort((a, b) => ((a.closed_at ?? "") > (b.closed_at ?? "") ? -1 : 1));
 }
 
+// One bead in full, for the inspector: `bd show` returns a single-element
+// array, and --include-dependents is what carries the linked issues.
+export async function fetchIssue(
+  bd: BdClient,
+  cwd: string,
+  id: string,
+): Promise<Measured<BdIssue>> {
+  const res = await bd.readJSON<unknown>(cwd, ["show", id, "--include-dependents"]);
+  if (!res.ok) return res;
+  const issue = Array.isArray(res.data) ? (res.data[0] as BdIssue | undefined) : undefined;
+  return issue ? { ok: true, data: issue } : unmeasured(`bd show ${id} returned nothing`);
+}
+
 export async function measureProject(
   bd: BdClient,
   project: BeadsProject,

@@ -38,7 +38,23 @@ export interface BdIssue {
   blocked_by?: string[];
   description?: string;
   acceptance_criteria?: string;
+  notes?: string;
   comment_count?: number;
+  // `bd show --include-dependents` carries linked issues; `bd list` carries
+  // edge records or null. Both shapes are tolerated at the read site.
+  dependencies?: readonly BdLinked[] | null;
+  dependents?: readonly BdLinked[] | null;
+}
+
+export interface BdLinked {
+  id?: string;
+  issue_id?: string;
+  depends_on_id?: string;
+  title?: string;
+  status?: string;
+  priority?: number;
+  issue_type?: string;
+  type?: string;
 }
 
 // `bd epic status --json` nests the epic under an `epic` key with the child

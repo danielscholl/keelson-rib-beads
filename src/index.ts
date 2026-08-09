@@ -6,83 +6,212 @@
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 
-import type { Rib, RibAction, RibContext, SnapshotManager } from "@keelson/shared";
-import { expectView } from "@keelson/shared";
+import type {
+  Rib,
+  RibAction,
+  RibContext,
+  RibViewDescriptor,
+  SnapshotManager,
+} from "@keelson/shared";
 import { z } from "zod";
-import { BdClient, discoverBeadsProjects } from "./bd";
-import { composeBoard, composeNoTrackerBoard } from "./board";
-import { BEADS_SURFACE_ID, BOARD_KEY } from "./keys";
-import { measureProject } from "./measure";
+import { BdClient, type BeadsProject, discoverBeadsProjects } from "./bd";
+import {
+  composeAttention,
+  composeClosed,
+  composeInspect,
+  composeNoTrackerPulse,
+  composePlan,
+  composePulse,
+  composeRecommend,
+  composeWip,
+  EMPTY_PANEL,
+} from "./board";
+import {
+  ALL_KEYS,
+  ATTENTION_KEY,
+  BEADS_SURFACE_ID,
+  CLOSED_KEY,
+  INSPECT_KEY,
+  PLAN_KEY,
+  PULSE_KEY,
+  RECOMMEND_KEY,
+  WIP_KEY,
+} from "./keys";
+import { fetchIssue, measureProject, type ProjectMeasurement } from "./measure";
 import { makeBeadsTools } from "./tools";
 
-// Captured in registerTools (the one hook that receives ctx at boot) and used
-// by the composer + the tools' refresh nudge. Reset on every activation so a
-// re-boot never runs against a disposed manager.
+// ── Module state, reset on every activation.
 let snapshots: SnapshotManager | undefined;
-let unregisterBoard: (() => void) | undefined;
+let unregisters: (() => void)[] = [];
 let refreshTimer: ReturnType<typeof setInterval> | undefined;
 let seedTimer: ReturnType<typeof setTimeout> | undefined;
+let bdClient: BdClient | undefined;
+let getAllProjects: (() => readonly { id: string; name: string; rootPath: string }[]) | undefined;
+let listBeadsProjects: (() => BeadsProject[]) | undefined;
+
+// The surface is projectScoped: the host posts `select-project` with the
+// chosen project id; the panels render THAT backlog. `selectedBeadId` drives
+// the inspector; both reset on scope change.
+let scopeId: string | undefined;
+let selectedBeadId: string | undefined;
 
 const REFRESH_MS = 300_000;
-// Boot-time compose can race project loading and see no beads projects; one
-// early re-seed repaints the first frame without waiting a full cadence.
+// Boot-time compose can race project loading; one early re-seed repaints the
+// first frames without waiting a full cadence.
 const SEED_RETRY_MS = 15_000;
+// One bd sweep feeds all seven panels: composers share this cache, and only
+// refreshAll() (cadence, mutation, scope change) pays for a re-measure.
+const MEASURE_TTL_MS = 20_000;
 
-// The surface is projectScoped: the host renders its shared project picker
-// and posts `select-project` with the chosen project id. The board renders
-// THAT project's backlog — never a concatenation of every beads project.
-// Undefined = no explicit selection yet.
-let scopeId: string | undefined;
-// Captured alongside the snapshot manager so onAction can resolve names.
-let getAllProjects: (() => readonly { id: string; name: string; rootPath: string }[]) | undefined;
+let measureCache: { scopeId: string; at: number; promise: Promise<ProjectMeasurement> } | undefined;
 
 const selectProjectPayload = z.object({ scopeId: z.string().min(1).optional() });
+const beadPayload = z.object({ id: z.string().min(1) });
 
-function refreshBoard(): void {
-  // Fail-soft: a mutation's nudge must never take the tool result down with it.
-  snapshots?.recompose(BOARD_KEY).catch(() => undefined);
+function scopedProject(): BeadsProject | undefined {
+  if (!scopeId) return undefined;
+  return listBeadsProjects?.().find((p) => p.id === scopeId);
+}
+
+function getMeasurement(project: BeadsProject): Promise<ProjectMeasurement> {
+  const now = Date.now();
+  if (
+    measureCache &&
+    measureCache.scopeId === project.id &&
+    now - measureCache.at < MEASURE_TTL_MS
+  ) {
+    return measureCache.promise;
+  }
+  if (!bdClient) return Promise.reject(new Error("bd client not bound"));
+  const promise = measureProject(bdClient, project);
+  measureCache = { scopeId: project.id, at: now, promise };
+  // A failed sweep must not poison the cache window.
+  promise.catch(() => {
+    if (measureCache?.promise === promise) measureCache = undefined;
+  });
+  return promise;
+}
+
+function recomposeKeys(keys: readonly string[]): void {
+  for (const key of keys) snapshots?.recompose(key).catch(() => undefined);
+}
+
+function refreshAll(): void {
+  measureCache = undefined;
+  recomposeKeys(ALL_KEYS);
+}
+
+// Composer factory: every panel resolves the scope the same way — no scope or
+// a scope without a tracker renders the resting state on the pulse panel and
+// hides the rest (the zero-section signal).
+function makePanelComposer(
+  compose: (m: ProjectMeasurement) => unknown,
+  restingOnPulse = false,
+): () => Promise<unknown> {
+  return async () => {
+    const project = scopedProject();
+    if (!project) {
+      if (!restingOnPulse) return EMPTY_PANEL;
+      const name = scopeId
+        ? (getAllProjects?.().find((p) => p.id === scopeId)?.name ?? "the selected project")
+        : "the current scope";
+      return composeNoTrackerPulse(name, listBeadsProjects?.() ?? []);
+    }
+    return compose(await getMeasurement(project));
+  };
 }
 
 const rib: Rib = {
   id: "beads",
   displayName: "Beads",
 
-  // The board key binds to the canvas `view` renderer; the payload is a
-  // CanvasBoardView the composer builds deterministically from bd output.
-  views: [{ key: BOARD_KEY, canvasKind: "view", title: "Beads backlog" }],
+  views: ALL_KEYS.map(
+    (key): RibViewDescriptor => ({
+      key,
+      canvasKind: "view",
+      title: `Beads — ${key.split(":").pop()}`,
+    }),
+  ),
 
-  // The Beads nav tab: one focal board. The region binds no workflow, so the
-  // rib drives its own refresh in-process (a cadence without a workflow
-  // binding is inert — the host logs and skips it); mutations through the
-  // beads_* tools nudge an immediate recompose on top of that.
+  // Stable spatial roles: pulse header → recommendation full-width → the
+  // in-flight/attention pair → Plan beside the selected-bead inspector →
+  // momentum, collapsed by default. The rib drives refresh in-process (a
+  // cadence without a workflow binding is inert), so regions declare none.
   surfaces: [
     {
       id: BEADS_SURFACE_ID,
       title: "Beads",
       heading: "Beads backlog",
-      subtitle: "Measured with bd — ready, in flight, blocked, and momentum. Never inferred.",
-      // The host's first-class project picker drives the board's scope via
-      // the select-project action handled below.
+      subtitle: "Measured with bd — decide first, then browse the inventory.",
       projectScoped: true,
       layout: {
         header: {
-          key: BOARD_KEY,
-          title: "Backlog",
+          key: PULSE_KEY,
+          title: "Pulse",
           glyph: { char: "◉", tone: "accent" },
           live: true,
         },
-        rows: [],
+        rows: [
+          {
+            columns: [
+              {
+                key: RECOMMEND_KEY,
+                title: "Recommended next",
+                glyph: { char: "→", tone: "accent" },
+                live: true,
+              },
+            ],
+          },
+          {
+            columns: [
+              { key: WIP_KEY, title: "In progress", glyph: { char: "◐", tone: "ok" }, live: true },
+              {
+                key: ATTENTION_KEY,
+                title: "Needs attention",
+                glyph: { char: "●", tone: "error" },
+                live: true,
+              },
+            ],
+          },
+          {
+            columns: [
+              {
+                key: PLAN_KEY,
+                title: "Plan",
+                glyph: { char: "▤", tone: "brand" },
+                live: true,
+                collapsible: true,
+              },
+              {
+                key: INSPECT_KEY,
+                title: "Selected bead",
+                glyph: { char: "☰", tone: "neutral" },
+                live: true,
+              },
+            ],
+          },
+          {
+            columns: [
+              {
+                key: CLOSED_KEY,
+                title: "Finished in the last 7 days",
+                glyph: { char: "✓", tone: "ok" },
+                live: true,
+                collapsible: true,
+                collapsed: true,
+              },
+            ],
+          },
+        ],
       },
     },
   ],
 
-  // An installed rib extends what the agent can look up about itself: the
-  // conventions the tools encode, inline (no docs site yet).
   contributeDocs: () => [
     {
       title: "Beads",
       summary:
-        "The Beads rib for Keelson: a beads (bd) backlog bridged as chat tools, a live backlog board, and workflows that drive work from the ready queue.",
+        "The Beads rib for Keelson: a beads (bd) backlog bridged as chat tools, an overview-plus-inspector backlog surface, and workflows that drive work from the ready queue.",
       content: [
         "# Beads rib",
         "",
@@ -91,22 +220,20 @@ const rib: Rib = {
         "automatically; every tool takes an optional `project` name when several are",
         "registered.",
         "",
-        "## The board",
+        "## The surface",
         "",
-        "The Beads surface is project-scoped: the host's project picker in the surface",
-        "header chooses which backlog renders, and a project without a .beads tracker",
-        "gets an honest empty state listing the projects that have one. The board is a",
-        "decision surface first, inventory second: a current-state pulse (ready /",
-        "in-progress / blocked / stale / closed-this-week), ONE recommended-next bead",
-        "(leverage first, priority second) with its unlock chain named so the pick is",
-        "explainable, an in-flight vs needs-attention pair (blocked ranked by how much",
-        "waits on each, plus stale claims), then the Plan — the one canonical tree of",
-        "everything not finished, epics carrying their n/m progress, children nested,",
-        "ready rows dotted, every row expandable to description and acceptance",
-        "criteria — and a finished-this-week momentum strip. Color means state, never",
-        "priority. Every section is fail-closed: a failed bd query renders UNMEASURED,",
-        "never empty-but-healthy. It refreshes on a 5-minute cadence; any beads_*",
-        "mutation recomposes it immediately, and beads_board_refresh does so on demand.",
+        "Project-scoped (the host's project picker chooses the backlog) and arranged",
+        "as stable panels: a current-state pulse; ONE recommended-next bead (leverage",
+        "first, priority second) with its unlock chain named and Inspect / Start",
+        "actions; an in-progress vs needs-attention pair (blocked ranked by how much",
+        "waits on each, stale claims alongside); the Plan — the canonical tree of",
+        "everything not finished, epics carrying n/m progress meters — beside a",
+        "Selected-bead inspector that renders any clicked card's description,",
+        "acceptance criteria, and dependency links; and a collapsed finished-this-week",
+        "strip. Color means state, never priority. Every panel is fail-closed: a",
+        "failed bd query renders UNMEASURED, never empty-but-healthy. Panels refresh",
+        "on a 5-minute cadence; any beads_* mutation recomposes them immediately, and",
+        "beads_board_refresh does so on demand.",
         "",
         "## Tools",
         "",
@@ -134,59 +261,100 @@ const rib: Rib = {
   ],
 
   registerTools: (ctx: RibContext) => {
-    const bd = new BdClient(ctx.getExec());
-    const beadsProjects = () => discoverBeadsProjects(ctx.getProjects?.() ?? []);
-
-    // Rebind on every activation: drop a stale composer registration first so
-    // a re-boot against a fresh manager never throws on the duplicate key.
-    unregisterBoard?.();
-    unregisterBoard = undefined;
-    snapshots = ctx.getSnapshotManager?.();
+    bdClient = new BdClient(ctx.getExec());
+    listBeadsProjects = () => discoverBeadsProjects(ctx.getProjects?.() ?? []);
     getAllProjects = () => ctx.getProjects?.() ?? [];
+
+    for (const un of unregisters) un();
+    unregisters = [];
+    snapshots = ctx.getSnapshotManager?.();
     if (snapshots) {
-      unregisterBoard = snapshots.register(
-        BOARD_KEY,
-        async () => {
-          const withBeads = beadsProjects();
-          // No explicit selection yet: the honest resting state is the map,
-          // not a concatenation of every backlog.
-          if (!scopeId) return composeNoTrackerBoard("the current scope", withBeads);
-          const scoped = withBeads.find((p) => p.id === scopeId);
-          if (!scoped) {
-            const name =
-              getAllProjects?.().find((p) => p.id === scopeId)?.name ?? "the selected project";
-            return composeNoTrackerBoard(name, withBeads);
-          }
-          return composeBoard([await measureProject(bd, scoped)]);
-        },
-        { validate: expectView(BOARD_KEY, "board") },
+      const sm = snapshots;
+      const register = (key: string, compose: () => Promise<unknown>) =>
+        unregisters.push(sm.register(key, compose));
+      register(PULSE_KEY, makePanelComposer(composePulse, true));
+      register(
+        RECOMMEND_KEY,
+        makePanelComposer((m) => composeRecommend(m, { selectedId: selectedBeadId })),
       );
-      // Seed the frame so the surface has data on first open, re-seed once
-      // past the project-loading race, then hold the cadence. Fail-soft.
-      snapshots.recompose(BOARD_KEY).catch(() => undefined);
+      register(
+        WIP_KEY,
+        makePanelComposer((m) => composeWip(m, { selectedId: selectedBeadId })),
+      );
+      register(
+        ATTENTION_KEY,
+        makePanelComposer((m) => composeAttention(m, { selectedId: selectedBeadId })),
+      );
+      register(
+        PLAN_KEY,
+        makePanelComposer((m) => composePlan(m, { selectedId: selectedBeadId })),
+      );
+      register(CLOSED_KEY, makePanelComposer(composeClosed));
+      register(INSPECT_KEY, async () => {
+        const project = scopedProject();
+        if (!project) return composeInspect(undefined, []);
+        if (!selectedBeadId || !bdClient) return composeInspect(undefined, []);
+        const m = await getMeasurement(project);
+        const issue = await fetchIssue(bdClient, project.rootPath, selectedBeadId);
+        return composeInspect(issue, m.blocked.ok ? m.blocked.data : []);
+      });
+
+      recomposeKeys(ALL_KEYS);
       if (seedTimer) clearTimeout(seedTimer);
-      seedTimer = setTimeout(refreshBoard, SEED_RETRY_MS);
+      seedTimer = setTimeout(refreshAll, SEED_RETRY_MS);
       if (refreshTimer) clearInterval(refreshTimer);
-      refreshTimer = setInterval(refreshBoard, REFRESH_MS);
+      refreshTimer = setInterval(refreshAll, REFRESH_MS);
     }
 
-    return makeBeadsTools({ bd, beadsProjects, refreshBoard });
+    return makeBeadsToolsBound();
   },
 
-  // The host posts `select-project` when the surface's project chip changes
-  // (and once on mount when an explicit selection exists). Scope, recompose,
-  // and let the frame broadcast repaint the panel.
-  onAction: (action: RibAction) => {
-    if (action.type !== "select-project") {
-      return { ok: false as const, error: `beads does not handle '${action.type}'` };
+  // Board actions: the host's project chip posts `select-project`; the panels
+  // post `select-bead` (inspector) and `claim-bead` (bd update --claim).
+  onAction: async (action: RibAction) => {
+    switch (action.type) {
+      case "select-project": {
+        const parsed = selectProjectPayload.safeParse(action.payload ?? {});
+        if (!parsed.success) {
+          return {
+            ok: false as const,
+            error: "select-project payload must be { scopeId?: string }",
+          };
+        }
+        scopeId = parsed.data.scopeId;
+        selectedBeadId = undefined;
+        refreshAll();
+        return { ok: true as const };
+      }
+      case "select-bead": {
+        const parsed = beadPayload.safeParse(action.payload ?? {});
+        if (!parsed.success) {
+          return { ok: false as const, error: "select-bead payload must be { id: string }" };
+        }
+        selectedBeadId = parsed.data.id;
+        // Selection is cheap: the measurement cache still holds, only the
+        // panels carrying a selected ring and the inspector re-render.
+        recomposeKeys([INSPECT_KEY, PLAN_KEY, RECOMMEND_KEY, WIP_KEY, ATTENTION_KEY]);
+        return { ok: true as const };
+      }
+      case "claim-bead": {
+        const parsed = beadPayload.safeParse(action.payload ?? {});
+        if (!parsed.success) {
+          return { ok: false as const, error: "claim-bead payload must be { id: string }" };
+        }
+        const project = scopedProject();
+        if (!project || !bdClient) {
+          return { ok: false as const, error: "no beads project is in scope" };
+        }
+        const res = await bdClient.mutate(project.rootPath, ["update", parsed.data.id, "--claim"]);
+        if (!res.ok) return { ok: false as const, error: `bd update --claim failed: ${res.error}` };
+        selectedBeadId = parsed.data.id;
+        refreshAll();
+        return { ok: true as const, data: { claimed: parsed.data.id } };
+      }
+      default:
+        return { ok: false as const, error: `beads does not handle '${action.type}'` };
     }
-    const parsed = selectProjectPayload.safeParse(action.payload ?? {});
-    if (!parsed.success) {
-      return { ok: false as const, error: "select-project payload must be { scopeId?: string }" };
-    }
-    scopeId = parsed.data.scopeId;
-    refreshBoard();
-    return { ok: true as const };
   },
 
   dispose(): void {
@@ -194,14 +362,29 @@ const rib: Rib = {
     seedTimer = undefined;
     if (refreshTimer) clearInterval(refreshTimer);
     refreshTimer = undefined;
-    unregisterBoard?.();
-    unregisterBoard = undefined;
+    for (const un of unregisters) un();
+    unregisters = [];
     snapshots = undefined;
     // The SPA re-posts the explicit selection on mount, so a re-activation
     // starts clean rather than trusting stale scope.
     scopeId = undefined;
+    selectedBeadId = undefined;
+    measureCache = undefined;
+    bdClient = undefined;
     getAllProjects = undefined;
+    listBeadsProjects = undefined;
   },
 };
+
+// The chat tools share the same client, discovery, and refresh nudge the
+// panels use.
+function makeBeadsToolsBound() {
+  if (!bdClient || !listBeadsProjects) return [];
+  return makeBeadsTools({
+    bd: bdClient,
+    beadsProjects: listBeadsProjects,
+    refreshBoard: refreshAll,
+  });
+}
 
 export default rib;
