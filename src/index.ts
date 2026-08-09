@@ -25,6 +25,7 @@ import {
   composeRecommend,
   composeWip,
   EMPTY_PANEL,
+  recommendNext,
 } from "./board";
 import {
   ALL_KEYS,
@@ -309,7 +310,11 @@ const rib: Rib = {
         if (!selectedBeadId || !bdClient) return composeInspect(undefined, []);
         const m = await getMeasurement(project);
         const issue = await fetchIssue(bdClient, project.rootPath, selectedBeadId);
-        return composeInspect(issue, m.blocked.ok ? m.blocked.data : []);
+        // The board's current pick rides along: when the inspected bead is
+        // blocked, "Start X instead" must name the same bead the
+        // recommendation panel does.
+        const rec = m.ready.ok ? recommendNext(m.ready.data).pick : undefined;
+        return composeInspect(issue, m.blocked.ok ? m.blocked.data : [], rec);
       });
 
       recomposeKeys(ALL_KEYS);

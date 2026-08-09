@@ -90,7 +90,7 @@ function fullMeasurement(): ProjectMeasurement {
         priority: 2,
         acceptance_criteria: "It works.",
       },
-      { id: "tl-b", title: "Ready one", status: "open", priority: 0 },
+      { id: "tl-b", title: "Ready one", status: "open", priority: 0, dependent_count: 3 },
     ]),
   };
 }
@@ -170,21 +170,27 @@ describe("panel composers", () => {
     expect(JSON.stringify(att)).toContain("paused by hand — no blocking dependency");
   });
 
-  test("the plan groups a parent with its children, in a grid, selectable", () => {
+  test("the plan renders epics as titled panels and singles under standalone work", () => {
     const plan = composePlan(fullMeasurement(), { selectedId: "tl-b" });
     expect(() => validBoard(plan)).not.toThrow();
-    // Standalone beads flow in one grid section; the parent tl-f and its
-    // child share their own block.
-    const [singles, family] = plan.sections;
-    if (singles?.kind !== "cards" || family?.kind !== "cards") throw new Error("no cards");
-    expect(singles.grid).toBe(true);
-    expect(singles.items.map((i) => i.title)).toEqual(["Ready one"]);
-    expect(singles.items[0]?.selected).toBe(true);
-    expect(singles.items[0]?.dot).toBe("accent");
-    expect(singles.items[0]?.action?.type).toBe("select-bead");
-    expect(family.items.map((i) => i.title)).toEqual(["▸ S1", "└ First child"]);
-    expect(family.items[0]?.bar).toEqual({ value: 4, total: 4 });
-    expect(JSON.stringify(family.items[0])).toContain("ready to close out");
+    const [epicPanel, standalone, legend] = plan.sections;
+    if (epicPanel?.kind !== "cards" || standalone?.kind !== "cards") throw new Error("no cards");
+    // The epic is structure: it lives in the panel title with its meter, the
+    // children are the cards.
+    expect(epicPanel.title).toContain("▸ S1");
+    expect(epicPanel.title).toContain("4/4 done");
+    expect(epicPanel.title).toContain("ready to close out");
+    expect(epicPanel.boxed).toBe(true);
+    expect(epicPanel.grid).toBe(true);
+    expect(epicPanel.items.map((i) => i.title)).toEqual(["First child"]);
+    expect(standalone.title).toBe("Standalone work");
+    expect(standalone.items[0]?.title).toBe("Ready one");
+    expect(standalone.items[0]?.selected).toBe(true);
+    expect(standalone.items[0]?.dot).toBe("accent");
+    expect(standalone.items[0]?.action?.type).toBe("select-bead");
+    // One leverage signal on the card's single meta line.
+    expect(JSON.stringify(standalone.items[0])).toContain("unlocks 3");
+    expect(legend?.kind).toBe("rows");
   });
 
   test("a failed measurement alarms instead of rendering empty-and-healthy", () => {
@@ -217,6 +223,34 @@ describe("panel composers", () => {
     expect(flat).toContain("It measures true.");
     expect(flat).toContain("tl-d — Dep blocked");
     expect(flat).toContain("claim-bead");
+  });
+
+  test("a blocked bead cannot be started; the board's pick is offered instead", () => {
+    const inspect = composeInspect(
+      ok({
+        id: "tl-ch3",
+        title: "Collect workflow",
+        status: "open",
+        priority: 0,
+        dependencies: [
+          { id: "tl-0yr", title: "scrape reports" },
+          { id: "tl-btz", title: "fixtures" },
+          { id: "tl-4nx", title: "gate" },
+        ],
+      }),
+      [{ id: "tl-ch3", title: "Collect workflow", status: "open", priority: 0 }],
+      { id: "tl-4nx", title: "GATE", status: "open", priority: 0 },
+    );
+    expect(() => validBoard(inspect)).not.toThrow();
+    const flat = JSON.stringify(inspect);
+    expect(flat).toContain("Blocked by 3 beads");
+    expect(flat).toContain("Start tl-4nx instead");
+    const cols = inspect.sections[0];
+    if (cols?.kind !== "columns") throw new Error("no columns");
+    const actions = cols.columns[0]?.sections.find((s) => s.kind === "actions");
+    if (actions?.kind !== "actions") throw new Error("no actions");
+    expect(actions.items[0]?.label).toBe("Start this bead");
+    expect(actions.items[0]?.disabled).toBe(true);
   });
 
   test("the empty inspector invites a selection", () => {
