@@ -1,0 +1,111 @@
+# Contributed by the beads rib. Deterministic measurement of backlog health,
+# then one agent turn that writes the grooming report. Read-only by design:
+# every finding arrives as a PROPOSED bd command for the operator to run (or
+# hand to a governed beads_* tool), never as a mutation this workflow makes.
+
+name: beads-groom
+model: balanced
+description: |
+  Use when: the beads backlog needs a health pass — stale claims, blocked
+            chains, priority drift, epics eligible to close.
+  Triggers: "groom the backlog", "backlog health", "beads groom",
+            "clean up the queue".
+  Does: measures stale in-progress work, the blocked union with blocker names,
+        priority distribution, epic completion, and deferred work, then writes
+        a grooming report where every finding carries the exact bd command
+        that would fix it.
+  NOT for: executing any change (it proposes, the operator disposes), picking
+           what to work on next (beads-next), or implementing beads
+           (bead-work). Read-only.
+
+requiresProject: true
+mutates_checkout: false
+tags: [beads, backlog, grooming]
+
+nodes:
+  - id: measure
+    timeout: 120000
+    bash: |
+      set -uo pipefail
+      j() {
+        local out rc
+        out=$("$@" 2>/dev/null); rc=$?
+        if [ "$rc" -ne 0 ] || [ -z "$out" ]; then echo "UNMEASURED"; else printf '%s' "$out"; fi
+      }
+      echo "=== AS OF ==="
+      date "+%Y-%m-%d %H:%M %Z"
+      echo
+      echo "=== KPI (bd status summary) ==="
+      j bd --sandbox status --json | jq -c '.summary // .' 2>/dev/null || echo "UNMEASURED"
+      echo
+      echo "=== STALE IN PROGRESS 7+ DAYS (id|assignee|updated|title) ==="
+      STALE=$(j bd --sandbox stale --days 7 -s in_progress --json)
+      if [ "$STALE" = "UNMEASURED" ]; then echo "UNMEASURED"; else
+        N=$(printf '%s' "$STALE" | jq -r 'if type=="array" then length else 0 end')
+        echo "stale_count|$N"
+        [ "$N" -gt 0 ] && printf '%s' "$STALE" | jq -r '.[] | [.id, (.assignee // "-"), (.updated_at // "-" | .[0:10]), .title] | join("|")'
+      fi
+      echo
+      echo "=== BLOCKED (union: dependency + status; id|prio|blocked_by|title) ==="
+      DEP=$(j bd --sandbox blocked --json)
+      STA=$(j bd --sandbox list --status blocked --json --limit 0)
+      if [ "$DEP" = "UNMEASURED" ] || [ "$STA" = "UNMEASURED" ]; then echo "UNMEASURED"; else
+        jq -n -r --argjson a "$DEP" --argjson b "$STA" '
+          ($a + $b) | unique_by(.id) | sort_by(.priority, .id) | .[]
+          | [.id, "P\(.priority)", ((.blocked_by // []) | join(",")), .title] | join("|")'
+      fi
+      echo
+      echo "=== DEFERRED (id|title) ==="
+      DEF=$(j bd --sandbox list --status deferred --json --limit 0)
+      if [ "$DEF" = "UNMEASURED" ]; then echo "UNMEASURED"; else
+        printf '%s' "$DEF" | jq -r '.[] | [.id, .title] | join("|")'
+      fi
+      echo
+      echo "=== P0/P1 OPEN (id|prio|created|title — is 'drop everything' still true?) ==="
+      HOT=$(j bd --sandbox list --status open --json --limit 0)
+      if [ "$HOT" = "UNMEASURED" ]; then echo "UNMEASURED"; else
+        printf '%s' "$HOT" | jq -r '[.[] | select(.priority <= 1)] | sort_by(.priority, .created_at) | .[]
+          | [.id, "P\(.priority)", (.created_at // "-" | .[0:10]), .title] | join("|")'
+      fi
+      echo
+      echo "=== EPICS (closed/total|eligible|title) ==="
+      EPICS=$(j bd --sandbox epic status --json)
+      if [ "$EPICS" = "UNMEASURED" ]; then echo "UNMEASURED"; else
+        printf '%s' "$EPICS" | jq -r '.[] | select(.epic.status != "tombstone")
+          | ["\(.closed_children)/\(.total_children)", (if .eligible_for_close then "ELIGIBLE" else "-" end), .epic.title] | join("|")'
+      fi
+      exit 0
+
+  - id: report
+    depends_on: [measure]
+    model: balanced
+    prompt: |
+      You are writing a grooming report for a beads backlog from the
+      deterministic measurement below. **The numbers are the truth. If a
+      section reads UNMEASURED, report that section as a failed measurement —
+      never as healthy.**
+
+      $measure.output
+
+      Structure the report:
+
+      1. **Verdict line** — one sentence: is this backlog healthy, drifting,
+         or stuck?
+      2. **Stale claims** — each stale in-progress bead is claimed-but-silent.
+         For each: verify-or-release, with the command
+         `bd update <id> --status open` as the release.
+      3. **Blocked chains** — group the blocked union by what it waits on. The
+         blocker named most often is the highest-leverage thing to finish. A
+         row with an empty blocked_by is status-blocked by hand: flag it for a
+         written reason (`bd update <id> --append-notes "blocked because ..."`).
+      4. **Priority drift** — P0 means "drop everything", P1 "urgent". Old P0/P1
+         beads that nobody dropped everything for are mislabeled; propose
+         `bd update <id> --priority N`.
+      5. **Epics** — any epic marked ELIGIBLE should be proposed for
+         `bd epic close-eligible` (a human decision; epics close on merge-time
+         reality, not on the meter).
+      6. **Proposed commands** — every command from the sections above in one
+         copy-pasteable block, most important first.
+
+      Rules: propose, never execute. Never propose `bd close` for ordinary
+      beads — closing is a merge-time action. Keep each finding to two lines.

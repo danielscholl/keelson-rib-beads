@@ -1,0 +1,68 @@
+{
+  "name": "@keelson/rib-beads",
+  "version": "0.1.0",
+  "description": "Keelson rib for beads (bd) backlog intelligence: live backlog boards, bd bridged as chat tools, and workflows that drive work from the ready queue.",
+  "license": "Apache-2.0",
+  "author": "Daniel Scholl",
+  "homepage": "https://github.com/danielscholl/keelson-rib-beads#readme",
+  "bugs": {
+    "url": "https://github.com/danielscholl/keelson-rib-beads/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/danielscholl/keelson-rib-beads.git"
+  },
+  "keywords": [
+    "keelson",
+    "rib",
+    "beads",
+    "bd",
+    "backlog",
+    "issue-tracker"
+  ],
+  "type": "module",
+  "main": "./src/index.ts",
+  "module": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "files": [
+    "src",
+    "workflows",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "check": "biome check .",
+    "check:fix": "biome check --write .",
+    "link:keelson": "bun dev/link.ts"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.3",
+    "@keelson/shared": "https://github.com/danielscholl/keelson/releases/download/v0.99.1/keelson-shared.tgz",
+    "@types/bun": "^1.1.14",
+    "typescript": "^7.0.2"
+  },
+  "peerDependencies": {
+    "@keelson/shared": ">=0.99.0"
+  },
+  "peerDependenciesMeta": {
+    "@keelson/shared": {
+      "optional": true
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

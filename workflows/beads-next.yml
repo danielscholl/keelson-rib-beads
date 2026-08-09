@@ -1,0 +1,92 @@
+# Contributed by the beads rib. The measurement is deterministic bash against
+# the project's beads database; exactly one agent turn turns it into a
+# recommendation. The numbers are never the agent's to invent, and the
+# workflow never mutates the tracker — claiming is the operator's move
+# (beads_update with claim, or the project's own bead-work workflow).
+
+name: beads-next
+model: balanced
+description: |
+  Use when: you want to know what to start next from the beads backlog, ranked
+            by leverage rather than raw priority.
+  Triggers: "what should I work on", "next bead", "pick from the queue",
+            "beads next".
+  Does: measures the ready queue (epics excluded, in-progress subtracted),
+        current work in flight, and the blocked set, then recommends the one
+        bead to start first — leverage (dependent_count) outranks priority —
+        with runner-ups and the reasoning.
+  NOT for: claiming or implementing the bead (bead-work does that), grooming
+           the backlog (beads-groom), or changing any issue. Read-only.
+
+requiresProject: true
+mutates_checkout: false
+tags: [beads, backlog, queue]
+
+nodes:
+  - id: measure
+    timeout: 120000
+    bash: |
+      set -uo pipefail
+      # Fail closed: a bd failure renders UNMEASURED for that section — "the
+      # query failed" must never look like "nothing there".
+      j() {
+        local out rc
+        out=$("$@" 2>/dev/null); rc=$?
+        if [ "$rc" -ne 0 ] || [ -z "$out" ]; then echo "UNMEASURED"; else printf '%s' "$out"; fi
+      }
+      echo "=== AS OF ==="
+      date "+%Y-%m-%d %H:%M %Z"
+      echo
+      echo "=== IN PROGRESS (id|assignee|updated|title) ==="
+      WIP=$(j bd --sandbox list --status in_progress --json --limit 0)
+      if [ "$WIP" = "UNMEASURED" ]; then echo "UNMEASURED"; else
+        printf '%s' "$WIP" | jq -r '.[] | [.id, (.assignee // "-"), (.updated_at // "-"), .title] | join("|")'
+        WIP_IDS=$(printf '%s' "$WIP" | jq -r '[.[].id] | join(",")')
+      fi
+      echo
+      echo "=== READY (id|prio|unlocks|needs|created|title; priority order; in-progress subtracted) ==="
+      READY=$(j bd --sandbox ready --exclude-type=epic --json --limit 0)
+      if [ "$READY" = "UNMEASURED" ]; then echo "UNMEASURED"; else
+        printf '%s' "$READY" | jq -r --arg wip "${WIP_IDS:-}" '
+          [.[] | select(.id as $i | ($wip | split(",")) | index($i) | not)]
+          | sort_by(.priority, .created_at, .id) | .[]
+          | [.id, "P\(.priority)", "unlocks:\(.dependent_count // 0)", "needs:\(.dependency_count // 0)", (.created_at // "-" | .[0:10]), .title]
+          | join("|")'
+      fi
+      echo
+      echo "=== BLOCKED COUNT (what a leverage pick could free) ==="
+      DEP=$(j bd --sandbox blocked --json)
+      if [ "$DEP" = "UNMEASURED" ]; then echo "UNMEASURED"; else
+        printf '%s' "$DEP" | jq -r 'length'
+      fi
+      exit 0
+
+  - id: recommend
+    depends_on: [measure]
+    model: balanced
+    prompt: |
+      You are picking the next piece of work from a beads backlog. Below is a
+      deterministic measurement of the queue, taken just now. **These numbers
+      are the truth — do not adjust or infer past them.** If a section reads
+      UNMEASURED, say the measurement failed and stop; never recommend off a
+      failed measurement.
+
+      $measure.output
+
+      Recommend exactly ONE bead to start first, then up to three runner-ups.
+
+      Ranking rules, in order:
+      1. Leverage outranks priority: a bead whose `unlocks:` count is high
+         frees the most blocked downstream work — that beats an isolated
+         higher-priority item.
+      2. Among equal leverage, priority (P0 first), then age (older first).
+      3. If something is already IN PROGRESS, note it first: work in flight
+         may make starting anything new the wrong move, and a stale claim
+         (old updated date) is bookkeeping to verify, not proof of work.
+
+      For the pick: the id verbatim (it pastes into `bd show`), the title, why
+      it wins under the rules above, and what it unlocks. State that claiming
+      it is `bd update <id> --claim` (or the bead-work workflow) — this
+      workflow deliberately does not claim.
+
+      Keep it short: someone deciding what to do with the next two hours.
