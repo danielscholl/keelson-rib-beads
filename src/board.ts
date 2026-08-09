@@ -280,14 +280,19 @@ export function composeBoard(measurements: ProjectMeasurement[]): CanvasBoardVie
 
   const multi = measurements.length > 1;
   const sections = measurements.flatMap((m) => sectionsForProject(m, multi ? m.project.name : ""));
+  // The board names its own scope: the header must answer "which backlog am I
+  // looking at" without the reader hunting for the surface's picker chip.
+  const scopeName = multi
+    ? `${measurements.length} projects`
+    : (measurements[0]?.project.name ?? "unknown");
 
   return {
     view: "board",
-    title: "Beads backlog",
+    title: `Beads backlog — ${scopeName}`,
     header: {
       status: failed
-        ? { label: "measurement failed", tone: "error" }
-        : { label: "measuring true", tone: "ok" },
+        ? { label: `${scopeName} — measurement failed`, tone: "error" }
+        : { label: scopeName, tone: "ok" },
       // The card's own clock tracks when the board last changed, not when it
       // was measured, so the header says this itself.
       chip: `measured ${asOf.slice(0, 16).replace("T", " ")}Z`,
