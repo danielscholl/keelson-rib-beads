@@ -17,17 +17,38 @@ without a `.beads` tracker gets an honest empty state that lists the projects
 that have one. The scoped board is composed in-process from `bd` output on a
 5-minute cadence:
 
-- KPI pulse — open / ready / in-progress / blocked / closed
-- The ready queue, priority order, work-in-flight subtracted, with
-  `unlocks N` leverage badges (`dependent_count` — finishing a high-unlocks
-  bead frees the most downstream work, and that outranks raw priority)
+- KPI pulse — startable / in-progress / waiting on deps / closed this week.
+  Every tile counts a population the rib measured; a failed query renders `?`
+  in an alarm tone rather than borrowing bd's own summary number, which counts
+  a different population under the same word.
+- The ready queue, priority order, epics excluded, work-in-flight subtracted,
+  ranked by `dependent_count` — finishing a high-leverage bead frees the most
+  downstream work, and that outranks raw priority
 - In-progress cards (work already claimed is the most interesting state)
 - The blocked set as the **union** of dependency-blocked (`bd blocked`) and
   status-blocked (`bd list --status blocked`) — either query alone
-  undercounts, and a manually blocked row says "status-blocked (manual)"
-  instead of an empty waits-on
-- Epic completion meters with eligible-to-close flags
-- A recent-closes momentum strip and a stale-claims alarm
+  undercounts, and a manually blocked row says "paused by hand" instead of an
+  empty waits-on
+- Epic completion meters, and an epic whose children have all closed raises a
+  **closeout review** — never an offer to close
+- A recent-closes momentum strip, and stale claims surfaced in Needs attention
+  when nonzero (with an `UNMEASURED` alarm when the query fails, so an absent
+  section can never mean "probably fine")
+
+**Two channels, deliberately separate.** Lifecycle (open / in progress /
+deferred) is one value carried by the dot and a word; dependency blocking is a
+*condition* that overlays any lifecycle and lives only in the trailing
+**decision rail** alongside the other exceptional signals — `waiting on N`,
+`N downstream`, `bug`, `closeout review`. A bead can be in progress *and*
+waiting, which is why the same bead no longer renders green in one panel and
+red in another. The rail is empty on most beads, and that is the point: a
+signal present on 7% of the backlog must not cost every row a reserved column.
+
+**Two leverage metrics, never one contested word.** `N downstream` is the
+declared `dependent_count` and does the ranking; `releases N now` is measured
+off the blocked edges and explains the immediate consequence. They can
+disagree honestly — `3 downstream · releases 0 now` says the leverage is real
+but deferred.
 
 Every section is **fail-closed**: a failed `bd` query renders UNMEASURED,
 never an empty-but-healthy board.

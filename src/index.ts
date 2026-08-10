@@ -25,6 +25,7 @@ import {
   composeRecommend,
   composeWip,
   EMPTY_PANEL,
+  fallbackSelectedId,
   recommendNext,
 } from "./board";
 import {
@@ -306,15 +307,28 @@ const rib: Rib = {
       register(CLOSED_KEY, makePanelComposer(composeClosed));
       register(INSPECT_KEY, async () => {
         const project = scopedProject();
-        if (!project) return composeInspect(undefined, []);
-        if (!selectedBeadId || !bdClient) return composeInspect(undefined, []);
+        if (!project || !bdClient) return composeInspect(undefined, []);
         const m = await getMeasurement(project);
-        const issue = await fetchIssue(bdClient, project.rootPath, selectedBeadId);
+        // With nothing chosen, rest on the board's own recommendation rather
+        // than an empty panel. `selectedBeadId` stays untouched — it means
+        // "the operator picked this", which is what the selection rings on the
+        // other panels report, and `select-project` clearing it drops straight
+        // through to the new project's pick with no extra bookkeeping.
+        const preselected = !selectedBeadId;
+        const id = selectedBeadId ?? fallbackSelectedId(m);
+        if (!id) return composeInspect(undefined, []);
+        const issue = await fetchIssue(bdClient, project.rootPath, id);
         // The board's current pick rides along: when the inspected bead is
         // blocked, "Start X instead" must name the same bead the
         // recommendation panel does.
         const rec = m.ready.ok ? recommendNext(m.ready.data).pick : undefined;
-        return composeInspect(issue, m.blocked.ok ? m.blocked.data : [], rec);
+        // An epic's completion row, when the measurement has one: the
+        // inspector turns it into a closeout review instead of a claim button.
+        const epicRow = m.epics.ok ? m.epics.data.find((r) => r.epic.id === id) : undefined;
+        return composeInspect(issue, m.blocked.ok ? m.blocked.data : [], rec, {
+          epicRow,
+          preselected,
+        });
       });
 
       recomposeKeys(ALL_KEYS);
