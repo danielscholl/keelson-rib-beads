@@ -802,6 +802,11 @@ export function composePlan(m: ProjectMeasurement, ctx: PanelContext): Board {
       });
     }
     push(`▸ ${fam.root.title}${meter}`, items);
+    // The epic itself is on screen — as the group title, or as the leading
+    // review card when eligible (which `push` already counted). Leaving it out
+    // of the tally made the caption read "Showing 45 of 50" on a Plan that was
+    // hiding nothing, which is a truncation warning that cries wolf.
+    if (!p?.eligible_for_close) shown += 1;
   }
   for (const fam of parentFamilies) {
     if (room() <= 0) break;
@@ -892,7 +897,12 @@ export function composeInspect(
       const id = l.id ?? l.depends_on_id ?? l.issue_id ?? "?";
       return l.title ? `${id} — ${l.title}` : id;
     });
-  const waitsOn = linked(i.dependencies);
+  // Only dependencies that still hold anything up. `bd show` returns every
+  // edge ever declared, closed ones included, so listing them raw put a
+  // satisfied dependency under "Waits on" directly beneath an enabled "Start
+  // this bead" — the panel telling you to start and to wait in one breath.
+  // Unknown status is kept: absence of proof that it is done is not proof.
+  const waitsOn = linked((i.dependencies ?? []).filter((d) => d.status !== "closed"));
   const unlocks = linked(i.dependents);
   const blockedEntry = blocked.find((b) => b.id === i.id);
   const blockedBy = blockedEntry?.blocked_by ?? [];

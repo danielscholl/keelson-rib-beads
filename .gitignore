@@ -3,3 +3,6 @@ dist/
 .astro/
 *.log
 .DS_Store
+
+# Playwright MCP scratch output
+.playwright-mcp/

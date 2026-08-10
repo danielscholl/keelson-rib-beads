@@ -569,6 +569,37 @@ describe("panel composers", () => {
     expect(cards.length).toBe(1);
   });
 
+  test("a satisfied dependency is not listed as something the bead waits on", () => {
+    const issue: BdIssue = {
+      id: "tl-13j",
+      title: "Backfill",
+      status: "open",
+      priority: 0,
+      dependencies: [
+        { id: "tl-2tc", title: "Membership windows", status: "closed" },
+        { id: "tl-open", title: "Still open", status: "open" },
+        { id: "tl-unknown", title: "No status recorded" },
+      ],
+    };
+    const flat = JSON.stringify(composeInspect(ok(issue), []));
+    // Closed edges are done — listing them under "Waits on" beside an enabled
+    // Start button tells you to start and to wait at the same time.
+    expect(flat).not.toContain("tl-2tc");
+    expect(flat).toContain("tl-open");
+    // Unknown status is kept: absence of proof is not proof of completion.
+    expect(flat).toContain("tl-unknown");
+  });
+
+  test("the plan counts epics rendered as group titles as shown", () => {
+    const plan = composePlan(fullMeasurement(), {});
+    const legend = plan.sections.at(-1);
+    if (legend?.kind !== "rows") throw new Error("no legend");
+    // The fixture's three backlog beads are one epic (a group title), its
+    // child, and one standalone — nothing is truncated, so the caption must
+    // not warn about hidden work.
+    expect(legend.items[0]?.text).not.toContain("Showing");
+  });
+
   test("an epic with no open children asks for review, never offers a close", () => {
     const plan = composePlan(fullMeasurement(), {});
     const notice = plan.sections[0];
