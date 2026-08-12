@@ -36,6 +36,8 @@ export interface BdIssue {
   dependency_count?: number;
   dependent_count?: number;
   blocked_by?: string[];
+  // Epic membership as `bd list` reports it — the parent's id on the child row.
+  parent?: string;
   description?: string;
   acceptance_criteria?: string;
   notes?: string;
@@ -57,6 +59,16 @@ export interface BdLinked {
   type?: string;
   // "blocks" or "parent-child" — the latter is epic membership.
   dependency_type?: string;
+}
+
+// What a bead-work run reported about a bead, read from the notes convention
+// (`bead-work run: PR <url> — <outcome> — <free text>`). The join to live
+// runs is the note line, not a run id: bead-work writes it at completion, so
+// this names the PR and how the run ended — nothing more is claimed.
+export interface BeadRunInfo {
+  prUrl: string;
+  outcome?: string;
+  note?: string;
 }
 
 // `bd epic status --json` nests the epic under an `epic` key with the child

@@ -6,11 +6,23 @@
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 
-import type { BdClient, BdEpicRow, BdIssue, BdSummary, BeadsProject, Measured } from "./bd";
+import type {
+  BdClient,
+  BdEpicRow,
+  BdIssue,
+  BdSummary,
+  BeadRunInfo,
+  BeadsProject,
+  Measured,
+} from "./bd";
 import { unmeasured } from "./bd";
 
 export const STALE_DAYS = 7;
 export const RECENT_CLOSE_DAYS = 7;
+// Run notes cost one `bd show` per in-progress bead. The set is small by
+// construction (a claim is a hand or a run holding work), so the cap is a
+// guard against a pathological tracker, not an expected ceiling.
+export const RUN_INFO_CAP = 12;
 
 export interface ProjectMeasurement {
   project: BeadsProject;
@@ -33,6 +45,12 @@ export interface ProjectMeasurement {
   // dotted ids alone miss it, and `bd list` carries no dependency payload —
   // only `bd show <epic> --include-dependents` names an epic's children.
   epicChildren: Measured<Record<string, string[]>>;
+  // The bead-work run note per in-progress bead (`bd list` carries no notes,
+  // so each is re-read with `bd show`). Envelopes nest deliberately: run info
+  // has no cross-bead coupling, so one failed show degrades one card, not the
+  // whole agents panel — while aggregates that need the complete set (the
+  // in-review split) refuse to answer unless every entry measured.
+  runInfo: Measured<Record<string, Measured<BeadRunInfo | undefined>>>;
 }
 
 function asArray(value: unknown): BdIssue[] {
@@ -73,6 +91,37 @@ export function recentCloses(closed: BdIssue[], now: Date, days = RECENT_CLOSE_D
     .sort((a, b) => ((a.closed_at ?? "") > (b.closed_at ?? "") ? -1 : 1));
 }
 
+// The bead-work completion convention, one line appended to a bead's notes:
+//
+//   bead-work run: PR <url> — <outcome> — <free text>
+//
+// `--append-notes` appends, so the LAST matching line is the current claim.
+// An unparseable note yields undefined — "no run reported" — which under-
+// claims rather than invents: the failure mode of a typo'd note is a bead
+// reading "in progress" instead of "in review", never the reverse.
+export function parseRunNote(notes: string | undefined): BeadRunInfo | undefined {
+  if (!notes) return undefined;
+  let found: BeadRunInfo | undefined;
+  for (const raw of notes.split("\n")) {
+    const match = /^bead-work run:\s*PR\s+(\S+)\s*(.*)$/.exec(raw.trim());
+    if (!match) continue;
+    // The tail is em-dash-separated: first cell is the outcome, the rest is
+    // prose (re-joined, so a dash inside the prose survives).
+    const cells = (match[2] ?? "")
+      .split("—")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    const outcome = cells[0];
+    const note = cells.slice(1).join(" — ");
+    found = {
+      prUrl: match[1] ?? "",
+      ...(outcome ? { outcome } : {}),
+      ...(note ? { note } : {}),
+    };
+  }
+  return found;
+}
+
 // One bead in full, for the inspector: `bd show` returns a single-element
 // array, and --include-dependents is what carries the linked issues.
 export async function fetchIssue(
@@ -110,6 +159,23 @@ export async function measureProject(
   const inProgress: Measured<BdIssue[]> = wipRes.ok
     ? { ok: true, data: asArray(wipRes.data) }
     : wipRes;
+
+  // Run notes ride on `bd show`, one per in-progress bead (the serialized
+  // client keeps this safe; the cap keeps it bounded).
+  let runInfo: Measured<Record<string, Measured<BeadRunInfo | undefined>>>;
+  if (!inProgress.ok) {
+    runInfo = unmeasured("in-progress unmeasured, so run notes cannot be read");
+  } else {
+    const map: Record<string, Measured<BeadRunInfo | undefined>> = {};
+    for (const bead of inProgress.data.slice(0, RUN_INFO_CAP)) {
+      const res = await fetchIssue(bd, cwd, bead.id);
+      map[bead.id] = res.ok ? { ok: true, data: parseRunNote(res.data.notes) } : res;
+    }
+    for (const bead of inProgress.data.slice(RUN_INFO_CAP)) {
+      map[bead.id] = unmeasured("run info not fetched — over the per-sweep cap");
+    }
+    runInfo = { ok: true, data: map };
+  }
 
   const readyRes = await bd.readJSON<unknown>(cwd, [
     "ready",
@@ -214,5 +280,6 @@ export async function measureProject(
     stale,
     backlog,
     epicChildren,
+    runInfo,
   };
 }

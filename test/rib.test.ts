@@ -1,6 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import rib from "../src/index";
-import { ALL_KEYS, INSPECT_KEY, PLAN_KEY, PULSE_KEY } from "../src/keys";
+import {
+  ALL_KEYS,
+  ATTENTION_KEY,
+  INSPECT_KEY,
+  MOMENTUM_KEY,
+  PLAN_KEY,
+  PORTFOLIO_KEY,
+  PULSE_KEY,
+  RECOMMEND_KEY,
+  WIP_KEY,
+} from "../src/keys";
 
 describe("rib contract shape", () => {
   test("id and displayName satisfy the contract", () => {
@@ -14,18 +24,29 @@ describe("rib contract shape", () => {
     }
   });
 
-  test("the surface lays out the stable panel roles", () => {
+  test("the surface lays out the operator's order", () => {
     const surface = rib.surfaces?.[0];
     expect(surface?.id).toBe("beads");
     expect(surface?.layout.header?.key).toBe(PULSE_KEY);
     const rowKeys = surface?.layout.rows.map((r) => r.columns.map((c) => c.key));
-    // The inspector is a full-width band ABOVE the Plan: surface columns split
-    // evenly and can't stick, so side-by-side would strand it beside a much
-    // taller inventory.
-    expect(rowKeys?.[2]).toEqual([INSPECT_KEY]);
-    expect(rowKeys?.[3]).toEqual([PLAN_KEY]);
-    // The momentum strip starts collapsed.
-    expect(surface?.layout.rows[4]?.columns[0]?.collapsed).toBe(true);
+    // What's moving and what needs a human lead; the board's pick follows;
+    // then the portfolio/momentum pair. The inspector stays a full-width band
+    // ABOVE the Plan: surface columns split evenly and can't stick, so
+    // side-by-side would strand it beside a much taller inventory.
+    expect(rowKeys).toEqual([
+      [WIP_KEY, ATTENTION_KEY],
+      [RECOMMEND_KEY],
+      [PORTFOLIO_KEY, MOMENTUM_KEY],
+      [INSPECT_KEY],
+      [PLAN_KEY],
+    ]);
+    // The pair renamed for what it shows: runs, and the human's queue.
+    const titles = surface?.layout.rows[0]?.columns.map((c) => c.title);
+    expect(titles).toEqual(["Agents at work", "Needs a human"]);
+    // Momentum earned a column — nothing starts collapsed anymore.
+    for (const row of surface?.layout.rows ?? []) {
+      for (const col of row.columns) expect(col.collapsed).toBeUndefined();
+    }
     // Every declared view key is registered as a panel.
     expect(rib.views?.map((v) => v.key).sort()).toEqual([...ALL_KEYS].sort());
   });
