@@ -4,21 +4,27 @@ import type { BdIssue, Measured } from "../src/bd";
 import {
   assigneeView,
   composeAttention,
-  composeClosed,
   composeInspect,
+  composeMomentum,
   composeNoTrackerPulse,
   composePlan,
+  composePortfolio,
   composePulse,
   composeRecommend,
   composeWip,
+  damGroups,
   decisionRail,
   declaredDownstream,
+  epicGate,
   fallbackSelectedId,
   lifecycleChip,
   lifecycleOf,
   lifecycleTone,
   priorityTone,
+  prLabel,
   recommendNext,
+  stageChip,
+  stageSplit,
   statusGlyph,
   unlockChain,
   unlockLevels,
@@ -108,7 +114,16 @@ function fullMeasurement(): ProjectMeasurement {
       { id: "tl-b", title: "Ready one", status: "open", priority: 0, dependent_count: 3 },
     ]),
     epicChildren: ok({}),
+    runInfo: ok({ "tl-a": ok(undefined) }),
   };
+}
+
+// Override the in-progress set AND its per-bead run envelopes together — a
+// bead without an envelope alarms on its card, which is correct in production
+// and noise in a test about something else.
+function setWip(m: ProjectMeasurement, items: BdIssue[]): void {
+  m.inProgress = ok(items);
+  m.runInfo = ok(Object.fromEntries(items.map((i) => [i.id, ok(undefined)])));
 }
 
 describe("recommendNext / unlockChain", () => {
@@ -320,16 +335,16 @@ describe("panel composers", () => {
 
   test("empty in-progress stays visible as a compact notice", () => {
     const m = fullMeasurement();
-    m.inProgress = ok([]);
+    setWip(m, []);
     const wip = composeWip(m, {});
     expect(() => validBoard(wip)).not.toThrow();
-    expect(JSON.stringify(wip)).toContain("No work currently claimed");
+    expect(JSON.stringify(wip)).toContain("No agent or human holds a claim");
   });
 
   test("a claimed bead that is also blocked says both, and drops the repeated owner", () => {
     const m = fullMeasurement();
     // tl-d is in the blocked union; claim it so it appears in both panels.
-    m.inProgress = ok([
+    setWip(m, [
       { id: "tl-d", title: "Dep blocked", status: "in_progress", priority: 1, assignee: "dan" },
       { id: "tl-g", title: "Other work", status: "in_progress", priority: 2, assignee: "dan" },
     ]);
@@ -353,7 +368,7 @@ describe("panel composers", () => {
 
   test("an unassigned bead beside assigned siblings is marked, not left blank", () => {
     const m = fullMeasurement();
-    m.inProgress = ok([
+    setWip(m, [
       { id: "tl-g", title: "One", status: "in_progress", priority: 2, assignee: "dan" },
       { id: "tl-i", title: "Two", status: "in_progress", priority: 2 },
     ]);
@@ -365,7 +380,7 @@ describe("panel composers", () => {
 
   test("an all-unassigned panel says nothing about owners", () => {
     const m = fullMeasurement();
-    m.inProgress = ok([
+    setWip(m, [
       { id: "tl-g", title: "One", status: "in_progress", priority: 2 },
       { id: "tl-i", title: "Two", status: "in_progress", priority: 2 },
     ]);
@@ -378,7 +393,7 @@ describe("panel composers", () => {
 
   test("mixed owners keep the owner on each card", () => {
     const m = fullMeasurement();
-    m.inProgress = ok([
+    setWip(m, [
       { id: "tl-g", title: "One", status: "in_progress", priority: 2, assignee: "dan" },
       { id: "tl-i", title: "Two", status: "in_progress", priority: 2, assignee: "sam" },
     ]);
@@ -389,65 +404,109 @@ describe("panel composers", () => {
     expect(JSON.stringify(cards.items[1])).toContain("sam");
   });
 
-  test("attention splits blockers of active work from the rest", () => {
-    const m = fullMeasurement();
-    m.inProgress = ok([
-      { id: "tl-d", title: "Dep blocked", status: "in_progress", priority: 1, assignee: "dan" },
-    ]);
-    const att = composeAttention(m, {});
-    expect(() => validBoard(att)).not.toThrow();
-    const [first, second] = att.sections;
-    if (first?.kind !== "cards" || second?.kind !== "cards") throw new Error("no cards");
-    expect(first.title).toBe("Blocking active work");
-    expect(first.items.map((i) => i.pill?.label)).toEqual(["tl-d"]);
-    expect(JSON.stringify(first.items[0])).toContain("in progress");
-    expect(JSON.stringify(first.items[0])).toContain("waiting on tl-b");
-    expect(second.title).toBe("Other blocked work");
-    expect(second.items.map((i) => i.pill?.label)).not.toContain("tl-d");
-  });
-
-  test("with no active work blocked, attention keeps a single undivided list", () => {
+  test("attention aggregates blockers into dams instead of listing held beads", () => {
     const att = composeAttention(fullMeasurement(), {});
-    const [first] = att.sections;
-    if (first?.kind !== "cards") throw new Error("no cards");
-    expect(first.title).not.toBe("Blocking active work");
-    expect(JSON.stringify(att)).not.toContain("in progress");
+    expect(() => validBoard(att)).not.toThrow();
+    const dams = att.sections.find((s) => s.kind === "cards" && s.title?.startsWith("Dams"));
+    if (dams?.kind !== "cards") throw new Error("no dams");
+    // tl-b holds tl-d directly and releases tl-h a hop later; tl-d holds tl-h.
+    // Held count ranks, leverage (tl-b declares 3 downstream) breaks the tie
+    // it doesn't have to here — and the numbers on screen ARE the rank keys.
+    expect(dams.items[0]?.pill?.label).toBe("tl-b");
+    const first = JSON.stringify(dams.items[0]);
+    expect(first).toContain("holds 1 now");
+    expect(first).toContain("2 transitive");
+    expect(first).toContain("startable now");
+    expect(first).toContain("held: tl-d");
+    expect(dams.items[1]?.pill?.label).toBe("tl-d");
+    // The dam opens the inspector — finishing it is the point.
+    expect(dams.items[0]?.action?.type).toBe("select-bead");
   });
 
-  test("attention ranks by the same downstream number the rail shows", () => {
+  test("hand-paused work is its own queue, never silently missing from dams", () => {
+    const att = composeAttention(fullMeasurement(), { selectedId: "tl-e" });
+    const paused = att.sections.find((s) => s.kind === "cards" && s.title === "Paused by hand");
+    if (paused?.kind !== "cards") throw new Error("no paused section");
+    expect(paused.items.map((i) => i.pill?.label)).toEqual(["tl-e"]);
+    expect(paused.items[0]?.selected).toBe(true);
+    expect(JSON.stringify(paused.items[0])).toContain("paused by hand");
+  });
+
+  test("a bead in review renders as a merge ask linking to its PR", () => {
     const m = fullMeasurement();
-    // `bd blocked` carries no dependent_count, so leverage has to be read
-    // through the backlog — and the rank must use the figure on screen, not a
-    // measured in-edge count that appears nowhere.
-    m.backlog = ok([
-      { id: "tl-d", title: "Dep blocked", status: "open", priority: 1, dependent_count: 1 },
-      { id: "tl-e", title: "Hand blocked", status: "blocked", priority: 2, dependent_count: 5 },
-    ]);
-    const att = composeAttention(m, { selectedId: "tl-e" });
-    if (att.sections[0]?.kind !== "cards") throw new Error("no cards");
-    const items = att.sections[0].items;
-    expect(items[0]?.pill?.label).toBe("tl-e");
-    expect(items[0]?.selected).toBe(true);
-    expect(JSON.stringify(items[0])).toContain("5 downstream");
-    expect(JSON.stringify(att)).toContain("paused by hand");
+    m.runInfo = ok({
+      "tl-a": ok({
+        prUrl: "https://github.com/acme/demo/pull/64",
+        outcome: "success",
+        note: "CI green",
+      }),
+    });
+    const att = composeAttention(m, {});
+    const review = att.sections[0];
+    if (review?.kind !== "rows") throw new Error("no review section");
+    expect(review.title).toBe("Review to merge");
+    expect(review.items[0]?.chip?.label).toBe("tl-a");
+    expect(review.items[0]?.href).toBe("https://github.com/acme/demo/pull/64");
+    expect(review.items[0]?.trailing).toContain("in review");
+  });
+
+  test("an unmeasured stage split alarms in attention rather than hiding reviews", () => {
+    const m = fullMeasurement();
+    m.runInfo = { ok: false, error: "bd show tl-a: exit 1" };
+    const flat = JSON.stringify(composeAttention(m, {}));
+    expect(flat).toContain("UNMEASURED");
+    expect(flat).toContain("review-stage work");
+  });
+
+  test("epic closeouts queue for a human with a meter, never a close button", () => {
+    const att = composeAttention(fullMeasurement(), {});
+    const closeout = att.sections.find(
+      (s) => s.kind === "cards" && s.title === "Epic closeout review",
+    );
+    if (closeout?.kind !== "cards") throw new Error("no closeout section");
+    expect(closeout.items[0]?.pill?.label).toBe("tl-f");
+    expect(closeout.items[0]?.bar).toEqual({ value: 4, total: 4 });
+    expect(closeout.items[0]?.dot).toBe("warn");
+    expect(closeout.items[0]?.action?.type).toBe("select-bead");
+    expect(JSON.stringify(att)).not.toContain("claim-bead");
+  });
+
+  test("unmeasured epics alarm in attention instead of dropping closeouts", () => {
+    const m = fullMeasurement();
+    m.epics = { ok: false, error: "bd epic status: exit 1" };
+    const flat = JSON.stringify(composeAttention(m, {}));
+    expect(flat).toContain("UNMEASURED");
+    expect(flat).toContain("epic closeout eligibility");
   });
 
   test("a failed stale query alarms instead of reading as a clean board", () => {
     const m = fullMeasurement();
     m.blocked = ok([]);
+    m.epics = ok([]);
     m.stale = { ok: false, error: "bd stale: exit 1" };
     const flat = JSON.stringify(composeAttention(m, {}));
     // The all-clear would otherwise fire on an unmeasured signal — the exact
     // regression that moving stale off the Pulse could have introduced.
     expect(flat).toContain("UNMEASURED");
-    expect(flat).not.toContain("Nothing is blocked or stale");
+    expect(flat).not.toContain("Nothing needs a human");
   });
 
   test("a measured zero still says the board is clean", () => {
     const m = fullMeasurement();
     m.blocked = ok([]);
     m.stale = ok([]);
-    expect(JSON.stringify(composeAttention(m, {}))).toContain("Nothing is blocked or stale");
+    m.epics = ok([]);
+    setWip(m, []);
+    expect(JSON.stringify(composeAttention(m, {}))).toContain("Nothing needs a human");
+  });
+
+  test("the review slot holds its place while claims are still working", () => {
+    const att = composeAttention(fullMeasurement(), {});
+    const review = att.sections[0];
+    if (review?.kind !== "rows") throw new Error("no review slot");
+    // The predictable location states its emptiness rather than vanishing.
+    expect(review.title).toBe("Review to merge");
+    expect(review.items[0]?.text).toBe("Nothing waits on a merge yet — 1 claim still working.");
   });
 
   test("the plan renders epics as titled panels and singles under standalone work", () => {
@@ -619,7 +678,7 @@ describe("panel composers", () => {
 
   test("a claimed epic is marked structural rather than hidden", () => {
     const m = fullMeasurement();
-    m.inProgress = ok([
+    setWip(m, [
       { id: "tl-f", title: "S1", status: "in_progress", priority: 0, issue_type: "epic" },
     ]);
     expect(JSON.stringify(composeWip(m, {}))).toContain("epic");
@@ -751,11 +810,169 @@ describe("panel composers", () => {
     expect(JSON.stringify(composeInspect(undefined, []))).toContain("Nothing selected");
   });
 
-  test("closed hides itself when the week was quiet", () => {
+  test("the portfolio renders one meter per epic that opens the inspector", () => {
+    const m = fullMeasurement();
+    m.epicChildren = ok({ "tl-f": ["tl-a"] });
+    const portfolio = composePortfolio(m, {});
+    expect(() => validBoard(portfolio)).not.toThrow();
+    const cards = portfolio.sections[0];
+    if (cards?.kind !== "cards") throw new Error("no cards");
+    const epic = cards.items[0];
+    expect(epic?.pill?.label).toBe("tl-f");
+    expect(epic?.bar).toEqual({ value: 4, total: 4 });
+    // warn, not ok: an all-closed epic is an ask on a human's time.
+    expect(epic?.dot).toBe("warn");
+    expect(epic?.action?.type).toBe("select-bead");
+    const flat = JSON.stringify(epic);
+    expect(flat).toContain("4/4 done");
+    expect(flat).toContain("1 in progress");
+    expect(flat).toContain("needs closeout review");
+    expect(JSON.stringify(portfolio)).not.toContain("claim-bead");
+  });
+
+  test("the portfolio sorts where the agents are first and says why parked epics wait", () => {
+    const m = fullMeasurement();
+    m.epics = ok([
+      {
+        epic: { id: "ep-parked", title: "Parked", status: "open", priority: 1 },
+        total_children: 2,
+        closed_children: 0,
+        eligible_for_close: false,
+      },
+      {
+        epic: { id: "ep-near", title: "Nearly landed", status: "open", priority: 2 },
+        total_children: 4,
+        closed_children: 3,
+        eligible_for_close: false,
+      },
+      {
+        epic: { id: "ep-active", title: "Active", status: "open", priority: 3 },
+        total_children: 3,
+        closed_children: 0,
+        eligible_for_close: false,
+      },
+    ]);
+    // ep-active holds the in-flight bead; ep-parked's children sit in the
+    // blocked union — tl-d held from outside (tl-b), tl-h by its sibling.
+    m.epicChildren = ok({ "ep-active": ["tl-a"], "ep-parked": ["tl-d", "tl-h"] });
+    const cards = composePortfolio(m, {}).sections[0];
+    if (cards?.kind !== "cards") throw new Error("no cards");
+    // bd's order was parked, near, active — the board's order is the story:
+    // where the agents are, then what's nearly landed, parked last.
+    expect(cards.items.map((i) => i.pill?.label)).toEqual(["ep-active", "ep-near", "ep-parked"]);
+    expect(JSON.stringify(cards.items[0])).toContain("1 in progress");
+    expect(JSON.stringify(cards.items[2])).toContain("gated on tl-b");
+  });
+
+  test("unmeasured epic membership drops the in-flight clause, not the meter", () => {
+    const m = fullMeasurement();
+    m.epicChildren = { ok: false, error: "bd show tl-f: exit 1" };
+    const flat = JSON.stringify(composePortfolio(m, {}));
+    expect(flat).toContain("4/4 done");
+    expect(flat).not.toContain("in progress");
+  });
+
+  test("the portfolio fails closed and hides only on a measured empty", () => {
+    const m = fullMeasurement();
+    m.epics = { ok: false, error: "bd epic status: exit 1" };
+    expect(JSON.stringify(composePortfolio(m, {}))).toContain("UNMEASURED");
+    const empty = fullMeasurement();
+    empty.epics = ok([]);
+    expect(composePortfolio(empty, {}).sections.length).toBe(0);
+  });
+
+  test("momentum interleaves closes, touches, and new beads newest first", () => {
+    const m = fullMeasurement();
+    m.backlog = ok([
+      {
+        id: "tl-new",
+        title: "Fresh bead",
+        status: "open",
+        priority: 2,
+        created_at: "2026-08-09T09:00:00Z",
+      },
+      // A new epic is structure, not momentum.
+      {
+        id: "tl-epic",
+        title: "Fresh epic",
+        status: "open",
+        priority: 2,
+        issue_type: "epic",
+        created_at: "2026-08-09T09:00:00Z",
+      },
+    ]);
+    const momentum = composeMomentum(m);
+    expect(() => validBoard(momentum)).not.toThrow();
+    // One section per day, newest first — the day is a header, not a suffix
+    // repeated on every line. asOf is 08-09: the create (09:00 today) beats
+    // the close (08-08) beats the touch (08-07).
+    const days = momentum.sections.filter((s) => s.kind === "rows");
+    expect(days.map((s) => s.title)).toEqual(["Today", "Yesterday", "Aug 7"]);
+    if (days[0]?.kind !== "rows" || days[1]?.kind !== "rows" || days[2]?.kind !== "rows")
+      throw new Error("no day rows");
+    expect(days[0].items[0]?.chip?.label).toBe("tl-new");
+    expect(days[0].items[0]?.icon).toBe("+");
+    expect(days[0].items[0]?.trailing).toBe("new");
+    expect(days[1].items[0]?.chip?.label).toBe("tl-g");
+    expect(days[1].items[0]?.icon).toBe("✓");
+    expect(days[1].items[0]?.trailing).toBe("closed");
+    expect(days[2].items[0]?.chip?.label).toBe("tl-a");
+    expect(days[2].items[0]?.icon).toBe("◐");
+    // "touched", never "claimed": bd records no claim time.
+    expect(days[2].items[0]?.trailing).toBe("touched");
+    expect(JSON.stringify(momentum)).not.toContain("tl-epic");
+  });
+
+  test("momentum lists each bead once — the most final event wins", () => {
+    const m = fullMeasurement();
+    // tl-a is in progress AND created inside the window: one line, the touch.
+    m.backlog = ok([
+      {
+        id: "tl-a",
+        title: "In flight",
+        status: "in_progress",
+        priority: 1,
+        created_at: "2026-08-06T09:00:00Z",
+      },
+    ]);
+    const items = composeMomentum(m).sections.flatMap((s) => (s.kind === "rows" ? s.items : []));
+    expect(items.filter((i) => i.chip?.label === "tl-a").length).toBe(1);
+    expect(items.find((i) => i.chip?.label === "tl-a")?.icon).toBe("◐");
+  });
+
+  test("a capped momentum feed says it is truncated", () => {
+    const m = fullMeasurement();
+    m.recentlyClosed = ok(
+      Array.from({ length: 15 }, (_, i) => ({
+        id: `tl-c${i}`,
+        title: `Close ${i}`,
+        status: "closed",
+        priority: 2,
+        closed_at: `2026-08-08T${String(10 + Math.floor(i / 10))}:${String(i % 10)}0:00Z`,
+      })),
+    );
+    const flat = JSON.stringify(composeMomentum(m));
+    expect(flat).toContain("showing 12 of");
+  });
+
+  test("momentum fails closed on closes and alarms partially on the rest", () => {
+    const m = fullMeasurement();
+    m.recentlyClosed = { ok: false, error: "bd list --status closed: exit 1" };
+    expect(JSON.stringify(composeMomentum(m))).toContain("UNMEASURED");
+    const partial = fullMeasurement();
+    partial.backlog = { ok: false, error: "bd list: exit 1" };
+    const flat = JSON.stringify(composeMomentum(partial));
+    // The measured feeds still render; the missing one alarms inline.
+    expect(flat).toContain("tl-g");
+    expect(flat).toContain("new beads could not be measured");
+  });
+
+  test("momentum hides itself only on a measured quiet week", () => {
     const m = fullMeasurement();
     m.recentlyClosed = ok([]);
-    expect(composeClosed(m).sections.length).toBe(0);
-    expect(composeClosed(fullMeasurement()).sections.length).toBe(1);
+    setWip(m, []);
+    m.backlog = ok([]);
+    expect(composeMomentum(m).sections.length).toBe(0);
   });
 
   test("a scope without a tracker renders the map, not a fake backlog", () => {
@@ -770,5 +987,224 @@ describe("panel composers", () => {
     expect(statusGlyph("in_progress")).toBe("◐");
     expect(priorityTone(0)).toBe("error");
     expect(priorityTone(3)).toBe("neutral");
+  });
+});
+
+describe("the flow strip", () => {
+  test("the pulse header carries disjoint stage segments", () => {
+    const pulse = composePulse(fullMeasurement());
+    expect(() => validBoard(pulse)).not.toThrow();
+    // Fixture: 3 blocked (none claimed), 2 ready, 1 in progress with no run
+    // note, 0 in review, 1 closed this week. Disjoint by construction — the
+    // claimed-and-blocked overlap folds into In progress for the strip only.
+    expect(pulse.header?.segments).toEqual([
+      { label: "Waiting", n: 3, tone: "neutral" },
+      { label: "Ready", n: 2, tone: "accent" },
+      { label: "In progress", n: 1, tone: "ok" },
+      { label: "In review", n: 0, tone: "info" },
+      { label: "Done 7d", n: 1, tone: "brand" },
+    ]);
+  });
+
+  test("a claimed-and-blocked bead counts once, under in progress", () => {
+    const m = fullMeasurement();
+    setWip(m, [{ id: "tl-d", title: "Dep blocked", status: "in_progress", priority: 1 }]);
+    const segments = composePulse(m).header?.segments;
+    expect(segments?.find((s) => s.label === "Waiting")?.n).toBe(2);
+    expect(segments?.find((s) => s.label === "In progress")?.n).toBe(1);
+  });
+
+  test("a run note moves a bead from in progress to in review", () => {
+    const m = fullMeasurement();
+    m.runInfo = ok({ "tl-a": ok({ prUrl: "https://github.com/acme/demo/pull/9" }) });
+    const segments = composePulse(m).header?.segments;
+    expect(segments?.find((s) => s.label === "In progress")?.n).toBe(0);
+    expect(segments?.find((s) => s.label === "In review")?.n).toBe(1);
+  });
+
+  test("any unmeasured input omits the strip whole and alarms in its place", () => {
+    const m = fullMeasurement();
+    m.runInfo = { ok: false, error: "bd show tl-a: exit 1" };
+    const pulse = composePulse(m);
+    expect(pulse.header?.segments).toBeUndefined();
+    const flat = JSON.stringify(pulse);
+    expect(flat).toContain("UNMEASURED");
+    expect(flat).toContain("flow strip");
+    // The tiles stay measured — the strip alone refuses to guess.
+    const stats = pulse.sections[0];
+    if (stats?.kind !== "stats") throw new Error("no stats");
+    expect(stats.items[0]?.value).toBe(2);
+  });
+});
+
+describe("the derived review stage", () => {
+  const info = (over: Partial<{ prUrl: string; outcome: string; note: string }> = {}) => ({
+    prUrl: "https://github.com/acme/demo/pull/64",
+    ...over,
+  });
+
+  test("stageSplit divides the in-progress set by run-note presence", () => {
+    const m = fullMeasurement();
+    setWip(m, [
+      { id: "tl-r", title: "Reviewed", status: "in_progress", priority: 1 },
+      { id: "tl-w", title: "Working", status: "in_progress", priority: 1 },
+    ]);
+    m.runInfo = ok({ "tl-r": ok(info()), "tl-w": ok(undefined) });
+    const split = stageSplit(m);
+    if (!split.ok) throw new Error("split should measure");
+    expect(split.data.inReview.map((i) => i.id)).toEqual(["tl-r"]);
+    expect(split.data.working.map((i) => i.id)).toEqual(["tl-w"]);
+  });
+
+  test("stageSplit refuses partial answers", () => {
+    const outer = fullMeasurement();
+    outer.runInfo = { ok: false, error: "sweep died" };
+    expect(stageSplit(outer).ok).toBe(false);
+    const inner = fullMeasurement();
+    inner.runInfo = ok({ "tl-a": { ok: false, error: "bd show tl-a: exit 1" } });
+    expect(stageSplit(inner).ok).toBe(false);
+    const missing = fullMeasurement();
+    missing.runInfo = ok({});
+    expect(stageSplit(missing).ok).toBe(false);
+  });
+
+  test("a merged outcome keeps the review stage but says the close is pending", () => {
+    expect(stageChip(info({ outcome: "success" }))).toBe("in review");
+    expect(stageChip(info())).toBe("in review");
+    expect(stageChip(info({ outcome: "merged, CI green" }))).toBe("merged — close pending");
+  });
+
+  test("agents cards carry the stage, the PR link, and the run attribution", () => {
+    const m = fullMeasurement();
+    m.runInfo = ok({
+      "tl-a": ok(info({ outcome: "success", note: "draft PR reviewed" })),
+    });
+    const cards = composeWip(m, {}).sections[0];
+    if (cards?.kind !== "cards") throw new Error("no cards");
+    const flat = JSON.stringify(cards.items[0]);
+    expect(flat).toContain("in review");
+    expect(flat).toContain("bead-work run");
+    expect(flat).toContain("demo#64");
+    expect(flat).toContain("https://github.com/acme/demo/pull/64");
+    expect(flat).toContain("success — draft PR reviewed");
+    expect(cards.items[0]?.action?.type).toBe("select-bead");
+  });
+
+  test("the agents title counts runs honestly instead of repeating bd's human", () => {
+    const m = fullMeasurement();
+    setWip(m, [
+      { id: "tl-r", title: "Run-held", status: "in_progress", priority: 1, assignee: "dan" },
+      { id: "tl-w", title: "Hand-held", status: "in_progress", priority: 1, assignee: "dan" },
+    ]);
+    m.runInfo = ok({
+      "tl-r": ok({ prUrl: "https://github.com/acme/demo/pull/5" }),
+      "tl-w": ok(undefined),
+    });
+    const cards = composeWip(m, {}).sections[0];
+    if (cards?.kind !== "cards") throw new Error("no cards");
+    // bd says "dan" holds both; the note proves a run holds one. The hoist
+    // would repeat the misattribution, so the title counts actors instead.
+    expect(cards.title).toBe("1 bead-work run · 1 other claim");
+    expect(JSON.stringify(cards.items[0])).not.toContain("dan");
+    expect(JSON.stringify(cards.items[1])).toContain("dan");
+  });
+
+  test("an all-runs panel drops the human name entirely", () => {
+    const m = fullMeasurement();
+    m.runInfo = ok({ "tl-a": ok({ prUrl: "https://github.com/acme/demo/pull/5" }) });
+    const cards = composeWip(m, {}).sections[0];
+    if (cards?.kind !== "cards") throw new Error("no cards");
+    expect(cards.title).toBe("1 bead-work run");
+    expect(JSON.stringify(cards)).not.toContain("dan");
+  });
+
+  test("one failed run envelope alarms one card, not the panel", () => {
+    const m = fullMeasurement();
+    setWip(m, [
+      { id: "tl-r", title: "Fine", status: "in_progress", priority: 1 },
+      { id: "tl-x", title: "Unread", status: "in_progress", priority: 1 },
+    ]);
+    m.runInfo = ok({
+      "tl-r": ok(undefined),
+      "tl-x": { ok: false, error: "bd show tl-x: exit 1" },
+    });
+    const cards = composeWip(m, {}).sections[0];
+    if (cards?.kind !== "cards") throw new Error("no cards");
+    expect(JSON.stringify(cards.items[0])).not.toContain("UNMEASURED");
+    expect(JSON.stringify(cards.items[1])).toContain("UNMEASURED — run note");
+  });
+
+  test("prLabel compacts a GitHub PR url and passes anything else through", () => {
+    expect(prLabel("https://github.com/acme/demo/pull/64")).toBe("demo#64");
+    expect(prLabel("https://example.com/mr/7")).toBe("example.com/mr/7");
+  });
+});
+
+describe("dams", () => {
+  const row = (over: Partial<BdIssue>): BdIssue => ({
+    id: "x",
+    title: "t",
+    status: "open",
+    priority: 1,
+    ...over,
+  });
+
+  test("structural edges never become dams", () => {
+    const blocked = [
+      // The child names its epic parent AND a real blocker.
+      row({ id: "tl-f.1", blocked_by: ["tl-f", "tl-x"], parent: "tl-f" }),
+      // An epic standing as a blocker (epics only block epics) drops too.
+      row({ id: "tl-q", blocked_by: ["tl-epic"] }),
+      // A closed blocker is defensive: bd should not report one.
+      row({ id: "tl-z", blocked_by: ["tl-gone"] }),
+    ];
+    const index = new Map<string, BdIssue>([
+      ["tl-f.1", row({ id: "tl-f.1", parent: "tl-f" })],
+      ["tl-f", row({ id: "tl-f", issue_type: "epic" })],
+      ["tl-epic", row({ id: "tl-epic", issue_type: "epic" })],
+      ["tl-x", row({ id: "tl-x" })],
+      ["tl-gone", row({ id: "tl-gone", status: "closed" })],
+    ]);
+    const dams = damGroups(blocked, index, new Set());
+    expect(dams.map((d) => d.blockerId)).toEqual(["tl-x"]);
+  });
+
+  test("epicGate names the dominant outside blocker; sibling edges are ordering", () => {
+    const edges = (pairs: Record<string, string[]>) =>
+      new Map<string, readonly string[]>(Object.entries(pairs));
+    expect(
+      epicGate(["c1", "c2", "c3"], edges({ c1: ["dam"], c2: ["c1"], c3: ["dam"] }), new Set()),
+    ).toEqual({ blockerId: "dam", count: 2, all: true });
+    // Two different holders → a count, not a flat "gated on" claim.
+    expect(epicGate(["c1", "c2"], edges({ c1: ["dam"], c2: ["other"] }), new Set())?.all).toBe(
+      false,
+    );
+    // In-flight work inside the epic disqualifies "gated" — something moves.
+    expect(epicGate(["c1", "c2"], edges({ c1: ["dam"] }), new Set(["c2"]))).toEqual({
+      blockerId: "dam",
+      count: 1,
+      all: false,
+    });
+    // Only sibling edges → internal ordering, no gate to report.
+    expect(epicGate(["c1", "c2"], edges({ c2: ["c1"] }), new Set())).toBeUndefined();
+  });
+
+  test("dams rank by held count, then declared leverage", () => {
+    const blocked = [
+      row({ id: "b1", blocked_by: ["big"] }),
+      row({ id: "b2", blocked_by: ["big"] }),
+      row({ id: "b3", blocked_by: ["lever"] }),
+      row({ id: "b4", blocked_by: ["plain"] }),
+    ];
+    const index = new Map<string, BdIssue>([
+      ["big", row({ id: "big" })],
+      ["lever", row({ id: "lever", dependent_count: 9 })],
+      ["plain", row({ id: "plain" })],
+    ]);
+    const dams = damGroups(blocked, index, new Set(["lever"]));
+    expect(dams.map((d) => d.blockerId)).toEqual(["big", "lever", "plain"]);
+    expect(dams[0]?.held.map((b) => b.id)).toEqual(["b1", "b2"]);
+    expect(dams[1]?.startable).toBe(true);
+    expect(dams[2]?.startable).toBe(false);
   });
 });

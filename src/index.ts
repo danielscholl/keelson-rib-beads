@@ -17,10 +17,11 @@ import { z } from "zod";
 import { BdClient, type BeadsProject, discoverBeadsProjects } from "./bd";
 import {
   composeAttention,
-  composeClosed,
   composeInspect,
+  composeMomentum,
   composeNoTrackerPulse,
   composePlan,
+  composePortfolio,
   composePulse,
   composeRecommend,
   composeWip,
@@ -32,9 +33,10 @@ import {
   ALL_KEYS,
   ATTENTION_KEY,
   BEADS_SURFACE_ID,
-  CLOSED_KEY,
   INSPECT_KEY,
+  MOMENTUM_KEY,
   PLAN_KEY,
+  PORTFOLIO_KEY,
   PULSE_KEY,
   RECOMMEND_KEY,
   WIP_KEY,
@@ -138,19 +140,19 @@ const rib: Rib = {
     }),
   ),
 
-  // Stable spatial roles: pulse header → recommendation full-width → the
-  // in-flight/attention pair → the selected-bead inspector as a full-width
-  // band → the Plan grid → momentum, collapsed by default. Surface columns
-  // split evenly and cannot stick, so the inspector never sits beside the
-  // (much taller) Plan — selection opens it in the drawer instead. The rib
-  // drives refresh in-process (a cadence without a workflow binding is
-  // inert), so regions declare none.
+  // Stable spatial roles in the OPERATOR's order — what's moving and what
+  // needs me first, then the board's own pick, then how far along each
+  // initiative is and what happened lately, then the inspector band and the
+  // Plan grid. Surface columns split evenly and cannot stick, so the
+  // inspector never sits beside the (much taller) Plan — selection opens it
+  // in the drawer instead. The rib drives refresh in-process (a cadence
+  // without a workflow binding is inert), so regions declare none.
   surfaces: [
     {
       id: BEADS_SURFACE_ID,
       title: "Beads",
       heading: "Beads backlog",
-      subtitle: "Measured with bd — decide first, then browse the inventory.",
+      subtitle: "Measured with bd — what's moving, what needs you, then the inventory.",
       projectScoped: true,
       layout: {
         header: {
@@ -163,6 +165,22 @@ const rib: Rib = {
           {
             columns: [
               {
+                key: WIP_KEY,
+                title: "Agents at work",
+                glyph: { char: "◐", tone: "ok" },
+                live: true,
+              },
+              {
+                key: ATTENTION_KEY,
+                title: "Needs a human",
+                glyph: { char: "●", tone: "error" },
+                live: true,
+              },
+            ],
+          },
+          {
+            columns: [
+              {
                 key: RECOMMEND_KEY,
                 title: "Recommended next",
                 glyph: { char: "→", tone: "accent" },
@@ -172,11 +190,16 @@ const rib: Rib = {
           },
           {
             columns: [
-              { key: WIP_KEY, title: "In progress", glyph: { char: "◐", tone: "ok" }, live: true },
               {
-                key: ATTENTION_KEY,
-                title: "Needs attention",
-                glyph: { char: "●", tone: "error" },
+                key: PORTFOLIO_KEY,
+                title: "Portfolio",
+                glyph: { char: "▰", tone: "brand" },
+                live: true,
+              },
+              {
+                key: MOMENTUM_KEY,
+                title: "Momentum",
+                glyph: { char: "✓", tone: "ok" },
                 live: true,
               },
             ],
@@ -203,18 +226,6 @@ const rib: Rib = {
               },
             ],
           },
-          {
-            columns: [
-              {
-                key: CLOSED_KEY,
-                title: "Finished in the last 7 days",
-                glyph: { char: "✓", tone: "ok" },
-                live: true,
-                collapsible: true,
-                collapsed: true,
-              },
-            ],
-          },
         ],
       },
     },
@@ -236,16 +247,19 @@ const rib: Rib = {
         "## The surface",
         "",
         "Project-scoped (the host's project picker chooses the backlog) and arranged",
-        "as stable panels: a current-state pulse; ONE recommended-next bead (leverage",
-        "first, priority second) with its unlock chain named and Inspect / Start",
-        "actions; an in-progress vs needs-attention pair (blocked ranked by how much",
-        "waits on each, stale claims alongside); a Selected-bead inspector band that",
-        "renders any clicked card's description, acceptance criteria, and dependency",
-        "links (a click also opens it in the canvas drawer, so the detail is in view",
-        "no matter where on the page the click landed); the Plan — the canonical",
-        "grouped grid of everything not finished, epics carrying n/m progress",
-        "meters; and a collapsed finished-this-week",
-        "strip. Color means state, never priority. Every panel is fail-closed: a",
+        "in the operator's order: a current-state pulse crowned by the flow strip",
+        "(waiting → ready → in progress → in review → done 7d, the review stage",
+        "derived from bead-work run notes); an Agents-at-work vs Needs-a-human pair",
+        "(runs and their PRs on the cards; reviews to merge, dams — blockers grouped",
+        "by what they hold — hand-paused work, stale claims, and epic closeouts in",
+        "the queue); ONE recommended-next bead (leverage first, priority second) with",
+        "its unlock chain named and Inspect / Start actions; a Portfolio of per-epic",
+        "progress meters beside a Momentum feed (closes, touches, new beads); a",
+        "Selected-bead inspector band that renders any clicked card's description,",
+        "acceptance criteria, and dependency links (a click also opens it in the",
+        "canvas drawer, so the detail is in view no matter where on the page the",
+        "click landed); and the Plan — the canonical grouped grid of everything not",
+        "finished. Color means state, never priority. Every panel is fail-closed: a",
         "failed bd query renders UNMEASURED, never empty-but-healthy. Panels refresh",
         "on a 5-minute cadence; any beads_* mutation recomposes them immediately, and",
         "beads_board_refresh does so on demand.",
@@ -304,7 +318,11 @@ const rib: Rib = {
         PLAN_KEY,
         makePanelComposer((m) => composePlan(m, { selectedId: selectedBeadId })),
       );
-      register(CLOSED_KEY, makePanelComposer(composeClosed));
+      register(
+        PORTFOLIO_KEY,
+        makePanelComposer((m) => composePortfolio(m, { selectedId: selectedBeadId })),
+      );
+      register(MOMENTUM_KEY, makePanelComposer(composeMomentum));
       register(INSPECT_KEY, async () => {
         const project = scopedProject();
         if (!project || !bdClient) return composeInspect(undefined, []);
@@ -369,7 +387,7 @@ const rib: Rib = {
         // just clicked, not the previous frame. Selection is cheap — the
         // measurement cache holds, only bd show runs.
         await snapshots?.recompose(INSPECT_KEY).catch(() => undefined);
-        recomposeKeys([PLAN_KEY, RECOMMEND_KEY, WIP_KEY, ATTENTION_KEY]);
+        recomposeKeys([PLAN_KEY, RECOMMEND_KEY, WIP_KEY, ATTENTION_KEY, PORTFOLIO_KEY]);
         // Open the inspector in the canvas drawer: a click deep in the Plan
         // would otherwise update a panel far off-screen — visible feedback
         // must not depend on scroll position. The Selected-bead panel keeps
