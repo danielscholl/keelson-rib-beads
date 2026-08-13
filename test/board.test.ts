@@ -263,7 +263,7 @@ describe("panel composers", () => {
     const pulse = composePulse(fullMeasurement());
     expect(() => validBoard(pulse)).not.toThrow();
     expect(pulse.header?.chip).toContain("6 open");
-    const stats = pulse.sections[0];
+    const stats = pulse.sections.find((s) => s.kind === "stats");
     if (stats?.kind !== "stats") throw new Error("no stats");
     expect(stats.items.map((i) => i.label)).toEqual([
       // "Startable", not "Ready now": the measured population already excludes
@@ -302,7 +302,7 @@ describe("panel composers", () => {
     // Same question, two sources with different failure modes — read the one
     // every other panel reads.
     m.summary = ok({ ...summaryOf(m), in_progress_issues: 9 });
-    const stats = composePulse(m).sections[0];
+    const stats = composePulse(m).sections.find((s) => s.kind === "stats");
     if (stats?.kind !== "stats") throw new Error("no stats");
     expect(stats.items[1]?.value).toBe(1);
   });
@@ -991,25 +991,36 @@ describe("panel composers", () => {
 });
 
 describe("the flow strip", () => {
-  test("the pulse header carries disjoint stage segments", () => {
+  // The strip is a `segments` SECTION leading the board (the SPA renders
+  // sections as the full-width proportional strip; header segments would
+  // render legend-only in the region head).
+  function stripOf(pulse: ReturnType<typeof composePulse>) {
+    const section = pulse.sections[0];
+    return section?.kind === "segments" ? section.items : undefined;
+  }
+
+  test("the pulse leads with disjoint stage segments", () => {
     const pulse = composePulse(fullMeasurement());
     expect(() => validBoard(pulse)).not.toThrow();
+    expect(pulse.header?.segments).toBeUndefined();
     // Fixture: 3 blocked (none claimed), 2 ready, 1 in progress with no run
     // note, 0 in review, 1 closed this week. Disjoint by construction — the
     // claimed-and-blocked overlap folds into In progress for the strip only.
-    expect(pulse.header?.segments).toEqual([
-      { label: "Waiting", n: 3, tone: "neutral" },
-      { label: "Ready", n: 2, tone: "accent" },
-      { label: "In progress", n: 1, tone: "ok" },
-      { label: "In review", n: 0, tone: "info" },
-      { label: "Done 7d", n: 1, tone: "brand" },
+    // Tones are the ordinal ramp: the stages are one progression, and the
+    // SPA renders a proportional strip whose fills darken along the flow.
+    expect(stripOf(pulse)).toEqual([
+      { label: "Waiting", n: 3, tone: "ramp-1" },
+      { label: "Ready", n: 2, tone: "ramp-2" },
+      { label: "In progress", n: 1, tone: "ramp-3" },
+      { label: "In review", n: 0, tone: "ramp-4" },
+      { label: "Done 7d", n: 1, tone: "ramp-5" },
     ]);
   });
 
   test("a claimed-and-blocked bead counts once, under in progress", () => {
     const m = fullMeasurement();
     setWip(m, [{ id: "tl-d", title: "Dep blocked", status: "in_progress", priority: 1 }]);
-    const segments = composePulse(m).header?.segments;
+    const segments = stripOf(composePulse(m));
     expect(segments?.find((s) => s.label === "Waiting")?.n).toBe(2);
     expect(segments?.find((s) => s.label === "In progress")?.n).toBe(1);
   });
@@ -1017,7 +1028,7 @@ describe("the flow strip", () => {
   test("a run note moves a bead from in progress to in review", () => {
     const m = fullMeasurement();
     m.runInfo = ok({ "tl-a": ok({ prUrl: "https://github.com/acme/demo/pull/9" }) });
-    const segments = composePulse(m).header?.segments;
+    const segments = stripOf(composePulse(m));
     expect(segments?.find((s) => s.label === "In progress")?.n).toBe(0);
     expect(segments?.find((s) => s.label === "In review")?.n).toBe(1);
   });
@@ -1026,7 +1037,7 @@ describe("the flow strip", () => {
     const m = fullMeasurement();
     m.runInfo = { ok: false, error: "bd show tl-a: exit 1" };
     const pulse = composePulse(m);
-    expect(pulse.header?.segments).toBeUndefined();
+    expect(stripOf(pulse)).toBeUndefined();
     const flat = JSON.stringify(pulse);
     expect(flat).toContain("UNMEASURED");
     expect(flat).toContain("flow strip");

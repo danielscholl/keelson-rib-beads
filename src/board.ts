@@ -508,24 +508,33 @@ export function composePulse(m: ProjectMeasurement): Board {
     ...(split.ok ? [] : [`stage split: ${split.error}`]),
     ...(m.recentlyClosed.ok ? [] : [`closes: ${m.recentlyClosed.error}`]),
   ];
-  let segments: NonNullable<Board["header"]>["segments"];
+  let segments: Extract<BoardSection, { kind: "segments" }>["items"] | undefined;
   if (m.blocked.ok && m.ready.ok && split.ok && m.recentlyClosed.ok) {
     // split.ok implies inProgress.ok, so the subtraction set is measured.
     const wipIds = new Set(m.inProgress.ok ? m.inProgress.data.map((i) => i.id) : []);
+    // The stages are one ordered flow, so they wear the ordinal ramp
+    // (light→dark tracks waiting→done) rather than five unrelated semantic
+    // hues — "waiting" must not borrow the tone that elsewhere means
+    // "nothing to say", nor "done" the brand hue.
     segments = [
       {
         label: "Waiting",
         n: m.blocked.data.filter((b) => !wipIds.has(b.id)).length,
-        tone: "neutral",
+        tone: "ramp-1",
       },
-      { label: "Ready", n: m.ready.data.length, tone: "accent" },
-      { label: "In progress", n: split.data.working.length, tone: "ok" },
-      { label: "In review", n: split.data.inReview.length, tone: "info" },
-      { label: "Done 7d", n: m.recentlyClosed.data.length, tone: "brand" },
+      { label: "Ready", n: m.ready.data.length, tone: "ramp-2" },
+      { label: "In progress", n: split.data.working.length, tone: "ramp-3" },
+      { label: "In review", n: split.data.inReview.length, tone: "ramp-4" },
+      { label: "Done 7d", n: m.recentlyClosed.data.length, tone: "ramp-5" },
     ];
   }
   return board(
     [
+      // The strip leads, as the mock drew it: a `segments` SECTION, not
+      // `header.segments` — the surface renders header segments legend-only
+      // in the region head, while a section gets the full-width proportional
+      // strip (with its own count legend) the stages deserve.
+      ...(segments ? ([{ kind: "segments", items: segments }] satisfies BoardSection[]) : []),
       {
         kind: "stats",
         // No `sub` line anywhere: the second line cost every tile its height
@@ -575,7 +584,6 @@ export function composePulse(m: ProjectMeasurement): Board {
     {
       status: { label: m.project.name, tone: "ok" },
       chip: `${s.open_issues} open · measured ${m.asOf.slice(0, 16).replace("T", " ")}Z`,
-      ...(segments ? { segments } : {}),
     },
   );
 }
