@@ -522,12 +522,31 @@ export function composePulse(m: ProjectMeasurement): Board {
     ...(split.ok ? [] : [`stage split: ${split.error}`]),
     ...(m.recentlyClosed.ok ? [] : [`closes: ${m.recentlyClosed.error}`]),
   ];
+  // The caption names the strip's population and its exclusions, because the
+  // header chip counts a DIFFERENT population (bd's open count includes the
+  // epics the strip excludes as structure) and a numerate reader's first move
+  // is to reconcile the two. Only a fully measured strip claims a total; the
+  // exclusion clauses degrade independently, Plan-style, when their source
+  // is unmeasured.
+  const allMeasured = segments.every((s) => s.n !== null);
+  const flowTotal = segments.reduce((a, s) => a + (s.n ?? 0), 0);
+  const epicCount = m.epics.ok ? m.epics.data.length : 0;
+  const deferredCount = m.backlog.ok
+    ? m.backlog.data.filter((i) => i.status === "deferred").length
+    : 0;
+  const stripTitle = allMeasured
+    ? [
+        `Flow — ${flowTotal} work item${flowTotal === 1 ? "" : "s"}`,
+        ...(epicCount > 0 ? [`${epicCount} epic${epicCount === 1 ? "" : "s"} excluded`] : []),
+        ...(deferredCount > 0 ? [`${deferredCount} deferred not shown`] : []),
+      ].join(" · ")
+    : undefined;
   return board(
     [
       // A `segments` SECTION, not `header.segments`: the surface renders
       // header segments legend-only in the region head, while a section gets
       // the full-width proportional strip (with its own count legend).
-      { kind: "segments", items: segments },
+      { kind: "segments", ...(stripTitle ? { title: stripTitle } : {}), items: segments },
       // The hatch says WHICH stage is unmeasured; this line says WHY.
       ...(flowFailures.length === 0
         ? []
@@ -596,10 +615,30 @@ export function composeRecommend(m: ProjectMeasurement, ctx: PanelContext): Boar
   ];
   // The chain itself, hop by hop — one arrow per level, names inside a level
   // comma-joined. This is what makes the leverage claim auditable at a glance
-  // instead of a number you have to trust.
+  // instead of a number you have to trust. At a glance is the constraint: a
+  // deep graph turns the full BFS into three lines of ids, so past a handful
+  // the first hop stays verbatim (it is what "releases N now" audits) and
+  // the deeper levels compress to a count.
   if (levels.length > 0) {
-    const hops = levels.map((lvl) => lvl.map((b) => b.id).join(", "));
-    fields.push({ value: [pick.id, ...hops].join(" → ") });
+    const CHAIN_ID_CAP = 8;
+    const total = levels.reduce((a, lvl) => a + lvl.length, 0);
+    if (total <= CHAIN_ID_CAP) {
+      const hops = levels.map((lvl) => lvl.map((b) => b.id).join(", "));
+      fields.push({ value: [pick.id, ...hops].join(" → ") });
+    } else {
+      const first = levels[0] ?? [];
+      const firstShown = first.slice(0, CHAIN_ID_CAP);
+      const firstText =
+        firstShown.map((b) => b.id).join(", ") +
+        (first.length > firstShown.length ? ` +${first.length - firstShown.length} more` : "");
+      const deeper = total - first.length;
+      const deeperLevels = levels.length - 1;
+      const tail =
+        deeper > 0
+          ? ` → … ${deeper} more across ${deeperLevels} level${deeperLevels === 1 ? "" : "s"}`
+          : "";
+      fields.push({ value: `${pick.id} → ${firstText}${tail}` });
+    }
   }
   return board([
     {
@@ -814,13 +853,21 @@ export function composeAttention(m: ProjectMeasurement, ctx: PanelContext): Boar
     });
   }
 
-  // (b) Dams — ranked by held count, the number the trailing line shows.
+  // (b) Dams — ranked by held count. One ROW per dam, not a card: this
+  // section's question is "which dam is biggest", and a per-row meter makes
+  // that comparison pre-attentive where four lines of card prose made it a
+  // reading exercise. The meter is {value, total} against the LARGEST dam
+  // shown (dams sort held-desc, so index 0 carries the max) — a shared total
+  // is what keeps fill lengths comparable across rows; per-row segments
+  // would normalize every dam to full width and lose exactly that. The held
+  // ids move to the inspector, one click away — the row keeps the counts.
   const dams = damGroups(blocked, index, readyIds);
   if (dams.length > 0) {
+    const maxHeld = Math.max(1, dams[0]?.held.length ?? 1);
     sections.push({
-      kind: "cards",
+      kind: "rows",
       title: dams.length > DAMS_CAP ? `Dams — top ${DAMS_CAP} of ${dams.length}` : "Dams",
-      items: dams.slice(0, DAMS_CAP).map((d): CardItem => {
+      items: dams.slice(0, DAMS_CAP).map((d) => {
         const dot = d.blocker ? lifecycleTone(lifecycleOf(d.blocker), d.startable) : undefined;
         const rank = [
           ...(d.blocker ? [`P${d.blocker.priority}`] : []),
@@ -829,15 +876,13 @@ export function composeAttention(m: ProjectMeasurement, ctx: PanelContext): Boar
           ...(d.startable ? ["startable now"] : []),
         ];
         return {
-          title: d.blocker ? clampTitle(d.blocker.title, BAND_TITLE_BUDGET) : d.blockerId,
-          pill: { label: d.blockerId, tone: "neutral" as const },
-          ...(dot ? { dot } : {}),
+          ...(dot ? { glyph: dot } : {}),
+          chip: { label: d.blockerId, tone: "neutral" as const },
+          text: d.blocker ? clampTitle(d.blocker.title, BAND_TITLE_BUDGET) : d.blockerId,
+          bar: { value: d.held.length, total: maxHeld },
+          trailing: rank.join(" · "),
+          action: { type: "select-bead" as const, payload: { id: d.blockerId } },
           selected: ctx.selectedId === d.blockerId,
-          action: { type: "select-bead", payload: { id: d.blockerId } },
-          fields: [
-            { value: rank.join(" · ") },
-            { value: `held: ${d.held.map((b) => b.id).join(", ")}`.slice(0, 140) },
-          ],
         };
       }),
     });

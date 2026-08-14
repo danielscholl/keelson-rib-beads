@@ -301,6 +301,45 @@ describe("panel composers", () => {
     expect(JSON.stringify(pulse.sections)).not.toContain("4711");
   });
 
+  test("the strip caption names its population and the exclusions", () => {
+    const pulse = composePulse(fullMeasurement());
+    const strip = pulse.sections[0];
+    if (strip?.kind !== "segments") throw new Error("no strip");
+    // 3+2+1+0+1 across the five stages; one epic (structure, not work) and
+    // one deferred bead sit outside the strip — the caption reconciles the
+    // strip against the header's differently-scoped open count.
+    expect(strip.title).toBe("Flow — 7 work items · 1 epic excluded · 1 deferred not shown");
+  });
+
+  test("a partially measured strip claims no total", () => {
+    const m = fullMeasurement();
+    m.runInfo = { ok: false, error: "bd show tl-a: exit 1" };
+    const strip = composePulse(m).sections[0];
+    if (strip?.kind !== "segments") throw new Error("no strip");
+    expect(strip.title).toBeUndefined();
+  });
+
+  test("a deep unlock chain compresses past the first hop", () => {
+    const m = fullMeasurement();
+    m.ready = ok([{ id: "tl-b", title: "Ready one", status: "open", priority: 0 }]);
+    m.blocked = ok([
+      { id: "tl-c1", title: "First hop A", status: "open", priority: 1, blocked_by: ["tl-b"] },
+      { id: "tl-c2", title: "First hop B", status: "open", priority: 1, blocked_by: ["tl-b"] },
+      ...Array.from({ length: 10 }, (_, i) => ({
+        id: `tl-d${i}`,
+        title: `Deep ${i}`,
+        status: "open",
+        priority: 2,
+        blocked_by: ["tl-c1"],
+      })),
+    ]);
+    const flat = JSON.stringify(composeRecommend(m, {}));
+    // First hop verbatim (it audits "releases 2 now"); the ten deeper ids
+    // become a count instead of three lines of wallpaper.
+    expect(flat).toContain("tl-b → tl-c1, tl-c2 → … 10 more across 1 level");
+    expect(flat).not.toContain("tl-d7");
+  });
+
   test("the recommendation explains its chain and carries both actions", () => {
     const rec = composeRecommend(fullMeasurement(), {});
     expect(() => validBoard(rec)).not.toThrow();
@@ -398,21 +437,24 @@ describe("panel composers", () => {
     expect(JSON.stringify(cards.items[1])).toContain("sam");
   });
 
-  test("attention aggregates blockers into dams instead of listing held beads", () => {
+  test("attention aggregates blockers into dam rows with comparable meters", () => {
     const att = composeAttention(fullMeasurement(), {});
     expect(() => validBoard(att)).not.toThrow();
-    const dams = att.sections.find((s) => s.kind === "cards" && s.title?.startsWith("Dams"));
-    if (dams?.kind !== "cards") throw new Error("no dams");
+    const dams = att.sections.find((s) => s.kind === "rows" && s.title?.startsWith("Dams"));
+    if (dams?.kind !== "rows") throw new Error("no dams");
     // tl-b holds tl-d directly and releases tl-h a hop later; tl-d holds tl-h.
     // Held count ranks, leverage (tl-b declares 3 downstream) breaks the tie
     // it doesn't have to here — and the numbers on screen ARE the rank keys.
-    expect(dams.items[0]?.pill?.label).toBe("tl-b");
+    expect(dams.items[0]?.chip?.label).toBe("tl-b");
     const first = JSON.stringify(dams.items[0]);
     expect(first).toContain("holds 1 now");
     expect(first).toContain("2 transitive");
     expect(first).toContain("startable now");
-    expect(first).toContain("held: tl-d");
-    expect(dams.items[1]?.pill?.label).toBe("tl-d");
+    // The meter shares one total (the largest dam) so fill lengths compare
+    // across rows; the held ids live in the inspector now, not the row.
+    expect(dams.items[0]?.bar).toEqual({ value: 1, total: 1 });
+    expect(first).not.toContain("held:");
+    expect(dams.items[1]?.chip?.label).toBe("tl-d");
     // The dam opens the inspector — finishing it is the point.
     expect(dams.items[0]?.action?.type).toBe("select-bead");
   });
