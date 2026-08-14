@@ -94,6 +94,24 @@ function fullMeasurement(): ProjectMeasurement {
         closed_at: "2026-08-08T10:00:00Z",
       },
     ]),
+    // The chart window: the 7-day close plus one only the fortnight sees.
+    closedFortnight: ok([
+      {
+        id: "tl-g",
+        title: "Done",
+        status: "closed",
+        priority: 2,
+        closed_at: "2026-08-08T10:00:00Z",
+      },
+      {
+        id: "tl-old",
+        title: "Done before the week",
+        status: "closed",
+        priority: 2,
+        created_at: "2026-07-20T09:00:00Z",
+        closed_at: "2026-07-30T10:00:00Z",
+      },
+    ]),
     stale: ok([]),
     backlog: ok([
       {
@@ -259,52 +277,28 @@ describe("lifecycle and the decision rail", () => {
 });
 
 describe("panel composers", () => {
-  test("pulse carries the four current-state tiles and open-count context", () => {
+  test("pulse is the strip alone — the stat tiles are retired", () => {
     const pulse = composePulse(fullMeasurement());
     expect(() => validBoard(pulse)).not.toThrow();
     expect(pulse.header?.chip).toContain("6 open");
-    const stats = pulse.sections.find((s) => s.kind === "stats");
-    if (stats?.kind !== "stats") throw new Error("no stats");
-    expect(stats.items.map((i) => i.label)).toEqual([
-      // "Startable", not "Ready now": the measured population already excludes
-      // epics and subtracts claimed work, so the label names what you can pick
-      // up. "Waiting", not "Blocked": it counts the blocked union, which
-      // overlaps In progress because blocking is a condition, not a state.
-      "Startable",
-      "In progress",
-      "Waiting on deps",
-      // No stale tile: it is an exception, not a standing measure, so it lives
-      // in Needs attention — and alarms there when unmeasured.
-      "Closed this week",
-    ]);
-    // Every tile is one line — no `sub` anywhere — which is what compresses
-    // the strip.
-    expect(stats.items.every((i) => i.sub === undefined)).toBe(true);
+    // The tiles each restated a strip population; with per-segment
+    // unmeasured (n: null) the strip carries its own fail-closed reading and
+    // nothing repeats the fact.
+    expect(pulse.sections.some((s) => s.kind === "stats")).toBe(false);
   });
 
-  test("a failed tile alarms instead of borrowing bd's differently-defined count", () => {
+  test("the strip counts measured populations, never bd's summary fields", () => {
     const m = fullMeasurement();
     // bd's own summary counts a different population: ready_issues includes
     // epics and does not subtract in-progress. Substituting it here would
     // answer a different question than the label asks.
-    m.summary = ok({ ...summaryOf(m), ready_issues: 4711 });
-    m.ready = { ok: false, error: "bd ready: exit 1" };
-    const stats = composePulse(m).sections[0];
-    if (stats?.kind !== "stats") throw new Error("no stats");
-    const startable = stats.items[0];
-    expect(startable?.value).toBe("?");
-    expect(startable?.tone).toBe("error");
-    expect(JSON.stringify(stats)).not.toContain("4711");
-  });
-
-  test("the in-progress tile counts the measured list, not the summary field", () => {
-    const m = fullMeasurement();
-    // Same question, two sources with different failure modes — read the one
-    // every other panel reads.
-    m.summary = ok({ ...summaryOf(m), in_progress_issues: 9 });
-    const stats = composePulse(m).sections.find((s) => s.kind === "stats");
-    if (stats?.kind !== "stats") throw new Error("no stats");
-    expect(stats.items[1]?.value).toBe(1);
+    m.summary = ok({ ...summaryOf(m), ready_issues: 4711, in_progress_issues: 9 });
+    const pulse = composePulse(m);
+    const strip = pulse.sections[0];
+    if (strip?.kind !== "segments") throw new Error("no strip");
+    expect(strip.items.find((s) => s.label === "Ready")?.n).toBe(2);
+    expect(strip.items.find((s) => s.label === "In progress")?.n).toBe(1);
+    expect(JSON.stringify(pulse.sections)).not.toContain("4711");
   });
 
   test("the recommendation explains its chain and carries both actions", () => {
@@ -543,7 +537,7 @@ describe("panel composers", () => {
     expect(legend?.kind).toBe("rows");
   });
 
-  test("standalone rows disclose their body inline, since a row cannot be selected", () => {
+  test("standalone rows select into the inspector like any card", () => {
     const m = fullMeasurement();
     m.backlog = ok([
       {
@@ -556,12 +550,16 @@ describe("panel composers", () => {
       },
       { id: "tl-bare", title: "Undocumented bead", status: "open", priority: 1 },
     ]);
-    const [rows] = composePlan(m, {}).sections;
+    const [rows] = composePlan(m, { selectedId: "tl-doc" }).sections;
     if (rows?.kind !== "rows") throw new Error("no rows");
     const byId = (id: string) => rows.items.find((i) => i.chip?.label === id);
-    expect(byId("tl-doc")?.detail).toBe("Why it exists.\n\nHow we know it is done.");
-    // Nothing to disclose means no empty disclosure affordance.
-    expect(byId("tl-bare")?.detail).toBeUndefined();
+    // Rows carry the cards click contract (keelson 0.102): the tail selects
+    // instead of disclosing inline — action and detail are mutually
+    // exclusive, and the inspector is strictly richer than the old detail.
+    expect(byId("tl-doc")?.action).toEqual({ type: "select-bead", payload: { id: "tl-doc" } });
+    expect(byId("tl-doc")?.detail).toBeUndefined();
+    expect(byId("tl-doc")?.selected).toBe(true);
+    expect(byId("tl-bare")?.selected).toBe(false);
   });
 
   const long =
@@ -819,7 +817,17 @@ describe("panel composers", () => {
     if (cards?.kind !== "cards") throw new Error("no cards");
     const epic = cards.items[0];
     expect(epic?.pill?.label).toBe("tl-f");
-    expect(epic?.bar).toEqual({ value: 4, total: 4 });
+    // The meter is the flow strip's vocabulary at epic scale — same
+    // stage→tone mapping, mirrored order (done anchors left, darkest).
+    expect(epic?.bar).toEqual({
+      segments: [
+        { label: "done", n: 4, tone: "ramp-5" },
+        { label: "in review", n: 0, tone: "ramp-4" },
+        { label: "in progress", n: 1, tone: "ramp-3" },
+        { label: "ready", n: 0, tone: "ramp-2" },
+        { label: "waiting", n: 0, tone: "ramp-1" },
+      ],
+    });
     // warn, not ok: an all-closed epic is an ask on a human's time.
     expect(epic?.dot).toBe("warn");
     expect(epic?.action?.type).toBe("select-bead");
@@ -870,6 +878,17 @@ describe("panel composers", () => {
     const flat = JSON.stringify(composePortfolio(m, {}));
     expect(flat).toContain("4/4 done");
     expect(flat).not.toContain("in progress");
+  });
+
+  test("an unmeasured stage set degrades the meter to the plain fill", () => {
+    const m = fullMeasurement();
+    m.epicChildren = ok({ "tl-f": ["tl-a"] });
+    m.runInfo = { ok: false, error: "bd show tl-a: exit 1" };
+    const cards = composePortfolio(m, {}).sections[0];
+    if (cards?.kind !== "cards") throw new Error("no cards");
+    // Stage composition needs the review split; without it the meter says
+    // done/total honestly instead of guessing stages.
+    expect(cards.items[0]?.bar).toEqual({ value: 4, total: 4 });
   });
 
   test("the portfolio fails closed and hides only on a measured empty", () => {
@@ -955,6 +974,65 @@ describe("panel composers", () => {
     expect(flat).toContain("showing 12 of");
   });
 
+  test("momentum leads with the closed-vs-created chart over the fortnight", () => {
+    const m = fullMeasurement();
+    m.backlog = ok([
+      {
+        id: "tl-new",
+        title: "Fresh bead",
+        status: "open",
+        priority: 2,
+        created_at: "2026-08-09T09:00:00Z",
+      },
+      // Epics are structure, not momentum — excluded from Created too.
+      {
+        id: "tl-epic",
+        title: "Fresh epic",
+        status: "open",
+        priority: 2,
+        issue_type: "epic",
+        created_at: "2026-08-09T09:00:00Z",
+      },
+    ]);
+    const momentum = composeMomentum(m);
+    const chart = momentum.sections[0];
+    if (chart?.kind !== "chart") throw new Error("no chart");
+    expect(chart.mark).toBe("bar");
+    const closed = chart.series.find((s) => s.label === "Closed");
+    const created = chart.series.find((s) => s.label === "Created");
+    if (!closed || !created) throw new Error("missing series");
+    // 14 buckets each, oldest leftmost, quiet days a real 0 — never null.
+    expect(closed.points.length).toBe(14);
+    expect(created.points.length).toBe(14);
+    // tl-g closed 08-08 10:00 against asOf 08-09 12:00 = 1 elapsed day back;
+    // tl-old closed 07-30 lands 10 back; the rest of the row is zeros.
+    expect(closed.points[12]?.y).toBe(1);
+    expect(closed.points[3]?.y).toBe(1);
+    expect(closed.points.reduce((a, p) => a + p.y, 0)).toBe(2);
+    // The fresh bead counts on today's bucket; the epic does not.
+    expect(created.points[13]?.y).toBe(1);
+    expect(created.points.reduce((a, p) => a + p.y, 0)).toBe(1);
+  });
+
+  test("an unmeasured backlog drops the Created series, not the chart", () => {
+    const m = fullMeasurement();
+    m.backlog = { ok: false, error: "bd list: exit 1" };
+    const chart = composeMomentum(m).sections[0];
+    if (chart?.kind !== "chart") throw new Error("no chart");
+    expect(chart.series.map((s) => s.label)).toEqual(["Closed"]);
+  });
+
+  test("momentum feed rows select into the inspector", () => {
+    const m = fullMeasurement();
+    const items = composeMomentum(m, { selectedId: "tl-g" }).sections.flatMap((s) =>
+      s.kind === "rows" ? s.items : [],
+    );
+    const close = items.find((i) => i.chip?.label === "tl-g");
+    expect(close?.action).toEqual({ type: "select-bead", payload: { id: "tl-g" } });
+    expect(close?.selected).toBe(true);
+    expect(items.find((i) => i.chip?.label === "tl-a")?.selected).toBe(false);
+  });
+
   test("momentum fails closed on closes and alarms partially on the rest", () => {
     const m = fullMeasurement();
     m.recentlyClosed = { ok: false, error: "bd list --status closed: exit 1" };
@@ -967,12 +1045,20 @@ describe("panel composers", () => {
     expect(flat).toContain("new beads could not be measured");
   });
 
-  test("momentum hides itself only on a measured quiet week", () => {
+  test("momentum hides itself only on a measured quiet fortnight", () => {
     const m = fullMeasurement();
     m.recentlyClosed = ok([]);
+    m.closedFortnight = ok([]);
     setWip(m, []);
     m.backlog = ok([]);
     expect(composeMomentum(m).sections.length).toBe(0);
+    // A week-quiet feed with fortnight-old closes still charts the shape.
+    const older = fullMeasurement();
+    older.recentlyClosed = ok([]);
+    setWip(older, []);
+    older.backlog = ok([]);
+    const sections = composeMomentum(older).sections;
+    expect(sections[0]?.kind).toBe("chart");
   });
 
   test("a scope without a tracker renders the map, not a fake backlog", () => {
@@ -1033,18 +1119,42 @@ describe("the flow strip", () => {
     expect(segments?.find((s) => s.label === "In review")?.n).toBe(1);
   });
 
-  test("any unmeasured input omits the strip whole and alarms in its place", () => {
+  test("an unmeasured input hatches ITS segments; the rest keep answering", () => {
     const m = fullMeasurement();
     m.runInfo = { ok: false, error: "bd show tl-a: exit 1" };
     const pulse = composePulse(m);
-    expect(stripOf(pulse)).toBeUndefined();
+    expect(() => validBoard(pulse)).not.toThrow();
+    const segments = stripOf(pulse);
+    // The stage split is unmeasured, so its two segments carry n: null —
+    // the host renders the hatched unmeasured slot, never a fabricated 0.
+    expect(segments?.find((s) => s.label === "In progress")?.n).toBeNull();
+    expect(segments?.find((s) => s.label === "In review")?.n).toBeNull();
+    // The independent populations stay measured.
+    expect(segments?.find((s) => s.label === "Ready")?.n).toBe(2);
+    expect(segments?.find((s) => s.label === "Done 7d")?.n).toBe(1);
+    // The hatch says which; the alarm line says why.
     const flat = JSON.stringify(pulse);
     expect(flat).toContain("UNMEASURED");
-    expect(flat).toContain("flow strip");
-    // The tiles stay measured — the strip alone refuses to guess.
-    const stats = pulse.sections[0];
-    if (stats?.kind !== "stats") throw new Error("no stats");
-    expect(stats.items[0]?.value).toBe(2);
+    expect(flat).toContain("bd show tl-a");
+  });
+
+  test("waiting hatches when the claimed-set subtraction is unmeasured", () => {
+    const m = fullMeasurement();
+    m.inProgress = { ok: false, error: "bd list: exit 1" };
+    const segments = stripOf(composePulse(m));
+    // blocked is measured, but Waiting = blocked ∖ claimed needs both.
+    expect(segments?.find((s) => s.label === "Waiting")?.n).toBeNull();
+    expect(segments?.find((s) => s.label === "In progress")?.n).toBeNull();
+    // The fixture's ready list is its own measurement, so it stays a number
+    // (in the real sweep measure.ts marks ready unmeasured too — that path
+    // nulls it via the same `.ok` read).
+    expect(segments?.find((s) => s.label === "Ready")?.n).toBe(2);
+    expect(segments?.find((s) => s.label === "Done 7d")?.n).toBe(1);
+  });
+
+  test("a fully measured strip carries no alarm line", () => {
+    const pulse = composePulse(fullMeasurement());
+    expect(JSON.stringify(pulse)).not.toContain("UNMEASURED");
   });
 });
 

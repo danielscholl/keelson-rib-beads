@@ -29,7 +29,7 @@ import type { CanvasBoardView, CanvasTone } from "@keelson/shared";
 import type { BdEpicRow, BdIssue, BdLinked, BeadRunInfo, Measured } from "./bd";
 import { unmeasured } from "./bd";
 import type { ProjectMeasurement } from "./measure";
-import { byPriorityThenAge, RECENT_CLOSE_DAYS, STALE_DAYS } from "./measure";
+import { byPriorityThenAge, FLOW_WINDOW_DAYS, RECENT_CLOSE_DAYS, STALE_DAYS } from "./measure";
 
 const ATTENTION_CAP = 8;
 const DAMS_CAP = 5;
@@ -470,27 +470,13 @@ function daysAgo(iso: string | undefined, now: Date): string {
   return `quiet ${days}d`;
 }
 
-// Every tile counts the population the rib measured, never bd's own summary
-// number standing in for it. The two answer different questions: on the live
-// tracker `summary.ready_issues` reads 35 (epics included, in-progress not
-// subtracted) against a measured 31, and `summary.blocked_issues` is not the
-// dep-blocked ∪ status-blocked union at all. Substituting one for the other on
-// failure would quietly answer a different question than the label asks —
-// a softer form of the empty-but-healthy board this surface exists to prevent.
-// So a failed measurement shows `?` in an alarm tone and stays honest.
-function measuredTile(
-  label: string,
-  measured: Measured<readonly unknown[]>,
-  tone: CanvasTone,
-  alarmWhenPositive = false,
-): { label: string; value: number | string; tone: CanvasTone } {
-  if (!measured.ok) return { label, value: "?", tone: "error" };
-  const n = measured.data.length;
-  return { label, value: n, tone: alarmWhenPositive && n === 0 ? "neutral" : tone };
-}
-
-// ── Pulse: the current-state numbers plus the flow strip — the stage
-// distribution the tiles alone never drew.
+// ── Pulse: the flow strip IS the pulse. The four stat tiles it once carried
+// each restated a strip population — kept only because a segment had no
+// unmeasured affordance while a tile could show `?`. Now `n: null` renders a
+// hatched slot (unmeasured is not zero), so the strip carries its own
+// fail-closed reading per stage and the tiles retire whole, per the board
+// guidance: don't repeat one fact across sections. The counts still read
+// from the strip's own legend.
 export function composePulse(m: ProjectMeasurement): Board {
   if (!m.summary.ok) return failedBoard("the KPI summary", m.summary.error);
   const s = m.summary.data;
@@ -502,70 +488,48 @@ export function composePulse(m: ProjectMeasurement): Board {
   // a population instead of double-counting one bead across two stages.
   // "Done 7d" is a window, not a stage, and its label says so.
   const split = stageSplit(m);
+  // Each stage measures independently: a failed input hatches ITS segment
+  // while the rest keep answering. "Waiting" needs the claimed-set
+  // subtraction, so it hatches when either the blocked union or the
+  // in-progress list is unmeasured.
+  //
+  // The stages are one ordered flow, so they wear the ordinal ramp
+  // (light→dark tracks waiting→done) rather than five unrelated semantic
+  // hues — "waiting" must not borrow the tone that elsewhere means
+  // "nothing to say", nor "done" the brand hue.
+  const wipIds = new Set(m.inProgress.ok ? m.inProgress.data.map((i) => i.id) : []);
+  const segments: Extract<BoardSection, { kind: "segments" }>["items"] = [
+    {
+      label: "Waiting",
+      n:
+        m.blocked.ok && m.inProgress.ok
+          ? m.blocked.data.filter((b) => !wipIds.has(b.id)).length
+          : null,
+      tone: "ramp-1",
+    },
+    { label: "Ready", n: m.ready.ok ? m.ready.data.length : null, tone: "ramp-2" },
+    { label: "In progress", n: split.ok ? split.data.working.length : null, tone: "ramp-3" },
+    { label: "In review", n: split.ok ? split.data.inReview.length : null, tone: "ramp-4" },
+    {
+      label: "Done 7d",
+      n: m.recentlyClosed.ok ? m.recentlyClosed.data.length : null,
+      tone: "ramp-5",
+    },
+  ];
   const flowFailures = [
     ...(m.blocked.ok ? [] : [`waiting: ${m.blocked.error}`]),
     ...(m.ready.ok ? [] : [`ready: ${m.ready.error}`]),
     ...(split.ok ? [] : [`stage split: ${split.error}`]),
     ...(m.recentlyClosed.ok ? [] : [`closes: ${m.recentlyClosed.error}`]),
   ];
-  let segments: Extract<BoardSection, { kind: "segments" }>["items"] | undefined;
-  if (m.blocked.ok && m.ready.ok && split.ok && m.recentlyClosed.ok) {
-    // split.ok implies inProgress.ok, so the subtraction set is measured.
-    const wipIds = new Set(m.inProgress.ok ? m.inProgress.data.map((i) => i.id) : []);
-    // The stages are one ordered flow, so they wear the ordinal ramp
-    // (light→dark tracks waiting→done) rather than five unrelated semantic
-    // hues — "waiting" must not borrow the tone that elsewhere means
-    // "nothing to say", nor "done" the brand hue.
-    segments = [
-      {
-        label: "Waiting",
-        n: m.blocked.data.filter((b) => !wipIds.has(b.id)).length,
-        tone: "ramp-1",
-      },
-      { label: "Ready", n: m.ready.data.length, tone: "ramp-2" },
-      { label: "In progress", n: split.data.working.length, tone: "ramp-3" },
-      { label: "In review", n: split.data.inReview.length, tone: "ramp-4" },
-      { label: "Done 7d", n: m.recentlyClosed.data.length, tone: "ramp-5" },
-    ];
-  }
   return board(
     [
-      // The strip leads, as the mock drew it: a `segments` SECTION, not
-      // `header.segments` — the surface renders header segments legend-only
-      // in the region head, while a section gets the full-width proportional
-      // strip (with its own count legend) the stages deserve.
-      ...(segments ? ([{ kind: "segments", items: segments }] satisfies BoardSection[]) : []),
-      {
-        kind: "stats",
-        // No `sub` line anywhere: the second line cost every tile its height
-        // for text the label can carry itself. What the sub used to define is
-        // folded into the label — the stale tile states its own threshold — so
-        // the strip loses a row without losing a measurement.
-        //
-        // "Startable", not "Ready now": the measured population already
-        // excludes epics (structure is never work) and subtracts what is
-        // already claimed, so the label names what you could actually pick up.
-        //
-        // "Waiting on deps", not "Blocked": this counts the blocked union,
-        // which includes claimed beads that also appear in the In progress
-        // tile. Blocking is a condition that overlays any lifecycle state, so
-        // the overlap is correct rather than double-counting — but the word
-        // "blocked" reads as an exclusive state and made it look like a bug.
-        items: [
-          // Four tiles, not five: stale claims are an exception, not a
-          // standing measure of the project, so they surface in Needs
-          // attention when nonzero (and alarm there when unmeasured) rather
-          // than holding a permanent tile that reads 0 on a healthy board.
-          measuredTile("Startable", m.ready, "accent"),
-          measuredTile("In progress", m.inProgress, "ok"),
-          measuredTile("Waiting on deps", m.blocked, "error", true),
-          measuredTile("Closed this week", m.recentlyClosed, "neutral"),
-        ],
-      },
-      // A segment count has no "?" sentinel the way a tile does, so a strip
-      // with any unmeasured input is omitted whole and this line alarms in
-      // its place — segments are never guessed.
-      ...(segments
+      // A `segments` SECTION, not `header.segments`: the surface renders
+      // header segments legend-only in the region head, while a section gets
+      // the full-width proportional strip (with its own count legend).
+      { kind: "segments", items: segments },
+      // The hatch says WHICH stage is unmeasured; this line says WHY.
+      ...(flowFailures.length === 0
         ? []
         : ([
             {
@@ -574,7 +538,7 @@ export function composePulse(m: ProjectMeasurement): Board {
                 {
                   icon: "⚠",
                   chip: { label: "UNMEASURED", tone: "error" },
-                  text: "the flow strip could not be measured — segments are omitted rather than guessed.",
+                  text: "hatched segments could not be measured — never read them as zero.",
                   trailing: flowFailures.join("; ").slice(0, 120),
                 },
               ],
@@ -1151,11 +1115,10 @@ export function composePlan(m: ProjectMeasurement, ctx: PanelContext): Board {
   // id · title · state, which both compresses the tail and gives the page a
   // second rhythm against the boxed groups above.
   //
-  // The cost is real and bounded to this section: `rows` items carry no
-  // `action`, so these do not open the inspector the way a card does. `detail`
-  // buys most of it back — the body discloses inline, under the row — but a
-  // bead whose only home is here cannot be selected, so the legend below stops
-  // promising that for everything.
+  // Rows carry the cards click contract now, so the tail selects into the
+  // inspector like everything else — which is strictly more than the old
+  // inline `detail` disclosure said (the inspector adds links, actions, and
+  // full prose), and `action` and `detail` are mutually exclusive anyway.
   if (room() > 0 && singles.length > 0) {
     const tail = singles.slice(0, room());
     sections.push({
@@ -1163,7 +1126,6 @@ export function composePlan(m: ProjectMeasurement, ctx: PanelContext): Board {
       title: "Standalone work",
       items: tail.map((i) => {
         const dot = lifecycleTone(lifecycleOf(i), readyIds.has(i.id));
-        const body = [i.description, i.acceptance_criteria].filter(Boolean).join("\n\n");
         // A row DOES have a right-aligned slot, so here the rail is literal:
         // meta first, exceptions last, in the same order the cards use.
         return {
@@ -1171,7 +1133,8 @@ export function composePlan(m: ProjectMeasurement, ctx: PanelContext): Board {
           chip: { label: i.id, tone: "neutral" as const },
           text: i.title,
           trailing: [meta(i), ...railOf(i)].join(" · "),
-          ...(body ? { detail: body.slice(0, 4000) } : {}),
+          action: { type: "select-bead" as const, payload: { id: i.id } },
+          selected: ctx.selectedId === i.id,
         };
       }),
     });
@@ -1183,7 +1146,7 @@ export function composePlan(m: ProjectMeasurement, ctx: PanelContext): Board {
       {
         icon: "ℹ",
         chip: { label: "how to read this", tone: "neutral" },
-        text: `Dot color is lifecycle: teal startable · green in progress · blue on hold. The trailing note is the exception — waiting on, N downstream, bug, closeout review — and most beads have none. ▸ panels are epics (their beads inside), └ marks a bead under the parent leading its box. P0 is most urgent, P4 least. Click a card to open it in the inspector; standalone rows expand in place.${shown < total ? ` Showing ${shown} of ${total}.` : ""}`,
+        text: `Dot color is lifecycle: teal startable · green in progress · blue on hold. The trailing note is the exception — waiting on, N downstream, bug, closeout review — and most beads have none. ▸ panels are epics (their beads inside), └ marks a bead under the parent leading its box. P0 is most urgent, P4 least. Click any card or row to open it in the inspector.${shown < total ? ` Showing ${shown} of ${total}.` : ""}`,
       },
     ],
   });
@@ -1412,6 +1375,16 @@ export function composePortfolio(m: ProjectMeasurement, ctx: PanelContext): Boar
   const blockedBy = new Map<string, readonly string[]>(
     (m.blocked.ok ? m.blocked.data : []).map((b) => [b.id, b.blocked_by ?? []]),
   );
+  // The meter's stage composition — the flow strip's vocabulary at epic
+  // scale, same stage→tone mapping, mirrored order: a meter fills from the
+  // left with what is furthest along, so done (darkest) anchors left and
+  // waiting (lightest) trails. Composition needs every stage set measured;
+  // otherwise the meter degrades to the plain done/total fill.
+  const split = stageSplit(m);
+  const stagesMeasured = m.epicChildren.ok && m.ready.ok && split.ok;
+  const readyIds = new Set(m.ready.ok ? m.ready.data.map((i) => i.id) : []);
+  const reviewIds = new Set(split.ok ? split.data.inReview.map((i) => i.id) : []);
+  const workingIds = new Set(split.ok ? split.data.working.map((i) => i.id) : []);
   const rows = m.epics.data.map((r) => {
     // In-flight children and the gate only when membership measured — the
     // Plan's degrade precedent: the meter stays, the clauses drop.
@@ -1420,7 +1393,7 @@ export function composePortfolio(m: ProjectMeasurement, ctx: PanelContext): Boar
     const gate =
       m.blocked.ok && childIds.length > 0 ? epicGate(childIds, blockedBy, wipIds) : undefined;
     const ratio = r.total_children > 0 ? r.closed_children / r.total_children : 0;
-    return { r, inFlight, gate, ratio };
+    return { r, childIds, inFlight, gate, ratio };
   });
   // The five-second read is the SORT: where the agents are first, then what
   // is nearly landed, parked epics last. bd's own order buried the one
@@ -1433,7 +1406,7 @@ export function composePortfolio(m: ProjectMeasurement, ctx: PanelContext): Boar
   return board([
     {
       kind: "cards",
-      items: rows.map(({ r, inFlight, gate }): CardItem => {
+      items: rows.map(({ r, childIds, inFlight, gate }): CardItem => {
         const meta = [
           `${r.closed_children}/${r.total_children} done`,
           ...(inFlight > 0 ? [`${inFlight} in progress`] : []),
@@ -1456,7 +1429,33 @@ export function composePortfolio(m: ProjectMeasurement, ctx: PanelContext): Boar
           ...(r.eligible_for_close ? { dot: "warn" as const } : {}),
           selected: ctx.selectedId === r.epic.id,
           ...(r.total_children > 0
-            ? { bar: { value: r.closed_children, total: r.total_children } }
+            ? {
+                bar: (() => {
+                  if (!stagesMeasured) return { value: r.closed_children, total: r.total_children };
+                  // childIds includes closed children (membership is every
+                  // parent-child edge), so the open-stage sets intersect
+                  // cleanly. The remainder is blocked or deferred children —
+                  // "waiting" in the flow strip's sense, approximately: it
+                  // also absorbs any child the open sets don't claim.
+                  const inSet = (ids: Set<string>) => childIds.filter((id) => ids.has(id)).length;
+                  const review = inSet(reviewIds);
+                  const working = inSet(workingIds);
+                  const ready = inSet(readyIds);
+                  const waiting = Math.max(
+                    0,
+                    r.total_children - r.closed_children - review - working - ready,
+                  );
+                  return {
+                    segments: [
+                      { label: "done", n: r.closed_children, tone: "ramp-5" as const },
+                      { label: "in review", n: review, tone: "ramp-4" as const },
+                      { label: "in progress", n: working, tone: "ramp-3" as const },
+                      { label: "ready", n: ready, tone: "ramp-2" as const },
+                      { label: "waiting", n: waiting, tone: "ramp-1" as const },
+                    ],
+                  };
+                })(),
+              }
             : {}),
           action: { type: "select-bead", payload: { id: r.epic.id } },
           fields: [{ value: meta.join(" · ") }],
@@ -1466,9 +1465,9 @@ export function composePortfolio(m: ProjectMeasurement, ctx: PanelContext): Boar
   ]);
 }
 
-// ── Momentum: what happened lately, newest first — closes, touches, and new
-// beads in one feed, so "is anything moving?" has one place to look.
-export function composeMomentum(m: ProjectMeasurement): Board {
+// ── Momentum: what happened lately — a closed-vs-created chart over the
+// fortnight for the shape, then the event feed for the names, newest first.
+export function composeMomentum(m: ProjectMeasurement, ctx: PanelContext = {}): Board {
   if (!m.recentlyClosed.ok) return failedBoard("recent closes", m.recentlyClosed.error);
   const now = new Date(m.asOf);
   const floor = new Date(now.getTime() - RECENT_CLOSE_DAYS * 86_400_000).toISOString();
@@ -1580,6 +1579,10 @@ export function composeMomentum(m: ProjectMeasurement): Board {
       chip: { label: e.id, tone: "neutral" as const },
       text: e.title,
       trailing: e.verb,
+      // Rows carry the cards click contract now — the feed feeds the
+      // inspector like every other panel.
+      action: { type: "select-bead", payload: { id: e.id } },
+      selected: ctx.selectedId === e.id,
     });
   }
   // Truncation says so — a capped feed that reads complete is the quiet
@@ -1590,9 +1593,72 @@ export function composeMomentum(m: ProjectMeasurement): Board {
       items: [{ icon: "…", text: `showing ${shown.length} of ${events.length} events this week` }],
     });
   sections.push(...alarms);
-  // Zero sections only when every input measured and the week was quiet.
-  if (sections.length === 0) return HIDDEN;
-  return board(sections);
+  // The chart: closes and creates bucketed into the same elapsed-24h windows
+  // the day headers use, oldest day leftmost. Creates read created_at across
+  // backlog ∪ recent closes (a bead created and already closed inside the
+  // window is only in the closed list) and skip epics like the feed does; a
+  // bead created and closed in the window counts once in EACH series — the
+  // two measure different verbs. When the backlog is unmeasured the Created
+  // series drops and the feed's alarm above already says why.
+  const dayIndex = (iso: string): number =>
+    Math.floor((now.getTime() - new Date(iso).getTime()) / 86_400_000);
+  const closesPerDay: number[] = new Array(FLOW_WINDOW_DAYS).fill(0);
+  const closedRecently = m.closedFortnight.ok ? m.closedFortnight.data : [];
+  for (const i of closedRecently) {
+    const d = dayIndex(i.closed_at ?? "");
+    if (d >= 0 && d < FLOW_WINDOW_DAYS && closesPerDay[d] !== undefined) closesPerDay[d] += 1;
+  }
+  const createsPerDay: number[] = new Array(FLOW_WINDOW_DAYS).fill(0);
+  if (m.backlog.ok) {
+    for (const i of [...m.backlog.data, ...closedRecently]) {
+      if (i.issue_type === "epic") continue;
+      const d = dayIndex(i.created_at ?? "");
+      if (d >= 0 && d < FLOW_WINDOW_DAYS && createsPerDay[d] !== undefined) createsPerDay[d] += 1;
+    }
+  }
+  // Calendar labels throughout (today included) so the axis reads uniformly.
+  const chartLabel = (daysBack: number): string => {
+    const t = new Date(now.getTime() - daysBack * 86_400_000);
+    return `${MONTHS[t.getUTCMonth()] ?? "?"} ${t.getUTCDate()}`;
+  };
+  const daysOldestFirst = Array.from(
+    { length: FLOW_WINDOW_DAYS },
+    (_, k) => FLOW_WINDOW_DAYS - 1 - k,
+  );
+  const chartHasData =
+    closesPerDay.some((n) => n > 0) || (m.backlog.ok && createsPerDay.some((n) => n > 0));
+  const chart: BoardSection[] = chartHasData
+    ? [
+        {
+          kind: "chart",
+          title: `Closed vs created — last ${FLOW_WINDOW_DAYS} days`,
+          mark: "bar",
+          series: [
+            {
+              label: "Closed",
+              points: daysOldestFirst.map((d) => ({
+                x: chartLabel(d),
+                y: closesPerDay[d] ?? 0,
+              })),
+            },
+            ...(m.backlog.ok
+              ? [
+                  {
+                    label: "Created",
+                    points: daysOldestFirst.map((d) => ({
+                      x: chartLabel(d),
+                      y: createsPerDay[d] ?? 0,
+                    })),
+                  },
+                ]
+              : []),
+          ],
+        },
+      ]
+    : [];
+  // Zero sections only when every input measured and the fortnight was quiet.
+  if (sections.length === 0 && chart.length === 0) return HIDDEN;
+  return board([...chart, ...sections]);
 }
 
 // ── Scope resting states, rendered on the pulse panel (the one always-on

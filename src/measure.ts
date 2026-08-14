@@ -19,6 +19,9 @@ import { unmeasured } from "./bd";
 
 export const STALE_DAYS = 7;
 export const RECENT_CLOSE_DAYS = 7;
+// The momentum chart's span. Wider than the close window on purpose: a 7-day
+// bar chart can't show whether this week is faster or slower than last week.
+export const FLOW_WINDOW_DAYS = 14;
 // Run notes cost one `bd show` per in-progress bead. The set is small by
 // construction (a claim is a hand or a run holding work), so the cap is a
 // guard against a pathological tracker, not an expected ceiling.
@@ -37,6 +40,9 @@ export interface ProjectMeasurement {
   blocked: Measured<BdIssue[]>;
   epics: Measured<BdEpicRow[]>;
   recentlyClosed: Measured<BdIssue[]>;
+  // The same closed list over the chart window (FLOW_WINDOW_DAYS) — one bd
+  // call feeds both filters, so the two are ok/unmeasured together.
+  closedFortnight: Measured<BdIssue[]>;
   stale: Measured<BdIssue[]>;
   // The whole non-closed backlog (`bd list` default scope: open, in-progress,
   // blocked, deferred) — the board's Plan tree, mirroring the CLI's tree view.
@@ -227,6 +233,9 @@ export async function measureProject(
   const recentlyClosed: Measured<BdIssue[]> = closedRes.ok
     ? { ok: true, data: recentCloses(asArray(closedRes.data), now()) }
     : closedRes;
+  const closedFortnight: Measured<BdIssue[]> = closedRes.ok
+    ? { ok: true, data: recentCloses(asArray(closedRes.data), now(), FLOW_WINDOW_DAYS) }
+    : closedRes;
 
   const staleRes = await bd.readJSON<unknown>(cwd, [
     "stale",
@@ -277,6 +286,7 @@ export async function measureProject(
     blocked,
     epics,
     recentlyClosed,
+    closedFortnight,
     stale,
     backlog,
     epicChildren,
