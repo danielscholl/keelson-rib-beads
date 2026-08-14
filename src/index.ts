@@ -247,22 +247,25 @@ const rib: Rib = {
         "## The surface",
         "",
         "Project-scoped (the host's project picker chooses the backlog) and arranged",
-        "in the operator's order: a current-state pulse crowned by the flow strip",
-        "(waiting → ready → in progress → in review → done 7d, the review stage",
-        "derived from bead-work run notes); an Agents-at-work vs Needs-a-human pair",
+        "in the operator's order: the Pulse — a proportional flow strip (waiting →",
+        "ready → in progress → in review → done 7d, ordinal ramp tones, the review",
+        "stage derived from bead-work run notes; an unmeasured stage renders as a",
+        "hatched segment, never a zero); an Agents-at-work vs Needs-a-human pair",
         "(runs and their PRs on the cards; reviews to merge, dams — blockers grouped",
         "by what they hold — hand-paused work, stale claims, and epic closeouts in",
         "the queue); ONE recommended-next bead (leverage first, priority second) with",
         "its unlock chain named and Inspect / Start actions; a Portfolio of per-epic",
-        "progress meters beside a Momentum feed (closes, touches, new beads); a",
-        "Selected-bead inspector band that renders any clicked card's description,",
-        "acceptance criteria, and dependency links (a click also opens it in the",
-        "canvas drawer, so the detail is in view no matter where on the page the",
-        "click landed); and the Plan — the canonical grouped grid of everything not",
-        "finished. Color means state, never priority. Every panel is fail-closed: a",
-        "failed bd query renders UNMEASURED, never empty-but-healthy. Panels refresh",
-        "on a 5-minute cadence; any beads_* mutation recomposes them immediately, and",
-        "beads_board_refresh does so on demand.",
+        "stage-composition meters (done → in review → in progress → ready → waiting,",
+        "the strip's vocabulary at epic scale) beside Momentum — a closed-vs-created",
+        "per-day chart over the fortnight, then the event feed (closes, touches, new",
+        "beads); a Selected-bead inspector band that renders any clicked card's or",
+        "row's description, acceptance criteria, and dependency links (a click also",
+        "opens it in the canvas drawer, so the detail is in view no matter where on",
+        "the page the click landed); and the Plan — the canonical grouped grid of",
+        "everything not finished. Color means state, never priority. Every panel is",
+        "fail-closed: a failed bd query renders UNMEASURED, never empty-but-healthy.",
+        "Panels refresh on a 5-minute cadence; any beads_* mutation recomposes them",
+        "immediately, and beads_board_refresh does so on demand.",
         "",
         "## Tools",
         "",
@@ -322,7 +325,10 @@ const rib: Rib = {
         PORTFOLIO_KEY,
         makePanelComposer((m) => composePortfolio(m, { selectedId: selectedBeadId })),
       );
-      register(MOMENTUM_KEY, makePanelComposer(composeMomentum));
+      register(
+        MOMENTUM_KEY,
+        makePanelComposer((m) => composeMomentum(m, { selectedId: selectedBeadId })),
+      );
       register(INSPECT_KEY, async () => {
         const project = scopedProject();
         if (!project || !bdClient) return composeInspect(undefined, []);
@@ -387,7 +393,14 @@ const rib: Rib = {
         // just clicked, not the previous frame. Selection is cheap — the
         // measurement cache holds, only bd show runs.
         await snapshots?.recompose(INSPECT_KEY).catch(() => undefined);
-        recomposeKeys([PLAN_KEY, RECOMMEND_KEY, WIP_KEY, ATTENTION_KEY, PORTFOLIO_KEY]);
+        recomposeKeys([
+          PLAN_KEY,
+          RECOMMEND_KEY,
+          WIP_KEY,
+          ATTENTION_KEY,
+          PORTFOLIO_KEY,
+          MOMENTUM_KEY,
+        ]);
         // Open the inspector in the canvas drawer: a click deep in the Plan
         // would otherwise update a panel far off-screen — visible feedback
         // must not depend on scroll position. The Selected-bead panel keeps
