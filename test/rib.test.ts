@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { columnRegions } from "@keelson/shared";
 import rib from "../src/index";
 import {
   ALL_KEYS,
@@ -28,24 +29,35 @@ describe("rib contract shape", () => {
     const surface = rib.surfaces?.[0];
     expect(surface?.id).toBe("beads");
     expect(surface?.layout.header?.key).toBe(PULSE_KEY);
-    const rowKeys = surface?.layout.rows.map((r) => r.columns.map((c) => c.key));
-    // What's moving and what needs a human lead; the board's pick follows;
-    // then the portfolio/momentum pair. The inspector stays a full-width band
-    // ABOVE the Plan: surface columns split evenly and can't stick, so
-    // side-by-side would strand it beside a much taller inventory.
+    // Since @keelson/shared 0.103.0 a column is one region or a stack of
+    // them; `columnRegions` is the contract's own unwrap, so the test walks a
+    // column exactly the way the host does, and the per-column arrays below
+    // assert which columns stack as well as the order.
+    const rowKeys = surface?.layout.rows.map((r) =>
+      r.columns.map((c) => columnRegions(c).map((region) => region.key)),
+    );
+    // What's moving and what needs a human lead; the board's pick stacks
+    // under what's-moving so both columns pack at their own height, and the
+    // row break keeps the pick above the portfolio/momentum pair. The
+    // inspector stays a full-width band ABOVE the Plan: stacks flow but
+    // still can't stick, so side-by-side would strand it beside a much
+    // taller inventory.
     expect(rowKeys).toEqual([
-      [WIP_KEY, ATTENTION_KEY],
-      [RECOMMEND_KEY],
-      [PORTFOLIO_KEY, MOMENTUM_KEY],
-      [INSPECT_KEY],
-      [PLAN_KEY],
+      [[WIP_KEY, RECOMMEND_KEY], [ATTENTION_KEY]],
+      [[PORTFOLIO_KEY], [MOMENTUM_KEY]],
+      [[INSPECT_KEY]],
+      [[PLAN_KEY]],
     ]);
     // The pair renamed for what it shows: runs, and the human's queue.
-    const titles = surface?.layout.rows[0]?.columns.map((c) => c.title);
-    expect(titles).toEqual(["Agents at work", "Needs a human"]);
+    const titles = surface?.layout.rows[0]?.columns.flatMap((c) =>
+      columnRegions(c).map((region) => region.title),
+    );
+    expect(titles).toEqual(["Agents at work", "Recommended next", "Needs a human"]);
     // Momentum earned a column — nothing starts collapsed anymore.
     for (const row of surface?.layout.rows ?? []) {
-      for (const col of row.columns) expect(col.collapsed).toBeUndefined();
+      for (const col of row.columns) {
+        for (const region of columnRegions(col)) expect(region.collapsed).toBeUndefined();
+      }
     }
     // Every declared view key is registered as a panel.
     expect(rib.views?.map((v) => v.key).sort()).toEqual([...ALL_KEYS].sort());

@@ -143,10 +143,15 @@ const rib: Rib = {
   // Stable spatial roles in the OPERATOR's order — what's moving and what
   // needs me first, then the board's own pick, then how far along each
   // initiative is and what happened lately, then the inspector band and the
-  // Plan grid. Surface columns split evenly and cannot stick, so the
-  // inspector never sits beside the (much taller) Plan — selection opens it
-  // in the drawer instead. The rib drives refresh in-process (a cadence
-  // without a workflow binding is inert), so regions declare none.
+  // Plan grid. Column STACKS (keelson 0.103.0, the peer floor) let each
+  // column's height flow independently of its row siblings: the pick tucks
+  // under Agents at work instead of forcing its own full-width row barrier,
+  // and the one-region Portfolio/Momentum stacks stop stretching to each
+  // other's height. The row break between the two zones keeps the pick
+  // above the portfolio pair in both columns. Columns still cannot stick,
+  // so the inspector never sits beside the (much taller) Plan — selection
+  // opens it in the drawer instead. The rib drives refresh in-process (a
+  // cadence without a workflow binding is inert), so regions declare none.
   surfaces: [
     {
       id: BEADS_SURFACE_ID,
@@ -164,44 +169,48 @@ const rib: Rib = {
         rows: [
           {
             columns: [
-              {
-                key: WIP_KEY,
-                title: "Agents at work",
-                glyph: { char: "◐", tone: "ok" },
-                live: true,
-              },
-              {
-                key: ATTENTION_KEY,
-                title: "Needs a human",
-                glyph: { char: "●", tone: "error" },
-                live: true,
-              },
+              [
+                {
+                  key: WIP_KEY,
+                  title: "Agents at work",
+                  glyph: { char: "◐", tone: "ok" },
+                  live: true,
+                },
+                {
+                  key: RECOMMEND_KEY,
+                  title: "Recommended next",
+                  glyph: { char: "→", tone: "accent" },
+                  live: true,
+                },
+              ],
+              [
+                {
+                  key: ATTENTION_KEY,
+                  title: "Needs a human",
+                  glyph: { char: "●", tone: "error" },
+                  live: true,
+                },
+              ],
             ],
           },
           {
             columns: [
-              {
-                key: RECOMMEND_KEY,
-                title: "Recommended next",
-                glyph: { char: "→", tone: "accent" },
-                live: true,
-              },
-            ],
-          },
-          {
-            columns: [
-              {
-                key: PORTFOLIO_KEY,
-                title: "Portfolio",
-                glyph: { char: "▰", tone: "brand" },
-                live: true,
-              },
-              {
-                key: MOMENTUM_KEY,
-                title: "Momentum",
-                glyph: { char: "✓", tone: "ok" },
-                live: true,
-              },
+              [
+                {
+                  key: PORTFOLIO_KEY,
+                  title: "Portfolio",
+                  glyph: { char: "▰", tone: "brand" },
+                  live: true,
+                },
+              ],
+              [
+                {
+                  key: MOMENTUM_KEY,
+                  title: "Momentum",
+                  glyph: { char: "✓", tone: "ok" },
+                  live: true,
+                },
+              ],
             ],
           },
           {

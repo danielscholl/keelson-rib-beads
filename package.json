@@ -50,12 +50,12 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.3",
-    "@keelson/shared": "https://github.com/danielscholl/keelson/releases/download/v0.102.0/keelson-shared.tgz",
+    "@keelson/shared": "https://github.com/danielscholl/keelson/releases/download/v0.103.0/keelson-shared.tgz",
     "@types/bun": "^1.1.14",
     "typescript": "^7.0.2"
   },
   "peerDependencies": {
-    "@keelson/shared": ">=0.99.0"
+    "@keelson/shared": ">=0.103.0"
   },
   "peerDependenciesMeta": {
     "@keelson/shared": {
