@@ -444,6 +444,9 @@ function board(sections: BoardSection[], header?: Board["header"]): Board {
 }
 
 // A panel whose measurement failed must alarm, never render empty-healthy.
+// The raw error goes in `detail` (a disclosure), not `trailing`: trailing
+// shares the row's line with `text`, and a long log line crushes the alarm
+// sentence to a one-character sliver in a half-width column.
 function failedBoard(what: string, error: string): Board {
   return board([
     {
@@ -453,7 +456,7 @@ function failedBoard(what: string, error: string): Board {
           icon: "⚠",
           chip: { label: "UNMEASURED", tone: "error" },
           text: `${what} could not be measured — this is not an empty-and-healthy panel.`,
-          trailing: error.slice(0, 120),
+          detail: error.slice(0, 1000),
         },
       ],
     },
@@ -558,7 +561,7 @@ export function composePulse(m: ProjectMeasurement): Board {
                   icon: "⚠",
                   chip: { label: "UNMEASURED", tone: "error" },
                   text: "hatched segments could not be measured — never read them as zero.",
-                  trailing: flowFailures.join("; ").slice(0, 120),
+                  detail: flowFailures.join("\n").slice(0, 1000),
                 },
               ],
             },
@@ -811,7 +814,7 @@ export function composeAttention(m: ProjectMeasurement, ctx: PanelContext): Boar
         icon: "⚠",
         chip: { label: "UNMEASURED", tone: "error" },
         text: `${what} could not be measured — this is not an empty-and-healthy panel.`,
-        trailing: error.slice(0, 120),
+        detail: error.slice(0, 1000),
       },
     ],
   });
