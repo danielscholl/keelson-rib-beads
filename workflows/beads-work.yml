@@ -1953,8 +1953,12 @@ nodes:
       - When no conflict applies, set `conflicts` to [] and `ci_status` to "fail".
         After the required criteria-count prefix, summarize what failed in one sentence.
 
+  # Only a red CI with something to act on, or a conflict to record, needs
+  # the fixer. A pass, an unknown (no CI to gate on), or an empty triage
+  # skips the node; the final scrub below tolerates that skip.
   - id: fix-ci
     depends_on: [triage-ci]
+    when: "$triage-ci.output.ci_status == 'fail' || $triage-ci.output.ci_status == 'conflict'"
     context: fresh
     model: deep
     model_by_provider:
@@ -2000,7 +2004,8 @@ nodes:
         and then `git push` — staging alone is dropped.
 
   - id: scrub-trailers-final
-    depends_on: [fix-ci]
+    depends_on: [triage-ci, fix-ci]
+    trigger_rule: none_failed_min_one_success
     timeout: 120000
     bash: |
       # Same scrub as scrub-trailers, run after the last agent push: rewrites

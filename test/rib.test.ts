@@ -126,3 +126,20 @@ describe("beads-work approval trail", () => {
     expect(implement?.depends_on).not.toContain("record-approval");
   });
 });
+
+describe("beads-work CI fixer gating", () => {
+  test("fix-ci runs only for a red or conflicting CI and the final scrub tolerates the skip", async () => {
+    const yaml = await Bun.file(new URL("../workflows/beads-work.yml", import.meta.url)).text();
+    const workflow = Bun.YAML.parse(yaml) as {
+      nodes: { id: string; depends_on?: string[]; when?: string; trigger_rule?: string }[];
+    };
+    const fixCi = workflow.nodes.find((n) => n.id === "fix-ci");
+    expect(fixCi?.when).toContain("ci_status == 'fail'");
+    expect(fixCi?.when).toContain("ci_status == 'conflict'");
+    const scrub = workflow.nodes.find((n) => n.id === "scrub-trailers-final");
+    expect(scrub?.depends_on).toEqual(["triage-ci", "fix-ci"]);
+    expect(scrub?.trigger_rule).toBe("none_failed_min_one_success");
+    const finalize = workflow.nodes.find((n) => n.id === "finalize-pr");
+    expect(finalize?.depends_on).toEqual(["scrub-trailers-final"]);
+  });
+});
