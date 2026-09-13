@@ -2,7 +2,7 @@
 # the project's beads database; exactly one agent turn turns it into a
 # recommendation. The numbers are never the agent's to invent, and the
 # workflow never mutates the tracker — claiming is the operator's move
-# (beads_update with claim, or the project's own bead-work workflow).
+# (beads_update with claim, or the beads-work workflow).
 
 name: beads-next
 model: balanced
@@ -15,7 +15,7 @@ description: |
         current work in flight, and the blocked set, then recommends the one
         bead to start first — leverage (dependent_count) outranks priority —
         with runner-ups and the reasoning.
-  NOT for: claiming or implementing the bead (bead-work does that), grooming
+  NOT for: claiming or implementing the bead (beads-work does that), grooming
            the backlog (beads-groom), or changing any issue. Read-only.
 
 requiresProject: true
@@ -86,7 +86,7 @@ nodes:
 
       For the pick: the id verbatim (it pastes into `bd show`), the title, why
       it wins under the rules above, and what it unlocks. State that claiming
-      it is `bd update <id> --claim` (or the bead-work workflow) — this
+      it is `bd update <id> --claim` (or the beads-work workflow) — this
       workflow deliberately does not claim.
 
       Keep it short: someone deciding what to do with the next two hours.

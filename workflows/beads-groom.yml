@@ -16,7 +16,7 @@ description: |
         that would fix it.
   NOT for: executing any change (it proposes, the operator disposes), picking
            what to work on next (beads-next), or implementing beads
-           (bead-work). Read-only.
+           (beads-work). Read-only.
 
 requiresProject: true
 mutates_checkout: false

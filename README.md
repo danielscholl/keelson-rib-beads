@@ -60,12 +60,24 @@ priority / notes), `beads_close` (confirmation-required — closing is a
 merge-time action), `beads_dep`. Any mutation recomposes the board
 immediately; `beads_board_refresh` does so on demand.
 
-**Workflows.** Both read-only — they propose, the operator disposes:
+**Workflows.** Two read-only ones that propose while the operator disposes,
+and one that does the work:
 
 - `beads-next` — what to start first, leverage-ranked, with runner-ups.
 - `beads-groom` — backlog health: stale claims (verify-or-release), blocked
   chains grouped by blocker, priority drift, epics eligible to close; every
   finding carries the exact `bd` command that would fix it.
+- `beads-work` — takes one bead from the ready queue to a reviewed draft PR:
+  claims it (or the bead id you pass), investigates or plans, pauses for
+  approval, implements in an isolated worktree, runs the project's own checks
+  (discovered from its manifests), opens a draft PR, runs a three-lens review
+  loop with an independent triage judge, waits on CI, and writes the outcome
+  back to the bead as a `bead-work run:` note the board reads. It never closes
+  a bead; a failed run releases the claim. Judgment nodes pin `gpt-6-astra`,
+  edit nodes `gpt-5.6-sol`, review lenses `gpt-5.6-terra` on the Copilot
+  provider; elsewhere they resolve through the `deep` tier. Needs `gh`, `jq`,
+  and a GitHub remote. Pass `review_bot=false` to skip requesting the Copilot
+  reviewer.
 
 ## Install
 
