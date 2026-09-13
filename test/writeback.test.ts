@@ -31,13 +31,14 @@ afterEach(() => {
   rmSync(sandbox, { recursive: true, force: true });
 });
 
-function installFakeBd(status: string): void {
+function installFakeBd(status: string, closedAt = ""): void {
   const path = join(binDir, "bd");
+  const closed = closedAt ? `,"closed_at":"${closedAt}"` : "";
   writeFileSync(
     path,
     [
       "#!/bin/bash",
-      `if [ "$1" = "show" ]; then printf '[{"id":"fn-bye","status":"${status}"}]\\n'; exit 0; fi`,
+      `if [ "$1" = "show" ]; then printf '[{"id":"fn-bye","status":"${status}"${closed}}]\\n'; exit 0; fi`,
       `printf '%s\\n' "$*" >> "${join(sandbox, "calls")}"`,
       "exit 0",
       "",
@@ -81,6 +82,23 @@ describe("beads-writeback", () => {
     expect(exitCode).toBe(0);
     expect(stdout).toContain("left alone — fn-bye is closed");
     expect(calls()).toEqual([]);
+  });
+
+  test("warns when the bead was closed after this run claimed it", async () => {
+    installFakeBd("closed", "2026-09-13T19:17:19Z");
+    writeFileSync(join(artifacts, ".claimed-at"), "2026-09-13T19:06:30Z\n");
+    const { stdout } = await runWriteback();
+    expect(stdout).toContain("left alone — fn-bye is closed");
+    expect(stdout).toContain("WARNING — fn-bye was closed at 2026-09-13T19:17:19Z");
+    expect(calls()).toEqual([]);
+  });
+
+  test("does not warn when the bead was closed before the run claimed it", async () => {
+    installFakeBd("closed", "2026-09-13T18:00:00Z");
+    writeFileSync(join(artifacts, ".claimed-at"), "2026-09-13T19:06:30Z\n");
+    const { stdout } = await runWriteback();
+    expect(stdout).toContain("left alone — fn-bye is closed");
+    expect(stdout).not.toContain("WARNING");
   });
 
   test("leaves a deferred bead alone", async () => {
