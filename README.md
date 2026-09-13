@@ -74,7 +74,14 @@ and one that does the work:
   loop with an independent triage judge, waits on CI, and writes the outcome
   back to the bead as a `bead-work run:` note the board reads. The approver's
   reply at the plan gate lands on the bead too, as a `bead-work plan:` note,
-  so the decision record shows what was approved and with what changes. It never closes
+  so the decision record shows what was approved and with what changes.
+  Two deterministic guards run around the agent nodes: attribution trailers
+  (`Co-authored-by`, "Generated with") are stripped from the run's commits
+  before each push, and every dependency manifest or lockfile change is
+  audited against the plan and marked UNPLANNED in the PR body and report
+  when the plan never named it. The writeback only touches a bead that still
+  carries the run's claim; one a human closed or deferred mid-run is left
+  as found. It never closes
   a bead; a failed run releases the claim. Judgment nodes pin `gpt-6-astra`,
   edit nodes `gpt-5.6-sol`, review lenses `gpt-5.6-terra` on the Copilot
   provider; elsewhere they resolve through the `deep` tier. Needs `gh`, `jq`,

@@ -732,6 +732,11 @@ nodes:
         good" / "ship it", edit `$ARTIFACTS_DIR/plan.md` to incorporate it
         BEFORE writing code, and note the changes at the top of the file.
       - Follow the plan task-by-task. Don't introduce extra scope.
+      - Dependencies are frozen. Never add, remove, or upgrade a dependency in
+        any manifest or lockfile (package.json, pyproject.toml, Cargo.toml,
+        go.mod, Gemfile, …) unless `plan.md` names that exact package. A task
+        that cannot be done without a new package is left undone: say so in the
+        status report instead of adding it.
       - Every new public symbol needs a caller in this branch or a test that
         exercises it beyond its own definition. Never add a "compatibility"
         alias for callers that exist only on some other unmerged branch —
@@ -895,8 +900,150 @@ nodes:
   # PHASE 6: PUSH + DRAFT PR
   # ─────────────────────────────────────────────────────────────────────────
 
-  - id: create-pr
+  - id: scrub-trailers
     depends_on: [revalidate]
+    timeout: 120000
+    bash: |
+      # Agents are told not to add attribution trailers, but the Copilot CLI
+      # appends "Co-authored-by: Copilot" on its own, so this rewrites the
+      # messages of this run's commits deterministically. History is rebuilt
+      # commit by commit with commit-tree (trees, authors, and dates kept).
+      set -uo pipefail
+      BASE=$(cat "$KEELSON_ARTIFACTS_DIR/.default-branch" 2>/dev/null | tr -d '[:space:]')
+      if [ -z "$BASE" ]; then
+        echo "TRAILER_SCRUB: skipped — no .default-branch recorded"
+        exit 0
+      fi
+      if ! MB=$(git merge-base "$BASE" HEAD 2>/dev/null); then
+        echo "TRAILER_SCRUB: skipped — no merge base with $BASE"
+        exit 0
+      fi
+      # SCRUB_PUSHED=1 rewrites the whole branch and force-pushes the PR's own
+      # head branch; otherwise only commits not yet on the upstream are touched.
+      RANGE_START="$MB"
+      if [ "${SCRUB_PUSHED:-0}" != "1" ]; then
+        if UP=$(git rev-parse --verify --quiet '@{upstream}'); then
+          RANGE_START=$(git merge-base "$UP" HEAD 2>/dev/null || printf '%s' "$MB")
+        fi
+      fi
+      COMMITS=$(git rev-list --reverse "$RANGE_START..HEAD")
+      if [ -z "$COMMITS" ]; then
+        echo "TRAILER_SCRUB: clean — no commits to inspect"
+        exit 0
+      fi
+      if git rev-list --merges "$RANGE_START..HEAD" | grep -q .; then
+        echo "TRAILER_SCRUB: skipped — merge commits in range; leaving history alone"
+        exit 0
+      fi
+      if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+        echo "TRAILER_SCRUB: skipped — working tree has uncommitted changes"
+        exit 0
+      fi
+      TRAILER_RE='^[[:space:]]*(co-authored-by:|generated with|claude-session:|🤖 generated)'
+      PARENT="$RANGE_START"
+      REWRITTEN=0
+      for C in $COMMITS; do
+        MSG=$(git log -1 --format=%B "$C")
+        CLEAN=$(printf '%s\n' "$MSG" | grep -viE "$TRAILER_RE" | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}')
+        if [ "$CLEAN" = "$MSG" ] && [ "$REWRITTEN" -eq 0 ]; then
+          PARENT="$C"
+          continue
+        fi
+        [ "$CLEAN" != "$MSG" ] && REWRITTEN=$((REWRITTEN + 1))
+        TREE=$(git rev-parse "$C^{tree}")
+        NEW=$(printf '%s\n' "$CLEAN" | \
+          GIT_AUTHOR_NAME="$(git log -1 --format=%an "$C")" \
+          GIT_AUTHOR_EMAIL="$(git log -1 --format=%ae "$C")" \
+          GIT_AUTHOR_DATE="$(git log -1 --format=%aD "$C")" \
+          GIT_COMMITTER_NAME="$(git log -1 --format=%cn "$C")" \
+          GIT_COMMITTER_EMAIL="$(git log -1 --format=%ce "$C")" \
+          GIT_COMMITTER_DATE="$(git log -1 --format=%cD "$C")" \
+          git commit-tree "$TREE" -p "$PARENT" -F -) || { echo "TRAILER_SCRUB: FAILED — commit-tree error at $C" >&2; exit 1; }
+        PARENT="$NEW"
+      done
+      if [ "$REWRITTEN" -eq 0 ]; then
+        echo "TRAILER_SCRUB: clean — $(printf '%s\n' "$COMMITS" | wc -l | tr -d ' ') commit(s) carry no attribution trailers"
+        exit 0
+      fi
+      git reset -q --hard "$PARENT"
+      echo "TRAILER_SCRUB: rewrote $REWRITTEN commit(s) to drop attribution trailers"
+      if [ "${SCRUB_PUSHED:-0}" = "1" ] && git rev-parse --verify --quiet '@{upstream}' >/dev/null; then
+        if git push --force-with-lease >/dev/null 2>&1; then
+          echo "TRAILER_SCRUB: force-pushed the rewritten head branch"
+        else
+          echo "TRAILER_SCRUB: FAILED — force-with-lease push rejected; the remote moved" >&2
+          exit 1
+        fi
+      fi
+
+  - id: dependency-audit
+    depends_on: [scrub-trailers]
+    timeout: 120000
+    bash: |
+      # Deterministic manifest diff so an unrequested dependency cannot slip
+      # into the PR unnoticed: the PR body and the report both read the file
+      # this writes, and additions the plan never names are marked UNPLANNED.
+      set -uo pipefail
+      OUT="$KEELSON_ARTIFACTS_DIR/dependency-changes.md"
+      BASE=$(cat "$KEELSON_ARTIFACTS_DIR/.default-branch" 2>/dev/null | tr -d '[:space:]')
+      if [ -z "$BASE" ] || ! MB=$(git merge-base "$BASE" HEAD 2>/dev/null); then
+        printf 'Dependency audit skipped: no base branch to diff against.\n' > "$OUT"
+        echo "DEPENDENCY_CHANGES: unknown — no base branch"
+        exit 0
+      fi
+      MANIFEST_RE='(^|/)(package\.json|bun\.lock|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|pyproject\.toml|requirements[^/]*\.txt|poetry\.lock|uv\.lock|Pipfile(\.lock)?|Cargo\.(toml|lock)|go\.(mod|sum)|Gemfile(\.lock)?|[^/]*\.csproj|packages\.config|pom\.xml|build\.gradle(\.kts)?|gradle\.lockfile|composer\.(json|lock))$'
+      LOCK_RE='(^|/)(bun\.lock|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|poetry\.lock|uv\.lock|Pipfile\.lock|Cargo\.lock|go\.sum|Gemfile\.lock|gradle\.lockfile|composer\.lock)$'
+      CHANGED=$(git diff --name-only "$MB" HEAD | grep -E "$MANIFEST_RE" || true)
+      if [ -z "$CHANGED" ]; then
+        printf 'No dependency manifest or lockfile changed on this branch.\n' > "$OUT"
+        echo "DEPENDENCY_CHANGES: none"
+        exit 0
+      fi
+      PLAN="$KEELSON_ARTIFACTS_DIR/plan.md"
+      UNPLANNED=0
+      {
+        echo "# Dependency changes on this branch"
+        echo
+        echo "Manifest files changed since $BASE:"
+        printf '%s\n' "$CHANGED" | sed 's/^/- /'
+        for F in $CHANGED; do
+          if printf '%s' "$F" | grep -qE "$LOCK_RE"; then
+            echo
+            echo "## $F (lockfile, $(git diff --numstat "$MB" HEAD -- "$F" | awk '{print $1"+/"$2"-"}') lines)"
+            continue
+          fi
+          echo
+          echo "## $F"
+          git diff "$MB" HEAD -- "$F" | grep -E '^-[^-]' | sed 's/^-//; s/[[:space:],]//g' > "$KEELSON_ARTIFACTS_DIR/.dep-removed"
+          git diff "$MB" HEAD -- "$F" | grep -E '^[+-][^+-]' | head -60 | while IFS= read -r LINE; do
+            case "$LINE" in
+              +*)
+                NORM=$(printf '%s' "$LINE" | sed 's/^+//; s/[[:space:],]//g')
+                if [ -n "$NORM" ] && grep -qxF -- "$NORM" "$KEELSON_ARTIFACTS_DIR/.dep-removed"; then
+                  echo "$LINE    (reformatted)"
+                  continue
+                fi
+                TOKEN=$(printf '%s' "$LINE" | sed 's/^+//' | grep -oE '[@A-Za-z0-9_./-]{2,}' | head -1 || true)
+                if [ -n "$TOKEN" ] && [ -f "$PLAN" ] && grep -qF -- "$TOKEN" "$PLAN"; then
+                  echo "$LINE    (named in plan.md)"
+                else
+                  echo "$LINE    UNPLANNED"
+                  echo "$TOKEN" >> "$KEELSON_ARTIFACTS_DIR/.dep-unplanned"
+                fi
+                ;;
+              *) echo "$LINE" ;;
+            esac
+          done
+        done
+      } > "$OUT"
+      UNPLANNED=$(wc -l < "$KEELSON_ARTIFACTS_DIR/.dep-unplanned" 2>/dev/null | tr -d ' ' || echo 0)
+      rm -f "$KEELSON_ARTIFACTS_DIR/.dep-unplanned" "$KEELSON_ARTIFACTS_DIR/.dep-removed"
+      FILES=$(printf '%s\n' "$CHANGED" | tr '\n' ' ' | sed 's/ $//')
+      echo "DEPENDENCY_CHANGES: $(printf '%s\n' "$CHANGED" | wc -l | tr -d ' ') manifest file(s) changed — $FILES; unplanned added lines: ${UNPLANNED:-0}"
+      echo "Details: $OUT"
+
+  - id: create-pr
+    depends_on: [dependency-audit]
     context: fresh
     prompt: |
       Push the branch and create a draft pull request that links the issue.
@@ -942,6 +1089,10 @@ nodes:
          - Every body MUST carry a **Bead** line naming
            `$(cat $ARTIFACTS_DIR/.bead-id)` and its title, so the queue entry is
            traceable from the PR.
+         - Read `$ARTIFACTS_DIR/dependency-changes.md`. When it lists changed
+           manifests, the body gets a **Dependency changes** section naming each
+           added or upgraded package and whether the plan called for it; lines
+           marked UNPLANNED are stated as such so the reviewer decides.
          - When `$ARTIFACTS_DIR/.external-ref` holds `gh-N` (equivalently, the
            bead context has `external_ref: gh-N`), the body MUST include the
            literal line `Closes #N` so merging closes the mirrored GitHub issue.
@@ -1359,6 +1510,9 @@ nodes:
         full suite.
       - Stage edited files by name. Never `git add -A`. Never commit anything
         under `$ARTIFACTS_DIR`.
+      - Dependencies are frozen: never add, remove, or upgrade a package in any
+        manifest or lockfile. A fix that needs one is reported as still open,
+        not applied.
       - Commit the fixes by name (`git commit -m "<message>"`,
         or split if logically distinct) — staging alone is dropped, since the PR
         pushes HEAD. Commit immediately; never leave fixes uncommitted.
@@ -1426,6 +1580,8 @@ nodes:
         - If a blocker remains: fix it now. Read the file, edit, run the NARROWEST
           covering check, then
           `git add <files>; git commit -m "<message>"; git push`.
+          Dependencies are frozen: a fix that needs a new or upgraded package
+          stays open and is named as the blocker instead.
           Author the commit message from the staged diff (conventional format);
           never add a "Generated with Claude Code" footer or a `Co-Authored-By:`
           trailer. Then describe the exact
@@ -1472,8 +1628,74 @@ nodes:
   # delegated to the resolve-pr workflow, not blocked on here.
   # ─────────────────────────────────────────────────────────────────────────
 
-  - id: await-ci
+  - id: dependency-audit-final
     depends_on: [post-fix-validate]
+    timeout: 120000
+    bash: |
+      # Deterministic manifest diff so an unrequested dependency cannot slip
+      # into the PR unnoticed: the PR body and the report both read the file
+      # this writes, and additions the plan never names are marked UNPLANNED.
+      set -uo pipefail
+      OUT="$KEELSON_ARTIFACTS_DIR/dependency-changes.md"
+      BASE=$(cat "$KEELSON_ARTIFACTS_DIR/.default-branch" 2>/dev/null | tr -d '[:space:]')
+      if [ -z "$BASE" ] || ! MB=$(git merge-base "$BASE" HEAD 2>/dev/null); then
+        printf 'Dependency audit skipped: no base branch to diff against.\n' > "$OUT"
+        echo "DEPENDENCY_CHANGES: unknown — no base branch"
+        exit 0
+      fi
+      MANIFEST_RE='(^|/)(package\.json|bun\.lock|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|pyproject\.toml|requirements[^/]*\.txt|poetry\.lock|uv\.lock|Pipfile(\.lock)?|Cargo\.(toml|lock)|go\.(mod|sum)|Gemfile(\.lock)?|[^/]*\.csproj|packages\.config|pom\.xml|build\.gradle(\.kts)?|gradle\.lockfile|composer\.(json|lock))$'
+      LOCK_RE='(^|/)(bun\.lock|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|poetry\.lock|uv\.lock|Pipfile\.lock|Cargo\.lock|go\.sum|Gemfile\.lock|gradle\.lockfile|composer\.lock)$'
+      CHANGED=$(git diff --name-only "$MB" HEAD | grep -E "$MANIFEST_RE" || true)
+      if [ -z "$CHANGED" ]; then
+        printf 'No dependency manifest or lockfile changed on this branch.\n' > "$OUT"
+        echo "DEPENDENCY_CHANGES: none"
+        exit 0
+      fi
+      PLAN="$KEELSON_ARTIFACTS_DIR/plan.md"
+      UNPLANNED=0
+      {
+        echo "# Dependency changes on this branch"
+        echo
+        echo "Manifest files changed since $BASE:"
+        printf '%s\n' "$CHANGED" | sed 's/^/- /'
+        for F in $CHANGED; do
+          if printf '%s' "$F" | grep -qE "$LOCK_RE"; then
+            echo
+            echo "## $F (lockfile, $(git diff --numstat "$MB" HEAD -- "$F" | awk '{print $1"+/"$2"-"}') lines)"
+            continue
+          fi
+          echo
+          echo "## $F"
+          git diff "$MB" HEAD -- "$F" | grep -E '^-[^-]' | sed 's/^-//; s/[[:space:],]//g' > "$KEELSON_ARTIFACTS_DIR/.dep-removed"
+          git diff "$MB" HEAD -- "$F" | grep -E '^[+-][^+-]' | head -60 | while IFS= read -r LINE; do
+            case "$LINE" in
+              +*)
+                NORM=$(printf '%s' "$LINE" | sed 's/^+//; s/[[:space:],]//g')
+                if [ -n "$NORM" ] && grep -qxF -- "$NORM" "$KEELSON_ARTIFACTS_DIR/.dep-removed"; then
+                  echo "$LINE    (reformatted)"
+                  continue
+                fi
+                TOKEN=$(printf '%s' "$LINE" | sed 's/^+//' | grep -oE '[@A-Za-z0-9_./-]{2,}' | head -1 || true)
+                if [ -n "$TOKEN" ] && [ -f "$PLAN" ] && grep -qF -- "$TOKEN" "$PLAN"; then
+                  echo "$LINE    (named in plan.md)"
+                else
+                  echo "$LINE    UNPLANNED"
+                  echo "$TOKEN" >> "$KEELSON_ARTIFACTS_DIR/.dep-unplanned"
+                fi
+                ;;
+              *) echo "$LINE" ;;
+            esac
+          done
+        done
+      } > "$OUT"
+      UNPLANNED=$(wc -l < "$KEELSON_ARTIFACTS_DIR/.dep-unplanned" 2>/dev/null | tr -d ' ' || echo 0)
+      rm -f "$KEELSON_ARTIFACTS_DIR/.dep-unplanned" "$KEELSON_ARTIFACTS_DIR/.dep-removed"
+      FILES=$(printf '%s\n' "$CHANGED" | tr '\n' ' ' | sed 's/ $//')
+      echo "DEPENDENCY_CHANGES: $(printf '%s\n' "$CHANGED" | wc -l | tr -d ' ') manifest file(s) changed — $FILES; unplanned added lines: ${UNPLANNED:-0}"
+      echo "Details: $OUT"
+
+  - id: await-ci
+    depends_on: [dependency-audit-final]
     timeout: 1500000
     bash: |
       # Reads the PR number create-pr recorded; rerun-once shakes out flakes
@@ -1746,6 +1968,9 @@ nodes:
         "No actionable CI failures."
       - You are on the PR's head branch — commit directly onto it; do NOT create
         a new branch, and do NOT touch unrelated or pre-existing failures.
+      - Dependencies are frozen: never add, remove, or upgrade a package in any
+        manifest or lockfile to make CI green. Treat that need as a conflict and
+        write `$ARTIFACTS_DIR/.ci-conflict`.
       - Never make a criteria-named test or behavior stop running. Do not add
         `skip`, `skipIf`, `.only`, `xit`, `xdescribe`, or `test.todo`, and do
         not delete or invert the behavior to force CI green. Treat that path as
@@ -1763,8 +1988,84 @@ nodes:
         (`git commit -m "<message>"`, split if logically distinct)
         and then `git push` — staging alone is dropped.
 
-  - id: finalize-pr
+  - id: scrub-trailers-final
     depends_on: [fix-ci]
+    timeout: 120000
+    bash: |
+      # Same scrub as scrub-trailers, run after the last agent push: rewrites
+      # the whole branch and force-pushes the PR's own head so no attribution
+      # trailer reaches the merge.
+      set -uo pipefail
+      SCRUB_PUSHED=1
+      BASE=$(cat "$KEELSON_ARTIFACTS_DIR/.default-branch" 2>/dev/null | tr -d '[:space:]')
+      if [ -z "$BASE" ]; then
+        echo "TRAILER_SCRUB: skipped — no .default-branch recorded"
+        exit 0
+      fi
+      if ! MB=$(git merge-base "$BASE" HEAD 2>/dev/null); then
+        echo "TRAILER_SCRUB: skipped — no merge base with $BASE"
+        exit 0
+      fi
+      # SCRUB_PUSHED=1 rewrites the whole branch and force-pushes the PR's own
+      # head branch; otherwise only commits not yet on the upstream are touched.
+      RANGE_START="$MB"
+      if [ "${SCRUB_PUSHED:-0}" != "1" ]; then
+        if UP=$(git rev-parse --verify --quiet '@{upstream}'); then
+          RANGE_START=$(git merge-base "$UP" HEAD 2>/dev/null || printf '%s' "$MB")
+        fi
+      fi
+      COMMITS=$(git rev-list --reverse "$RANGE_START..HEAD")
+      if [ -z "$COMMITS" ]; then
+        echo "TRAILER_SCRUB: clean — no commits to inspect"
+        exit 0
+      fi
+      if git rev-list --merges "$RANGE_START..HEAD" | grep -q .; then
+        echo "TRAILER_SCRUB: skipped — merge commits in range; leaving history alone"
+        exit 0
+      fi
+      if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+        echo "TRAILER_SCRUB: skipped — working tree has uncommitted changes"
+        exit 0
+      fi
+      TRAILER_RE='^[[:space:]]*(co-authored-by:|generated with|claude-session:|🤖 generated)'
+      PARENT="$RANGE_START"
+      REWRITTEN=0
+      for C in $COMMITS; do
+        MSG=$(git log -1 --format=%B "$C")
+        CLEAN=$(printf '%s\n' "$MSG" | grep -viE "$TRAILER_RE" | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}')
+        if [ "$CLEAN" = "$MSG" ] && [ "$REWRITTEN" -eq 0 ]; then
+          PARENT="$C"
+          continue
+        fi
+        [ "$CLEAN" != "$MSG" ] && REWRITTEN=$((REWRITTEN + 1))
+        TREE=$(git rev-parse "$C^{tree}")
+        NEW=$(printf '%s\n' "$CLEAN" | \
+          GIT_AUTHOR_NAME="$(git log -1 --format=%an "$C")" \
+          GIT_AUTHOR_EMAIL="$(git log -1 --format=%ae "$C")" \
+          GIT_AUTHOR_DATE="$(git log -1 --format=%aD "$C")" \
+          GIT_COMMITTER_NAME="$(git log -1 --format=%cn "$C")" \
+          GIT_COMMITTER_EMAIL="$(git log -1 --format=%ce "$C")" \
+          GIT_COMMITTER_DATE="$(git log -1 --format=%cD "$C")" \
+          git commit-tree "$TREE" -p "$PARENT" -F -) || { echo "TRAILER_SCRUB: FAILED — commit-tree error at $C" >&2; exit 1; }
+        PARENT="$NEW"
+      done
+      if [ "$REWRITTEN" -eq 0 ]; then
+        echo "TRAILER_SCRUB: clean — $(printf '%s\n' "$COMMITS" | wc -l | tr -d ' ') commit(s) carry no attribution trailers"
+        exit 0
+      fi
+      git reset -q --hard "$PARENT"
+      echo "TRAILER_SCRUB: rewrote $REWRITTEN commit(s) to drop attribution trailers"
+      if [ "${SCRUB_PUSHED:-0}" = "1" ] && git rev-parse --verify --quiet '@{upstream}' >/dev/null; then
+        if git push --force-with-lease >/dev/null 2>&1; then
+          echo "TRAILER_SCRUB: force-pushed the rewritten head branch"
+        else
+          echo "TRAILER_SCRUB: FAILED — force-with-lease push rejected; the remote moved" >&2
+          exit 1
+        fi
+      fi
+
+  - id: finalize-pr
+    depends_on: [scrub-trailers-final]
     timeout: 1500000
     bash: |
       # Authoritative gate: re-watch CI after any fix-ci push, then promote only
@@ -1814,6 +2115,7 @@ nodes:
         exit 0
       fi
       if [ "${CHECK_COUNT:-0}" -eq 0 ] 2>/dev/null; then
+        printf 'UNKNOWN\n' > "$KEELSON_ARTIFACTS_DIR/.ci-final-status"
         echo "PR_STATE: DRAFT — no CI checks reported after re-poll; the repo has no CI to gate on, left a draft"
         exit 0
       fi
@@ -1987,6 +2289,9 @@ nodes:
         `$ARTIFACTS_DIR/.pr-number` if present.
       - CI triage (including criteria count and conflicts): $triage-ci.output
       - CI + PR state (authoritative): $finalize-pr.output
+      - Dependency changes (deterministic manifest diff): $dependency-audit-final.output,
+        details in `$ARTIFACTS_DIR/dependency-changes.md`
+      - Attribution trailer scrub: $scrub-trailers-final.output
 
       ## Output
 
@@ -2013,6 +2318,11 @@ nodes:
 
       -- Validation (the project's own checks, after the review loop) --
       {PASS or FAIL — read it from the post-fix-validate output above; do NOT assume PASS}
+
+      -- Dependency changes --
+      {"none" when the audit reported none; otherwise each changed manifest and
+       every added package, with UNPLANNED on any the plan did not name. This is
+       a decision for the reviewer, not a success.}
 
       -- Review loop --
       {one line per triaged must-fix finding, with "fixed" or "still-open"; or
@@ -2124,6 +2434,18 @@ nodes:
       fi
       BEAD=$(cat "$BEAD_FILE")
       [ -n "$BEAD" ] || { echo "BEADS_WRITEBACK: skipped — empty bead id"; exit 0; }
+      # A human may have closed, deferred, or re-scoped the bead while the run
+      # was finishing (a merge closes it). Only a bead still carrying this
+      # run's claim is written to; anything else is left exactly as found.
+      BEAD_STATUS=$(bd show "$BEAD" --json 2>/dev/null | jq -r 'if type == "array" then .[0] else . end | .status // ""' 2>/dev/null || true)
+      if [ -z "$BEAD_STATUS" ]; then
+        echo "BEADS_WRITEBACK: skipped — could not read $BEAD (bd show failed); nothing written"
+        exit 0
+      fi
+      if [ "$BEAD_STATUS" != "in_progress" ]; then
+        echo "BEADS_WRITEBACK: left alone — $BEAD is $BEAD_STATUS, not in_progress; no note, no status change"
+        exit 0
+      fi
       PR_URL=$(cat "$KEELSON_ARTIFACTS_DIR/.pr-url" 2>/dev/null | tr -d '[:space:]')
       [ -z "$PR_URL" ] && PR_URL="none"
       FINAL_STATUS=$(cat "$KEELSON_ARTIFACTS_DIR/.ci-final-status" 2>/dev/null | tr -d '[:space:]')
@@ -2133,6 +2455,11 @@ nodes:
         if [ "$FINAL_STATUS" = "PASS" ]; then
           RUN_STATUS="success"
           DETAIL="draft PR reviewed and CI green; bead stays claimed until merge"
+        elif [ "$FINAL_STATUS" = "UNKNOWN" ]; then
+          # finalize-pr records UNKNOWN only when the repo has no CI to gate
+          # on: the PR is the work in flight, so the claim stays with it.
+          RUN_STATUS="unverified"
+          DETAIL="draft PR open; the repo has no CI to gate on; bead stays claimed until merge"
         elif [ -f "$KEELSON_ARTIFACTS_DIR/.ci-conflict" ]; then
           DETAIL="CI repair conflicts with the bead acceptance criteria; PR left as a draft"
         else
@@ -2142,7 +2469,7 @@ nodes:
       # The `bead-work run:` prefix is the note convention the rib's board
       # parses (src/measure.ts parseRunNote) — keep it verbatim.
       bd note "$BEAD" "bead-work run: PR ${PR_URL} — ${RUN_STATUS} — ${DETAIL}"
-      if [ "$RUN_STATUS" != "success" ]; then
+      if [ "$RUN_STATUS" = "failed" ]; then
         # Release the claim so the queue does not deadlock. NEVER `bd close` —
         # the bead closes when the PR merges, not when this workflow ends.
         bd update "$BEAD" --status open
