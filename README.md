@@ -72,7 +72,9 @@ and one that does the work:
   approval, implements in an isolated worktree, runs the project's own checks
   (discovered from its manifests), opens a draft PR, runs a three-lens review
   loop with an independent triage judge, waits on CI, and writes the outcome
-  back to the bead as a `bead-work run:` note the board reads. It never closes
+  back to the bead as a `bead-work run:` note the board reads. The approver's
+  reply at the plan gate lands on the bead too, as a `bead-work plan:` note,
+  so the decision record shows what was approved and with what changes. It never closes
   a bead; a failed run releases the claim. Judgment nodes pin `gpt-6-astra`,
   edit nodes `gpt-5.6-sol`, review lenses `gpt-5.6-terra` on the Copilot
   provider; elsewhere they resolve through the `deep` tier. Needs `gh`, `jq`,

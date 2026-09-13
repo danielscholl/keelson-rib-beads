@@ -111,3 +111,18 @@ describe("beads-work claim node", () => {
     expect(script).toContain("exit 1");
   });
 });
+
+describe("beads-work approval trail", () => {
+  test("records the approver's reply on the bead without gating implementation", async () => {
+    const yaml = await Bun.file(new URL("../workflows/beads-work.yml", import.meta.url)).text();
+    const workflow = Bun.YAML.parse(yaml) as {
+      nodes: { id: string; depends_on?: string[]; bash?: string }[];
+    };
+    const record = workflow.nodes.find((n) => n.id === "record-approval");
+    expect(record?.depends_on).toEqual(["approve-plan"]);
+    expect(record?.bash).toContain("KEELSON_NODE_approve_plan_OUTPUT");
+    expect(record?.bash).toContain('bd note "$BEAD" "bead-work plan: approved');
+    const implement = workflow.nodes.find((n) => n.id === "implement");
+    expect(implement?.depends_on).not.toContain("record-approval");
+  });
+});

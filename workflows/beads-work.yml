@@ -686,6 +686,24 @@ nodes:
         $ARTIFACTS_DIR/plan.md
       capture_response: true
 
+  # The approver's reply is the only trace that a human looked at the plan.
+  # Write it to the bead so the decision survives the run's artifacts dir.
+  # Bookkeeping never blocks implementation: a failed note warns and exits 0.
+  - id: record-approval
+    depends_on: [approve-plan]
+    timeout: 60000
+    bash: |
+      set -uo pipefail
+      BEAD=$(cat "$KEELSON_ARTIFACTS_DIR/.bead-id" 2>/dev/null || true)
+      [ -n "$BEAD" ] || { echo "approval note skipped: no bead id"; exit 0; }
+      LABEL=$(printf '%s' "${KEELSON_NODE_approve_plan_OUTPUT:-}" | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//' | cut -c1-200)
+      [ -n "$LABEL" ] || LABEL="approved"
+      if bd note "$BEAD" "bead-work plan: approved — ${LABEL}"; then
+        echo "approval recorded on $BEAD: ${LABEL}"
+      else
+        echo "approval note failed for $BEAD (bd note exited $?)" >&2
+      fi
+
   # ─────────────────────────────────────────────────────────────────────────
   # PHASE 4: IMPLEMENT
   # ─────────────────────────────────────────────────────────────────────────
