@@ -67,6 +67,15 @@ nodes:
       # `bd show --json` returns a single-element ARRAY — every consumer must
       # normalise or jq errors with "Cannot index array with string".
       DETAIL=$(bd show "$BEAD" --json | jq -c 'if type == "array" then .[0] else . end')
+      # A claim is only real once the DB reads it back: a concurrent `bd`
+      # write can lose the update while the claim command still exits 0.
+      # Fail here, before `.bead-id` exists, so the writeback node has
+      # nothing to release and the loss is visible instead of silent.
+      CLAIMED_STATUS=$(printf '%s' "$DETAIL" | jq -r '.status // ""')
+      if [ "$CLAIMED_STATUS" != "in_progress" ]; then
+        echo "claim lost: $BEAD reads status=${CLAIMED_STATUS:-unknown} after claim (concurrent bd write?)" >&2
+        exit 1
+      fi
       printf '%s\n' "$BEAD" > "$KEELSON_ARTIFACTS_DIR/.bead-id"
       printf '%s' "$DETAIL" | jq -r '.external_ref // ""' > "$KEELSON_ARTIFACTS_DIR/.external-ref"
       printf '%s' "$DETAIL" | jq -c --arg id "$BEAD" '

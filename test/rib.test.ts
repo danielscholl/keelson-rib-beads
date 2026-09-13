@@ -92,3 +92,22 @@ describe("rib contract shape", () => {
     expect(docs?.[0]?.content).toContain("beads_ready");
   });
 });
+
+describe("beads-work claim node", () => {
+  test("fails the run when the claim did not land instead of trusting bd's exit code", async () => {
+    const yaml = await Bun.file(new URL("../workflows/beads-work.yml", import.meta.url)).text();
+    const workflow = Bun.YAML.parse(yaml) as {
+      nodes: { id: string; bash?: string }[];
+    };
+    const claim = workflow.nodes.find((n) => n.id === "claim");
+    expect(claim?.bash).toBeDefined();
+    const script = claim?.bash ?? "";
+    // The verification must read the bead back and gate on in_progress
+    // before `.bead-id` is written, so a lost write never reaches writeback.
+    const verifyAt = script.indexOf('!= "in_progress"');
+    const recordAt = script.indexOf('> "$KEELSON_ARTIFACTS_DIR/.bead-id"');
+    expect(verifyAt).toBeGreaterThan(-1);
+    expect(recordAt).toBeGreaterThan(verifyAt);
+    expect(script).toContain("exit 1");
+  });
+});
