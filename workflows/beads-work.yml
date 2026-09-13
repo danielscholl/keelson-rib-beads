@@ -46,9 +46,10 @@ nodes:
       # Keelson's bash channel exposes the free-form argument string as
       # $KEELSON_ARGUMENTS. The bare-ARGUMENTS marker is a PROMPT-body form only —
       # in a bash node it expands to nothing, silently ignoring an explicit bead id.
+      # The id grammar is BEAD_ID_PATTERN in src/bead-id.ts; keep the two equal.
       BEAD="${KEELSON_INPUTS_bead:-}"
       if [ -z "$BEAD" ]; then
-        BEAD=$(printf '%s' "${KEELSON_ARGUMENTS:-}" | grep -oE '[a-z][a-z0-9]*-[a-z0-9]+' | head -1 || true)
+        BEAD=$(printf '%s' "${KEELSON_ARGUMENTS:-}" | grep -oE '[a-z][a-z0-9]*-[a-z0-9]+(\.[0-9]+)*' | head -1 || true)
       fi
       if [ -n "$BEAD" ]; then
         bd update "$BEAD" --claim >/dev/null
