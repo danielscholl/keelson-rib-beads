@@ -795,7 +795,11 @@ nodes:
       4. After all tasks: append a section to `$ARTIFACTS_DIR/plan.md` summarizing
          what was done, what was skipped, and any deviations.
 
-      Print a short status report when finished.
+      Print a short status report when finished. Its FIRST line states what
+      happened to the human feedback, in one of these two forms, so the
+      approver can confirm it from the node output alone:
+      `Feedback applied: <one-line summary of the plan changes>` or
+      `Feedback: none (plan approved as-is)`.
 
   # ─────────────────────────────────────────────────────────────────────────
   # PHASE 5: VALIDATE
