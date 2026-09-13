@@ -1489,12 +1489,21 @@ nodes:
       FORGE_OK=1
       ATTEMPT=1
       CHECK_MAX_ATTEMPTS=6
+      # `gh pr checks` exits 1 with "no checks reported" when a PR has zero
+      # checks. That is a fact about the repo's CI, not a failed call, so it
+      # gets a short re-poll for the post-push window and then reads as no CI.
+      NO_CHECKS_MAX_ATTEMPTS=3
+      COUNT_ERR="$KEELSON_ARTIFACTS_DIR/.ci-count.err"
       # Internal test-only override; production waits 10 seconds between attempts.
       CI_RECHECK_INTERVAL="${KEELSON_CI_RECHECK_INTERVAL:-10}"
       while :; do
-        if CHECK_COUNT=$(forge pr checks "$PR_NUM" --json state -q 'length' 2>/dev/null); then
+        if CHECK_COUNT=$(forge pr checks "$PR_NUM" --json state -q 'length' 2> "$COUNT_ERR"); then
           FORGE_OK=1
           [ "${CHECK_COUNT:-0}" -gt 0 ] 2>/dev/null && break
+        elif grep -qi 'no checks reported' "$COUNT_ERR" 2>/dev/null; then
+          FORGE_OK=1
+          CHECK_COUNT=0
+          [ "$ATTEMPT" -ge "$NO_CHECKS_MAX_ATTEMPTS" ] && break
         else
           FORGE_OK=0
           CHECK_COUNT=0
@@ -1505,10 +1514,11 @@ nodes:
       done
       if [ "$FORGE_OK" -ne 1 ]; then
         echo "CI_STATUS: UNKNOWN — could not query CI checks for PR #$PR_NUM (forge call failed)"
+        cat "$COUNT_ERR" 2>/dev/null || true
         exit 0
       fi
       if [ "${CHECK_COUNT:-0}" -eq 0 ] 2>/dev/null; then
-        echo "CI_STATUS: UNKNOWN — no CI checks present for PR #$PR_NUM after re-poll; nothing to gate on"
+        echo "CI_STATUS: UNKNOWN — no CI checks reported for PR #$PR_NUM after re-poll; the repo has no CI to gate on"
         exit 0
       fi
       snapshot_checks() {
@@ -1776,12 +1786,20 @@ nodes:
       FORGE_OK=1
       ATTEMPT=1
       CHECK_MAX_ATTEMPTS=6
+      # See await-ci: gh's "no checks reported" exit is a fact about the repo's
+      # CI, not a failed call.
+      NO_CHECKS_MAX_ATTEMPTS=3
+      COUNT_ERR="$KEELSON_ARTIFACTS_DIR/.ci-count.err"
       # Internal test-only override; production waits 10 seconds between attempts.
       CI_RECHECK_INTERVAL="${KEELSON_CI_RECHECK_INTERVAL:-10}"
       while :; do
-        if CHECK_COUNT=$(forge pr checks "$PR_NUM" --json state -q 'length' 2>/dev/null); then
+        if CHECK_COUNT=$(forge pr checks "$PR_NUM" --json state -q 'length' 2> "$COUNT_ERR"); then
           FORGE_OK=1
           [ "${CHECK_COUNT:-0}" -gt 0 ] 2>/dev/null && break
+        elif grep -qi 'no checks reported' "$COUNT_ERR" 2>/dev/null; then
+          FORGE_OK=1
+          CHECK_COUNT=0
+          [ "$ATTEMPT" -ge "$NO_CHECKS_MAX_ATTEMPTS" ] && break
         else
           FORGE_OK=0
           CHECK_COUNT=0
@@ -1792,10 +1810,11 @@ nodes:
       done
       if [ "$FORGE_OK" -ne 1 ]; then
         echo "PR_STATE: DRAFT — could not query CI checks (forge call failed); left a draft"
+        cat "$COUNT_ERR" 2>/dev/null || true
         exit 0
       fi
       if [ "${CHECK_COUNT:-0}" -eq 0 ] 2>/dev/null; then
-        echo "PR_STATE: DRAFT — no CI checks present after re-poll; nothing to gate on, left a draft"
+        echo "PR_STATE: DRAFT — no CI checks reported after re-poll; the repo has no CI to gate on, left a draft"
         exit 0
       fi
       snapshot_checks() {
