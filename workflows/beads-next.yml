@@ -64,6 +64,8 @@ nodes:
   - id: recommend
     depends_on: [measure]
     model: balanced
+    model_by_provider:
+      copilot: mai-code-1.1-flash
     prompt: |
       You are picking the next piece of work from a beads backlog. Below is a
       deterministic measurement of the queue, taken just now. **These numbers
