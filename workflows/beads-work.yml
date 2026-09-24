@@ -76,11 +76,16 @@ nodes:
         echo "claim lost: $BEAD reads status=${CLAIMED_STATUS:-unknown} after claim (concurrent bd write?)" >&2
         exit 1
       fi
+      CLAIMED_ASSIGNEE=$(printf '%s' "$DETAIL" | jq -r '.assignee // ""')
+      if [ -z "$CLAIMED_ASSIGNEE" ]; then
+        echo "claim unverified: $BEAD has no assignee after claim" >&2
+        exit 1
+      fi
       printf '%s\n' "$BEAD" > "$KEELSON_ARTIFACTS_DIR/.bead-id"
       date -u +%Y-%m-%dT%H:%M:%SZ > "$KEELSON_ARTIFACTS_DIR/.claimed-at"
       printf '%s' "$DETAIL" | jq -r '.external_ref // ""' > "$KEELSON_ARTIFACTS_DIR/.external-ref"
       printf '%s' "$DETAIL" | jq -c --arg id "$BEAD" '
-        {status:"claimed", id:$id, title:(.title // ""),
+        {status:"claimed", id:$id, assignee:.assignee, title:(.title // ""),
          issue_type:(.issue_type // ""), priority:(.priority // null),
          labels:(.labels // []), external_ref:(.external_ref // null)}'
 

@@ -96,10 +96,15 @@ const runDetailPayload = z.object({
     }),
   }),
 });
-const claimOutput = z.object({ status: z.string(), id: z.string().optional() });
+const claimOutput = z.object({
+  status: z.string(),
+  id: z.string().optional(),
+  assignee: z.string().optional(),
+});
 const cleanupIssue = z.object({
   id: z.string(),
   status: z.string(),
+  assignee: z.string().nullable().optional(),
   notes: z.string().nullable().optional(),
 });
 
@@ -142,16 +147,19 @@ async function cleanupEndedRun(event: RibRunEvent, ctx: RibContext): Promise<voi
 
   const claim = run.nodes.find((node) => node.nodeId === "claim");
   if (!claim) throw new Error(`beads-work ${event.runId}: claim node missing from run detail`);
-  if (!claim.startedAt && claim.status !== "succeeded" && claim.status !== "failed") return;
-  const explicitId = event.inputs.bead?.trim();
-  let beadId = explicitId;
-  if (!beadId && claim.outputText) {
-    const output = claimOutput.safeParse(JSON.parse(claim.outputText));
-    if (!output.success) throw new Error(`beads-work ${event.runId}: invalid claim output`);
-    if (output.data.status === "empty") return;
-    beadId = output.data.id;
+  if (claim.status !== "succeeded") return;
+  if (!claim.outputText) return;
+  const output = claimOutput.safeParse(JSON.parse(claim.outputText));
+  if (!output.success) throw new Error(`beads-work ${event.runId}: invalid claim output`);
+  if (output.data.status === "empty") return;
+  if (output.data.status !== "claimed" || !output.data.id) {
+    throw new Error(`beads-work ${event.runId}: claimed bead ID not recorded`);
   }
-  if (!beadId) throw new Error(`beads-work ${event.runId}: claimed bead ID not recorded`);
+  const explicitId = event.inputs.bead?.trim();
+  const beadId = output.data.id;
+  if (explicitId && explicitId !== beadId) return;
+  // Older runs did not persist the claim's assignee; they cannot safely release it.
+  if (!output.data.assignee) return;
 
   const cwd =
     (run.projectId &&
@@ -166,7 +174,7 @@ async function cleanupEndedRun(event: RibRunEvent, ctx: RibContext): Promise<voi
   if (!issue.success || issue.data.id !== beadId) {
     throw new Error(`beads-work ${event.runId}: invalid bd show result for ${beadId}`);
   }
-  if (issue.data.status !== "in_progress") return;
+  if (issue.data.status !== "in_progress" || issue.data.assignee !== output.data.assignee) return;
 
   const createPrIndex = run.nodes.findIndex((node) => node.nodeId === "create-pr");
   if (createPrIndex < 0) throw new Error(`beads-work ${event.runId}: create-pr node missing`);
@@ -380,7 +388,7 @@ const rib: Rib = {
         "Project-scoped (the host's project picker chooses the backlog) and arranged",
         "in the operator's order: the Pulse — a proportional flow strip (waiting →",
         "ready → in progress → in review → done 7d, ordinal ramp tones, the review",
-        "stage derived from bead-work run notes; an unmeasured stage renders as a",
+        "stage derived from linked PRs in bead-work run notes; an unmeasured stage renders as a",
         "hatched segment, never a zero); an Agents-at-work vs Needs-a-human pair",
         "(runs and their PRs on the cards; reviews to merge, dams — blockers grouped",
         "by what they hold — hand-paused work, stale claims, and epic closeouts in",
@@ -410,8 +418,9 @@ const rib: Rib = {
         "- Ready order is priority, but leverage outranks it: a bead with a high",
         "  dependent_count unblocks the most downstream work — start there.",
         "- Epics are structure, never work items (`--exclude-type=epic`).",
-        "- Closing is a merge-time action with a written reason; automated runs release",
-        "  a claim back to open instead of closing.",
+        "- Closing is a merge-time action with a written reason; automated runs never",
+        "  close beads. Cleanup releases only a claim still held by the run when",
+        "  create-pr never started and no PR is recorded.",
         "- No one-liner beads: batch trivia, split research into its own bead.",
         "",
         "## Workflows",
@@ -421,7 +430,10 @@ const rib: Rib = {
         "  priority drift; proposes bd commands, never runs them.",
         "- `beads-work` — claims a bead (or takes an id), plans, gates on approval,",
         "  implements in a worktree, opens a draft PR, reviews, waits on CI, and",
-        "  records the outcome on the bead. Never closes; releases the claim on failure.",
+        "  records the outcome on the bead. Never closes; on cancellation or failure",
+        "  before writeback, retains claims with a recorded or unknown PR state, and",
+        "  releases to open with no assignee only when create-pr never started and",
+        "  no PR exists.",
       ].join("\n"),
     },
   ],

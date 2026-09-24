@@ -22,7 +22,7 @@ function fixture() {
     {
       nodeId: "claim",
       status: "succeeded",
-      outputText: '{"status":"claimed","id":"cos-hjf.3"}',
+      outputText: '{"status":"claimed","id":"cos-hjf.3","assignee":"worker"}',
       startedAt: event.startedAt,
     },
     {
@@ -120,14 +120,14 @@ describe("beads-work exceptional cleanup", () => {
     const { event, issue, nodes, updates, ctx } = fixture();
     event.inputs = {};
     issue.id = "cos-auto.2";
-    nodes[0]!.outputText = '{"status":"claimed","id":"cos-auto.2"}';
+    nodes[0]!.outputText = '{"status":"claimed","id":"cos-auto.2","assignee":"worker"}';
     await rib.onRunEvent?.(event, ctx);
     expect(updates[0]?.slice(0, 2)).toEqual(["update", "cos-auto.2"]);
     expect(issue.status).toBe("open");
     expect(issue.assignee).toBe("");
   });
 
-  test("a recorded PR number keeps the claim and appends a board-compatible note", async () => {
+  test("a recorded PR number keeps the claim and records its unlinked number", async () => {
     const { event, issue, nodes, updates, ctx } = fixture();
     nodes[2] = {
       nodeId: "create-pr",
@@ -246,5 +246,37 @@ describe("beads-work exceptional cleanup", () => {
     await expect(rib.onRunEvent?.(event, ctx)).rejects.toThrow(
       "bd update cos-hjf.3: bd unavailable",
     );
+  });
+
+  test("does not release or annotate a bead when the claim failed", async () => {
+    const { event, nodes, issue, updates, calls, ctx } = fixture();
+    nodes[0]!.status = "failed";
+    await rib.onRunEvent?.(event, ctx);
+    expect(issue).toMatchObject({ status: "in_progress", assignee: "worker" });
+    expect(updates).toHaveLength(0);
+    expect(calls.filter((call) => call.cmd === "bd")).toHaveLength(0);
+  });
+
+  test("does not release a bead reassigned since this run claimed it", async () => {
+    const { event, issue, updates, ctx } = fixture();
+    issue.assignee = "another-worker";
+    await rib.onRunEvent?.(event, ctx);
+    expect(issue).toMatchObject({ status: "in_progress", assignee: "another-worker" });
+    expect(updates).toHaveLength(0);
+  });
+
+  test("older claims without recorded ownership are left untouched", async () => {
+    const { event, nodes, issue, updates, ctx } = fixture();
+    nodes[0]!.outputText = '{"status":"claimed","id":"cos-hjf.3"}';
+    await rib.onRunEvent?.(event, ctx);
+    expect(issue).toMatchObject({ status: "in_progress", assignee: "worker" });
+    expect(updates).toHaveLength(0);
+  });
+
+  test("an explicit bead differing from the recorded claim is left untouched", async () => {
+    const { event, nodes, updates, ctx } = fixture();
+    nodes[0]!.outputText = '{"status":"claimed","id":"other-bead","assignee":"worker"}';
+    await rib.onRunEvent?.(event, ctx);
+    expect(updates).toHaveLength(0);
   });
 });

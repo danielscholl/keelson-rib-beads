@@ -29,7 +29,7 @@ import {
   unlockChain,
   unlockLevels,
 } from "../src/board";
-import type { ProjectMeasurement } from "../src/measure";
+import { type ProjectMeasurement, parseRunNote } from "../src/measure";
 
 const project = { id: "p1", name: "demo", rootPath: "/tmp/demo" };
 
@@ -1217,6 +1217,32 @@ describe("the derived review stage", () => {
     if (!split.ok) throw new Error("split should measure");
     expect(split.data.inReview.map((i) => i.id)).toEqual(["tl-r"]);
     expect(split.data.working.map((i) => i.id)).toEqual(["tl-w"]);
+  });
+
+  test("number-only and unknown PRs stay in progress without dead links", () => {
+    for (const [token, label] of [
+      ["#42", "#42 (URL unknown)"],
+      ["unknown", "unknown"],
+    ]) {
+      const m = fullMeasurement();
+      m.runInfo = ok({ "tl-a": ok(parseRunNote(`bead-work run: PR ${token} — cancelled`)) });
+      const split = stageSplit(m);
+      if (!split.ok) throw new Error("split should measure");
+      expect(split.data.inReview).toHaveLength(0);
+      expect(split.data.working.map((i) => i.id)).toEqual(["tl-a"]);
+      const strip = composePulse(m).sections[0];
+      if (strip?.kind !== "segments") throw new Error("no flow strip");
+      expect(strip.items.find((s) => s.label === "In review")?.n).toBe(0);
+      const review = composeAttention(m, {}).sections[0];
+      if (review?.kind !== "rows") throw new Error("no review section");
+      expect(review.items[0]?.href).toBeUndefined();
+      const cards = composeWip(m, {}).sections[0];
+      if (cards?.kind !== "cards") throw new Error("no agents section");
+      expect(cards.items[0]?.fields?.find((field) => field.label === "PR")).toEqual({
+        label: "PR",
+        value: label,
+      });
+    }
   });
 
   test("stageSplit refuses partial answers", () => {

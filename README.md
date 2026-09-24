@@ -83,7 +83,9 @@ and one that does the work:
   in progress; one a human closed or deferred mid-run is left as found.
   It never closes a bead. If a run is cancelled or fails before writeback,
   the rib releases a still-in-progress bead to `open` with no assignee only
-  when `create-pr` never started and no PR is recorded. A recorded PR keeps
+  when the successful claim recorded its assignee, that assignee still holds
+  the bead, `create-pr` never started, and no PR is recorded. Older runs
+  without a recorded assignee are left untouched. A recorded PR keeps
   the claim; if PR creation started but no identifier was recorded, the
   claim stays in place with a note that the PR state is unknown. Runs that
   reach writeback retain its existing outcome handling. Judgment nodes pin `gpt-6-astra`,
