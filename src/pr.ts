@@ -12,15 +12,52 @@ import type { BeadsProject, Measured } from "./bd";
 import { unmeasured } from "./bd";
 import { BEAD_ID_PATTERN } from "./bead-id";
 
+const checkSchema = z.object({
+  status: z.string().nullish(),
+  conclusion: z.string().nullish(),
+  state: z.string().nullish(),
+});
+
 const prSchema = z.object({
   url: z.string(),
   state: z.enum(["OPEN", "CLOSED", "MERGED"]),
   mergedAt: z.string().datetime({ offset: true }).nullable(),
   body: z.string(),
+  isDraft: z.boolean().optional(),
+  reviewDecision: z.string().nullish(),
+  statusCheckRollup: z.array(checkSchema).nullish(),
 });
 
 type PrResponse = z.infer<typeof prSchema>;
-export type PrInfo = Pick<z.infer<typeof prSchema>, "url" | "state" | "mergedAt">;
+export type PrChecks = "passing" | "failing" | "pending";
+export type PrInfo = Pick<z.infer<typeof prSchema>, "url" | "state" | "mergedAt"> & {
+  draft?: boolean;
+  review?: "approved" | "changes requested" | "review required";
+  checks?: PrChecks;
+};
+
+// A check run reports status + conclusion; a legacy commit status reports state.
+export function rollupChecks(
+  rollup: readonly z.infer<typeof checkSchema>[] | null | undefined,
+): PrChecks | undefined {
+  if (!rollup?.length) return undefined;
+  let pending = false;
+  for (const c of rollup) {
+    const outcome = (c.conclusion ?? c.state ?? "").toUpperCase();
+    if (["FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED"].includes(outcome))
+      return "failing";
+    const done = c.status ? c.status.toUpperCase() === "COMPLETED" : outcome !== "PENDING";
+    if (!done || outcome === "" || outcome === "PENDING") pending = true;
+  }
+  return pending ? "pending" : "passing";
+}
+
+function reviewOf(decision: string | null | undefined): PrInfo["review"] {
+  if (decision === "APPROVED") return "approved";
+  if (decision === "CHANGES_REQUESTED") return "changes requested";
+  if (decision === "REVIEW_REQUIRED") return "review required";
+  return undefined;
+}
 
 export function canonicalPrUrl(value: string): Measured<string> {
   let url: URL;
@@ -104,12 +141,17 @@ export class GhClient {
     if (!response.ok) return response;
     const mismatch = beadLineError(response.data.body, beadId);
     if (mismatch) return unmeasured(mismatch);
+    const checks = rollupChecks(response.data.statusCheckRollup);
+    const review = reviewOf(response.data.reviewDecision);
     return {
       ok: true,
       data: {
         url: recorded.data,
         state: response.data.state,
         mergedAt: response.data.mergedAt,
+        ...(response.data.isDraft ? { draft: true } : {}),
+        ...(review ? { review } : {}),
+        ...(checks ? { checks } : {}),
       },
     };
   }
@@ -117,7 +159,13 @@ export class GhClient {
   private async fetchPR(project: BeadsProject, url: string): Promise<Measured<PrResponse>> {
     const res = await this.exec.runJSON<unknown>(
       "gh",
-      ["pr", "view", url, "--json", "url,state,mergedAt,body"],
+      [
+        "pr",
+        "view",
+        url,
+        "--json",
+        "url,state,mergedAt,body,isDraft,reviewDecision,statusCheckRollup",
+      ],
       { cwd: project.rootPath, timeoutMs: 30_000 },
     );
     if (!res.ok) return unmeasured(`gh pr view ${url}: ${res.error}`);

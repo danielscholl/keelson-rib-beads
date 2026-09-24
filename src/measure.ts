@@ -8,14 +8,16 @@
 
 import type {
   BdClient,
+  BdComment,
   BdEpicRow,
   BdIssue,
   BdSummary,
+  BdVersion,
   BeadRunInfo,
   BeadsProject,
   Measured,
 } from "./bd";
-import { unmeasured } from "./bd";
+import { bdFloorLabel, parseBdVersion, unmeasured } from "./bd";
 import type { GhClient, PrInfo } from "./pr";
 
 export const STALE_DAYS = 7;
@@ -24,9 +26,21 @@ export const RECENT_CLOSE_DAYS = 7;
 // bar chart can't show whether this week is faster or slower than last week.
 export const FLOW_WINDOW_DAYS = 14;
 
+// One member of an epic as its parent-child edge reports it: enough to draw
+// the ladder, closed children included.
+export interface EpicMember {
+  id: string;
+  title: string;
+  status: string;
+  priority?: number;
+}
+
 export interface ProjectMeasurement {
   project: BeadsProject;
   asOf: string;
+  // `undefined` data: bd answered but its version string was unreadable, so
+  // nothing is gated on it.
+  bd: Measured<BdVersion | undefined>;
   summary: Measured<BdSummary>;
   inProgress: Measured<BdIssue[]>;
   // Dependency-ready, epics excluded, in-progress subtracted, priority order.
@@ -47,7 +61,10 @@ export interface ProjectMeasurement {
   // Epic membership by parent-child dependency links (epic id → child ids):
   // dotted ids alone miss it, and `bd list` carries no dependency payload —
   // only `bd show <epic> --include-dependents` names an epic's children.
-  epicChildren: Measured<Record<string, string[]>>;
+  epicChildren: Measured<Record<string, EpicMember[]>>;
+  // The newest comment on each claimed bead that has any — the In flight
+  // row's evidence line.
+  latestComment: Measured<Record<string, Measured<BdComment | undefined>>>;
   // Run notes for all eligible open and in-progress beads. Individual failures
   // degrade their bead, while an unmeasured backlog degrades the whole scan.
   runInfo: Measured<Record<string, Measured<BeadRunInfo | undefined>>>;
@@ -143,6 +160,38 @@ export async function fetchIssue(
     : unmeasured(`bd show ${id} returned no matching issue`);
 }
 
+export async function readComments(
+  bd: BdClient,
+  cwd: string,
+  id: string,
+): Promise<Measured<BdComment[]>> {
+  const res = await bd.readJSON<unknown>(cwd, ["comments", id]);
+  if (!res.ok) return res;
+  return {
+    ok: true,
+    data: (Array.isArray(res.data) ? (res.data as BdComment[]) : [])
+      .filter((c) => typeof c?.text === "string")
+      .sort((a, b) => ((a.created_at ?? "") < (b.created_at ?? "") ? -1 : 1)),
+  };
+}
+
+// The bd on PATH, when it can say. A version below the floor gates every
+// query that needs a newer flag, so one header line reports the cause
+// instead of each panel alarming on its own.
+export async function readBdVersion(
+  bd: BdClient,
+  cwd: string,
+): Promise<Measured<BdVersion | undefined>> {
+  const res = await bd.readJSON<unknown>(cwd, ["version"]);
+  return res.ok ? { ok: true, data: parseBdVersion(res.data) } : res;
+}
+
+export function bdBelowFloor(m: Pick<ProjectMeasurement, "bd">): string | undefined {
+  return m.bd.ok && m.bd.data && !m.bd.data.supported
+    ? `bd ${m.bd.data.version} is older than ${bdFloorLabel()}`
+    : undefined;
+}
+
 export function eligibleBeads(rows: readonly BdIssue[]): BdIssue[] {
   return rows.filter((issue) => issue.status === "open" || issue.status === "in_progress");
 }
@@ -198,6 +247,9 @@ export async function measureProject(
   gh?: GhClient,
 ): Promise<ProjectMeasurement> {
   const cwd = project.rootPath;
+
+  const bdVersion = await readBdVersion(bd, cwd);
+  const tooOld = bdBelowFloor({ bd: bdVersion });
 
   const statusRes = await bd.readJSON<{ summary?: BdSummary }>(cwd, ["status"]);
   const summary: Measured<BdSummary> = statusRes.ok
@@ -283,22 +335,29 @@ export async function measureProject(
     : staleRes;
 
   const backlog = await readBacklog(bd, cwd);
-  const { runInfo, prInfo } = gh
-    ? await collectRecordedPRs(bd, gh, project, backlog)
-    : {
-        runInfo:
-          unmeasured<Record<string, Measured<BeadRunInfo | undefined>>>("GitHub reader not bound"),
-        prInfo: unmeasured<Record<string, Measured<PrInfo | undefined>>>("GitHub reader not bound"),
-      };
+  const { runInfo, prInfo } = tooOld
+    ? { runInfo: unmeasured<never>(tooOld), prInfo: unmeasured<never>(tooOld) }
+    : gh
+      ? await collectRecordedPRs(bd, gh, project, backlog)
+      : {
+          runInfo:
+            unmeasured<Record<string, Measured<BeadRunInfo | undefined>>>(
+              "GitHub reader not bound",
+            ),
+          prInfo:
+            unmeasured<Record<string, Measured<PrInfo | undefined>>>("GitHub reader not bound"),
+        };
 
   // One bd show per epic in the open backlog (epics are few); a failed lookup
   // marks the whole map unmeasured rather than presenting partial membership
   // as complete.
-  let epicChildren: Measured<Record<string, string[]>>;
-  if (!backlog.ok) {
+  let epicChildren: Measured<Record<string, EpicMember[]>>;
+  if (tooOld) {
+    epicChildren = unmeasured(tooOld);
+  } else if (!backlog.ok) {
     epicChildren = unmeasured("backlog unmeasured, so epic membership cannot be read");
   } else {
-    const map: Record<string, string[]> = {};
+    const map: Record<string, EpicMember[]> = {};
     let failure: string | undefined;
     for (const epic of backlog.data.filter((i) => i.issue_type === "epic")) {
       const res = await bd.readJSON<unknown>(cwd, ["show", epic.id, "--include-dependents"]);
@@ -309,15 +368,42 @@ export async function measureProject(
       const issue = Array.isArray(res.data) ? (res.data[0] as BdIssue | undefined) : undefined;
       map[epic.id] = (issue?.dependents ?? [])
         .filter((d) => (d.dependency_type ?? d.type) === "parent-child")
-        .map((d) => d.id ?? d.issue_id ?? "")
-        .filter(Boolean);
+        .flatMap((d): EpicMember[] => {
+          const id = d.id ?? d.issue_id;
+          return id
+            ? [
+                {
+                  id,
+                  title: d.title ?? id,
+                  status: d.status ?? "open",
+                  ...(d.priority !== undefined ? { priority: d.priority } : {}),
+                },
+              ]
+            : [];
+        });
     }
     epicChildren = failure ? unmeasured(failure) : { ok: true, data: map };
+  }
+
+  // Comments are read only where a row will show one: claimed beads that
+  // carry any. A failure degrades that bead's evidence line alone.
+  let latestComment: Measured<Record<string, Measured<BdComment | undefined>>>;
+  if (!inProgress.ok) {
+    latestComment = unmeasured(`in-progress unmeasured: ${inProgress.error}`);
+  } else {
+    const map: Record<string, Measured<BdComment | undefined>> = {};
+    for (const bead of inProgress.data) {
+      if (!bead.comment_count) continue;
+      const res = await readComments(bd, cwd, bead.id);
+      map[bead.id] = res.ok ? { ok: true, data: res.data.at(-1) } : res;
+    }
+    latestComment = { ok: true, data: map };
   }
 
   return {
     project,
     asOf: now().toISOString(),
+    bd: bdVersion,
     summary,
     inProgress,
     ready,
@@ -328,6 +414,7 @@ export async function measureProject(
     stale,
     backlog,
     epicChildren,
+    latestComment,
     runInfo,
     prInfo,
   };

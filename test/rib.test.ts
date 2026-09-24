@@ -7,12 +7,12 @@ import rib from "../src/index";
 import {
   ALL_KEYS,
   ATTENTION_KEY,
+  BACKLOG_KEY,
   INSPECT_KEY,
-  MOMENTUM_KEY,
-  PLAN_KEY,
-  PORTFOLIO_KEY,
+  LADDERS_KEY,
   PULSE_KEY,
   RECOMMEND_KEY,
+  SHIPPED_KEY,
   WIP_KEY,
 } from "../src/keys";
 
@@ -28,35 +28,27 @@ describe("rib contract shape", () => {
     }
   });
 
-  test("the surface lays out the operator's order", () => {
+  test("the surface lays out Doing, To do, and Done in that order", () => {
     const surface = rib.surfaces?.[0];
     expect(surface?.id).toBe("beads");
     expect(surface?.layout.header?.key).toBe(PULSE_KEY);
-    // Since @keelson/shared 0.103.0 a column is one region or a stack of
-    // them; `columnRegions` is the contract's own unwrap, so the test walks a
-    // column exactly the way the host does, and the per-column arrays below
-    // assert which columns stack as well as the order.
     const rowKeys = surface?.layout.rows.map((r) =>
       r.columns.map((c) => columnRegions(c).map((region) => region.key)),
     );
-    // What's moving and what needs a human lead; the board's pick stacks
-    // under what's-moving so both columns pack at their own height, and the
-    // row break keeps the pick above the portfolio/momentum pair. The
-    // inspector stays a full-width band ABOVE the Plan: stacks flow but
-    // still can't stick, so side-by-side would strand it beside a much
-    // taller inventory.
+    // Next up and the epic ladders stack in one column, so a project without
+    // epics leaves no empty column. The inspector has no region: it opens in
+    // the canvas drawer.
     expect(rowKeys).toEqual([
-      [[WIP_KEY, RECOMMEND_KEY], [ATTENTION_KEY]],
-      [[PORTFOLIO_KEY], [MOMENTUM_KEY]],
-      [[INSPECT_KEY]],
-      [[PLAN_KEY]],
+      [[WIP_KEY], [ATTENTION_KEY]],
+      [[RECOMMEND_KEY, LADDERS_KEY], [BACKLOG_KEY]],
+      [[SHIPPED_KEY]],
     ]);
-    // The pair renamed for what it shows: runs, and the human's queue.
-    const titles = surface?.layout.rows[0]?.columns.flatMap((c) =>
-      columnRegions(c).map((region) => region.title),
+    expect(surface?.layout.rows.map((r) => r.zoneTitle)).toEqual(["Doing", "To do", "Done"]);
+    const titles = surface?.layout.rows.flatMap((r) =>
+      r.columns.flatMap((c) => columnRegions(c).map((region) => region.title)),
     );
-    expect(titles).toEqual(["Agents at work", "Recommended next", "Needs a human"]);
-    // Momentum earned a column — nothing starts collapsed anymore.
+    expect(titles).toEqual(["In flight", "Needs you", "Next up", "Epics", "Backlog", "Shipped"]);
+    expect(rowKeys?.flat(2)).not.toContain(INSPECT_KEY);
     for (const row of surface?.layout.rows ?? []) {
       for (const col of row.columns) {
         for (const region of columnRegions(col)) expect(region.collapsed).toBeUndefined();
