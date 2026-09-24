@@ -90,6 +90,8 @@ describe("rib contract shape", () => {
     const docs = rib.contributeDocs?.({ getExec: () => ({}) as never });
     expect(docs?.[0]?.title).toBe("Beads");
     expect(docs?.[0]?.content).toContain("beads_ready");
+    expect(docs?.[0]?.content).toContain("retains claims with a recorded or unknown PR state");
+    expect(docs?.[0]?.content).not.toContain("releases the claim on failure");
   });
 });
 
@@ -109,6 +111,8 @@ describe("beads-work claim node", () => {
     expect(verifyAt).toBeGreaterThan(-1);
     expect(recordAt).toBeGreaterThan(verifyAt);
     expect(script).toContain("exit 1");
+    expect(script).toContain("assignee:.assignee");
+    expect(script).toContain('if [ -z "$CLAIMED_ASSIGNEE" ]');
   });
 });
 

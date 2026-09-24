@@ -99,7 +99,7 @@ export function recentCloses(closed: BdIssue[], now: Date, days = RECENT_CLOSE_D
 
 // The bead-work completion convention, one line appended to a bead's notes:
 //
-//   bead-work run: PR <url> — <outcome> — <free text>
+//   bead-work run: PR <url|#number|unknown|none> — <outcome> — <free text>
 //
 // `--append-notes` appends, so the LAST matching line is the current claim.
 // An unparseable note yields undefined — "no run reported" — which under-
@@ -111,6 +111,10 @@ export function parseRunNote(notes: string | undefined): BeadRunInfo | undefined
   for (const raw of notes.split("\n")) {
     const match = /^bead-work run:\s*PR\s+(\S+)\s*(.*)$/.exec(raw.trim());
     if (!match) continue;
+    const pr = match[1] ?? "";
+    const number = /^#(\d+)$/.exec(pr)?.[1];
+    const state = number ? "number-only" : pr === "unknown" || pr === "none" ? pr : undefined;
+    if (!/^https?:\/\/[^/\s]+\/[^\s]+$/.test(pr) && !state) continue;
     // The tail is em-dash-separated: first cell is the outcome, the rest is
     // prose (re-joined, so a dash inside the prose survives).
     const cells = (match[2] ?? "")
@@ -120,7 +124,8 @@ export function parseRunNote(notes: string | undefined): BeadRunInfo | undefined
     const outcome = cells[0];
     const note = cells.slice(1).join(" — ");
     found = {
-      prUrl: match[1] ?? "",
+      ...(!state ? { prUrl: pr } : { prState: state }),
+      ...(number ? { prNumber: number } : {}),
       ...(outcome ? { outcome } : {}),
       ...(note ? { note } : {}),
     };

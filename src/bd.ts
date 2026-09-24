@@ -62,11 +62,13 @@ export interface BdLinked {
 }
 
 // What a bead-work run reported about a bead, read from the notes convention
-// (`bead-work run: PR <url> — <outcome> — <free text>`). The join to live
+// (`bead-work run: PR <url|#number|unknown|none> — <outcome> — <free text>`). The join to live
 // runs is the note line, not a run id: bead-work writes it at completion, so
 // this names the PR and how the run ended — nothing more is claimed.
 export interface BeadRunInfo {
-  prUrl: string;
+  prUrl?: string;
+  prState?: "number-only" | "unknown" | "none";
+  prNumber?: string;
   outcome?: string;
   note?: string;
 }

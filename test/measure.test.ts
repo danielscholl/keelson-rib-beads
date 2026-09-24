@@ -97,4 +97,31 @@ describe("parseRunNote", () => {
     // A typo'd marker is a missed join, deliberately — not a guessed one.
     expect(parseRunNote("beadwork run: PR https://x.dev/p/3")).toBeUndefined();
   });
+
+  test("keeps unknown and number-only PR notes distinct from linked PRs", () => {
+    expect(parseRunNote("bead-work run: PR unknown — failed — state uncertain")).toEqual({
+      prState: "unknown",
+      outcome: "failed",
+      note: "state uncertain",
+    });
+    expect(parseRunNote("bead-work run: PR #42 — cancelled — claim retained")).toEqual({
+      prState: "number-only",
+      prNumber: "42",
+      outcome: "cancelled",
+      note: "claim retained",
+    });
+    expect(parseRunNote("bead-work run: PR none — failed")).toEqual({
+      prState: "none",
+      outcome: "failed",
+    });
+    expect(parseRunNote("bead-work run: PR garbage — failed")).toBeUndefined();
+  });
+
+  test("the last note controls review status even if an older note had a URL", () => {
+    expect(
+      parseRunNote(
+        "bead-work run: PR https://github.com/acme/demo/pull/9 — success\nbead-work run: PR unknown — failed",
+      ),
+    ).toEqual({ prState: "unknown", outcome: "failed" });
+  });
 });

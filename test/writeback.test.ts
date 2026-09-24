@@ -112,12 +112,12 @@ describe("beads-writeback", () => {
     installFakeBd("in_progress");
     const { stdout, exitCode } = await runWriteback();
     expect(exitCode).toBe(0);
-    expect(stdout).toContain("claim released (status=open)");
+    expect(stdout).toContain("claim released (status=open, no assignee)");
     const recorded = calls();
     expect(recorded.some((c) => c.startsWith("note fn-bye bead-work run: PR none — failed"))).toBe(
       true,
     );
-    expect(recorded).toContain("update fn-bye --status open");
+    expect(recorded).toContain("update fn-bye --status open --assignee ");
   });
 
   test("keeps the claim of an in_progress bead whose PR went green", async () => {
