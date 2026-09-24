@@ -25,6 +25,8 @@ that have one. The scoped board is composed in-process from `bd` output on a
   ranked by `dependent_count` — finishing a high-leverage bead frees the most
   downstream work, and that outranks raw priority
 - In-progress cards (work already claimed is the most interesting state)
+- Merged PRs awaiting bead closure in Needs attention, linked to the recorded
+  PR with a confirmed **Reconcile merged PRs** action for the selected project
 - The blocked set as the **union** of dependency-blocked (`bd blocked`) and
   status-blocked (`bd list --status blocked`) — either query alone
   undercounts, and a manually blocked row says "paused by hand" instead of an
@@ -53,12 +55,27 @@ but deferred.
 Every section is **fail-closed**: a failed `bd` query renders UNMEASURED,
 never an empty-but-healthy board.
 
-**Tools.** Read: `beads_projects`, `beads_status`, `beads_ready`,
-`beads_blocked`, `beads_show`, `beads_list`, `beads_epics`, `beads_stale`.
-Write (policy-gated): `beads_create`, `beads_update` (claim / status /
-priority / notes), `beads_close` (confirmation-required — closing is a
-merge-time action), `beads_dep`. Any mutation recomposes the board
-immediately; `beads_board_refresh` does so on demand.
+**Tools.** Tools that target a backlog take an optional project name; omit it
+only when exactly one registered project has a `.beads` tracker.
+
+| Tool | Use |
+| --- | --- |
+| `beads_projects`, `beads_status`, `beads_ready`, `beads_blocked`, `beads_show`, `beads_list`, `beads_epics`, `beads_stale` | Read the registered backlogs and their tracker state. |
+| `beads_create`, `beads_update`, `beads_dep` | Policy-gated tracker writes. |
+| `beads_close` | Manually close one bead with a reason (confirmation-required). |
+| `beads_sync_merged` | State-changing tool: without `confirm: true`, read-only preview listing each proposed bead ID, canonical PR URL and merge timestamp, plus skipped/error reasons. With `confirm: true`, recheck and close eligible beads; return closed/skipped/error results. |
+| `beads_board_refresh` | Re-measure the board on demand, without writes. |
+
+The board reads linked PRs on its five-minute cadence without writing to
+`bd`. It requires an authenticated `gh` CLI for PR-linked data; failed lookups
+appear as `UNMEASURED`, not as "nothing merged." The confirmed board action
+uses the selected project; the chat tool uses the project rule above. Both
+read the latest recorded `bead-work run: PR ...` note, re-read the current
+tracker and GitHub state, and close only eligible open or
+in-progress beads with reason `Merged via <canonical PR URL>` (for example,
+`Merged via https://github.com/acme/demo/pull/42`). A skipped or failed bead
+stays open, and successful closure releases dependents according to `bd`.
+There is no automatic merge webhook. Mutations recompose the board.
 
 **Workflows.** Two read-only ones that propose while the operator disposes,
 and one that does the work:
@@ -81,8 +98,9 @@ and one that does the work:
   audited against the plan and marked UNPLANNED in the PR body and report
   when the plan never named it. The writeback only touches a bead that still
   carries the run's claim; one a human closed or deferred mid-run is left
-  as found. It never closes
-  a bead; a failed run releases the claim. Judgment nodes pin `gpt-6-astra`,
+  as found. It never closes a bead; a failed run releases the claim, even if
+  a PR was recorded. After merge, run reconciliation or manually use
+  `beads_close`. Judgment nodes pin `gpt-6-astra`,
   edit nodes `gpt-5.6-sol`, review lenses `gpt-5.6-terra` on the Copilot
   provider; elsewhere they resolve through the `deep` tier. Needs `gh`, `jq`,
   and a GitHub remote. Pass `review_bot=false` to skip requesting the Copilot
@@ -111,9 +129,10 @@ Requires the `bd` CLI on PATH (`brew install beads` /
 - **The numbers are never the agent's to invent.** The board is composed
   deterministically in TypeScript; the workflows measure in bash and spend
   exactly one agent turn on composition.
-- **The rib never auto-closes beads.** Closing is a merge-time human action
-  with a written reason — a task closed with its reasoning is a decision
-  record.
+- **The rib never auto-closes beads.** The operator confirms reconciliation
+  after merge (or manually uses `beads_close`), preserving the PR URL as the
+  written decision reason. Children closing does not establish that an epic
+  meets its own acceptance criteria; epic closeout remains a separate review.
 
 Patterned on [keelson-rib-workiq](https://github.com/danielscholl/keelson-rib-workiq)
 (the teaching rib), with board conventions distilled from
