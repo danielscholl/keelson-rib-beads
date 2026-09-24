@@ -131,6 +131,16 @@ keelson rib add /path/to/keelson-rib-beads   # or a git URL / npm name
 keelson discovers installed `@keelson/rib-*` packages at boot. Scope
 activation to just this rib with `KEELSON_RIBS=beads` while testing.
 
+Installing from the git URL pins the newest `vX.Y.Z` release tag. `keelson
+update` (or `keelson rib update beads`) moves the pin to the newest release,
+and `keelson rib update beads --to <version>` rolls back. Restart the server
+afterwards so it loads the new version.
+
+Releases come from release-please: squash-merged conventional PR titles on
+`master` accumulate into a `chore(release): bump to X.Y.Z` PR, and merging
+that PR tags the release and writes `CHANGELOG.md`. A change reaches installed
+homes only once a release tag exists.
+
 Requires the `bd` CLI 1.2 or later on PATH (`brew install beads` /
 [steveyegge/beads](https://github.com/steveyegge/beads)). The board reads
 `bd version` on every sweep; an older `bd` shows as one line in the header.
