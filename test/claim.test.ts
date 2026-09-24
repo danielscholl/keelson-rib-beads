@@ -53,7 +53,7 @@ function installFakeBd(dependencies: Dep[]): void {
       "#!/bin/bash",
       `printf '%s\\n' "$*" >> "${join(sandbox, "calls")}"`,
       'if [ "$1" = "show" ]; then',
-      `  jq -nc --arg id "$2" --arg s "$(cat "${state}")" --slurpfile d "${deps}" '[{id:$id,title:"t",status:$s,dependencies:$d[0]}]'`,
+      `  jq -nc --arg id "$2" --arg s "$(cat "${state}")" --slurpfile d "${deps}" '[{id:$id,title:"t",status:$s,assignee:(if $s == "in_progress" then "agent" else null end),dependencies:$d[0]}]'`,
       "  exit 0",
       "fi",
       `if [ "$1" = "update" ] && [ "$3" = "--claim" ]; then printf in_progress > "${state}"; fi`,

@@ -43,6 +43,8 @@ import {
   WIP_KEY,
 } from "./keys";
 import { fetchIssue, measureProject, type ProjectMeasurement } from "./measure";
+import { GhClient } from "./pr";
+import { type SyncReport, syncMergedPRs } from "./sync";
 import { makeBeadsTools } from "./tools";
 
 // ── Module state, reset on every activation.
@@ -51,6 +53,8 @@ let unregisters: (() => void)[] = [];
 let refreshTimer: ReturnType<typeof setInterval> | undefined;
 let seedTimer: ReturnType<typeof setTimeout> | undefined;
 let bdClient: BdClient | undefined;
+let ghClient: GhClient | undefined;
+const syncingProjects = new Set<string>();
 let getAllProjects: (() => readonly { id: string; name: string; rootPath: string }[]) | undefined;
 let listBeadsProjects: (() => BeadsProject[]) | undefined;
 const cleanupInFlight = new Map<string, Promise<void>>();
@@ -204,6 +208,7 @@ async function cleanupEndedRun(event: RibRunEvent, ctx: RibContext): Promise<voi
     throw new Error(`beads-work ${event.runId}: bd update ${beadId}: ${updated.error}`);
   refreshAll();
 }
+const syncPayload = z.object({ projectId: z.string().min(1) });
 
 function scopedProject(): BeadsProject | undefined {
   if (!scopeId) return undefined;
@@ -219,8 +224,8 @@ function getMeasurement(project: BeadsProject): Promise<ProjectMeasurement> {
   ) {
     return measureCache.promise;
   }
-  if (!bdClient) return Promise.reject(new Error("bd client not bound"));
-  const promise = measureProject(bdClient, project);
+  if (!bdClient || !ghClient) return Promise.reject(new Error("beads clients not bound"));
+  const promise = measureProject(bdClient, project, undefined, ghClient);
   measureCache = { scopeId: project.id, at: now, promise };
   // A failed sweep must not poison the cache window.
   promise.catch(() => {
@@ -236,6 +241,27 @@ function recomposeKeys(keys: readonly string[]): void {
 function refreshAll(): void {
   measureCache = undefined;
   recomposeKeys(ALL_KEYS);
+}
+
+async function reconcile(project: BeadsProject, confirm: boolean): Promise<SyncReport> {
+  if (!bdClient || !ghClient) throw new Error("beads clients not bound");
+  if (syncingProjects.has(project.id))
+    throw new Error(`reconciliation already running for ${project.name}`);
+  syncingProjects.add(project.id);
+  try {
+    return await syncMergedPRs(bdClient, ghClient, project, { confirm });
+  } finally {
+    syncingProjects.delete(project.id);
+    if (confirm) refreshAll();
+  }
+}
+
+function syncErrors(report: SyncReport): string | undefined {
+  const failures = report.results.filter((result) => result.status === "error");
+  return (
+    report.error ??
+    (failures.length ? `${failures.length} bead(s) could not be reconciled` : undefined)
+  );
 }
 
 // Composer factory: every panel resolves the scope the same way — no scope or
@@ -390,7 +416,8 @@ const rib: Rib = {
         "ready → in progress → in review → done 7d, ordinal ramp tones, the review",
         "stage derived from linked PRs in bead-work run notes; an unmeasured stage renders as a",
         "hatched segment, never a zero); an Agents-at-work vs Needs-a-human pair",
-        "(runs and their PRs on the cards; reviews to merge, dams — blockers grouped",
+        "(runs and their PRs on the cards; verified merges pending close, reviews",
+        "to merge, dams — blockers grouped",
         "by what they hold — hand-paused work, stale claims, and epic closeouts in",
         "the queue); ONE recommended-next bead (leverage first, priority second) with",
         "its unlock chain named and Inspect / Start actions; a Portfolio of per-epic",
@@ -403,24 +430,33 @@ const rib: Rib = {
         "the page the click landed); and the Plan — the canonical grouped grid of",
         "everything not finished. Color means state, never priority. Every panel is",
         "fail-closed: a failed bd query renders UNMEASURED, never empty-but-healthy.",
-        "Panels refresh on a 5-minute cadence; any beads_* mutation recomposes them",
-        "immediately, and beads_board_refresh does so on demand.",
+        "Panels measure linked PRs read-only on a 5-minute cadence using an",
+        "authenticated gh CLI. Failed lookups show UNMEASURED, not a clean slate.",
+        "There is no automatic merge webhook. The confirmed Reconcile merged PRs",
+        "action rechecks and closes eligible beads in the selected project with",
+        "reason Merged via <canonical PR URL>; refresh alone never closes anything.",
+        "Mutations recompose immediately; beads_board_refresh does so on demand.",
         "",
         "## Tools",
         "",
         "Read: beads_projects, beads_status, beads_ready, beads_blocked, beads_show,",
         "beads_list, beads_epics, beads_stale.",
         "Write: beads_create, beads_update (claim/status/priority/notes),",
-        "beads_close (confirmation-gated), beads_dep.",
+        "beads_close (manual, confirmation-gated), beads_dep.",
+        "beads_sync_merged is state-changing: omit confirm for a read-only preview",
+        "of bead ID, PR URL and merge timestamp; confirm: true closes verified",
+        "merged PR beads and reports closed, skipped and error results. Its optional",
+        "project name defaults only when exactly one beads project is registered.",
         "",
         "## Conventions the tools encode",
         "",
         "- Ready order is priority, but leverage outranks it: a bead with a high",
         "  dependent_count unblocks the most downstream work — start there.",
         "- Epics are structure, never work items (`--exclude-type=epic`).",
-        "- Closing is a merge-time action with a written reason; automated runs never",
-        "  close beads. Cleanup releases only a claim still held by the run when",
-        "  create-pr never started and no PR is recorded.",
+        "- Closing follows verified merge and explicit confirmation, or manual",
+        "  beads_close with a reason; automated runs never close beads. Cleanup",
+        "  releases only a claim still held by the run when create-pr never",
+        "  started and no PR is recorded. Epic acceptance criteria still need review.",
         "- No one-liner beads: batch trivia, split research into its own bead.",
         "",
         "## Workflows",
@@ -434,12 +470,15 @@ const rib: Rib = {
         "  before writeback, retains claims with a recorded or unknown PR state, and",
         "  releases to open with no assignee only when create-pr never started and",
         "  no PR exists.",
+        "  After the PR merges, use reconciliation or manual beads_close.",
       ].join("\n"),
     },
   ],
 
   registerTools: (ctx: RibContext) => {
-    bdClient = new BdClient(ctx.getExec());
+    const exec = ctx.getExec();
+    bdClient = new BdClient(exec);
+    ghClient = new GhClient(exec);
     listBeadsProjects = () => discoverBeadsProjects(ctx.getProjects?.() ?? []);
     getAllProjects = () => ctx.getProjects?.() ?? [];
 
@@ -498,6 +537,8 @@ const rib: Rib = {
         return composeInspect(issue, m.blocked.ok ? m.blocked.data : [], rec, {
           epicRow,
           preselected,
+          prInfo: m.prInfo,
+          projectId: project.id,
         });
       });
 
@@ -591,6 +632,31 @@ const rib: Rib = {
         refreshAll();
         return { ok: true as const, data: { claimed: parsed.data.id } };
       }
+      case "sync-merged-beads": {
+        const parsed = syncPayload.safeParse(action.payload ?? {});
+        if (!parsed.success) {
+          return {
+            ok: false as const,
+            error: "sync-merged-beads payload must be { projectId: string }",
+          };
+        }
+        const project = scopedProject();
+        if (!project || project.id !== parsed.data.projectId) {
+          return {
+            ok: false as const,
+            error: "selected beads project no longer matches this action",
+          };
+        }
+        try {
+          const report = await reconcile(project, true);
+          const error = syncErrors(report);
+          return error
+            ? { ok: false as const, error, data: report }
+            : { ok: true as const, data: report };
+        } catch (err) {
+          return { ok: false as const, error: err instanceof Error ? err.message : String(err) };
+        }
+      }
       default:
         return { ok: false as const, error: `beads does not handle '${action.type}'` };
     }
@@ -610,6 +676,8 @@ const rib: Rib = {
     selectedBeadId = undefined;
     measureCache = undefined;
     bdClient = undefined;
+    ghClient = undefined;
+    syncingProjects.clear();
     getAllProjects = undefined;
     listBeadsProjects = undefined;
     cleanupInFlight.clear();
@@ -619,11 +687,12 @@ const rib: Rib = {
 // The chat tools share the same client, discovery, and refresh nudge the
 // panels use.
 function makeBeadsToolsBound() {
-  if (!bdClient || !listBeadsProjects) return [];
+  if (!bdClient || !ghClient || !listBeadsProjects) return [];
   return makeBeadsTools({
     bd: bdClient,
     beadsProjects: listBeadsProjects,
     refreshBoard: refreshAll,
+    syncMerged: reconcile,
   });
 }
 

@@ -9,6 +9,7 @@
 import type { ToolContext, ToolDefinition } from "@keelson/shared";
 import { z } from "zod";
 import type { BdClient, BeadsProject } from "./bd";
+import type { SyncReport } from "./sync";
 
 // The tool layer's seams, injected so the module stays pure and testable:
 // index.ts passes the live client + project discovery; tests pass fakes.
@@ -18,6 +19,7 @@ export interface ToolDeps {
   // Fail-soft nudge: a mutation recomposes the board so the surface tracks
   // the tracker without waiting for the next cadence tick.
   refreshBoard: () => void;
+  syncMerged: (project: BeadsProject, confirm: boolean) => Promise<SyncReport>;
 }
 
 const projectArg = z
@@ -332,6 +334,31 @@ export function makeBeadsTools(deps: ToolDeps): ToolDefinition[] {
       execute: guarded((input, ctx) => {
         const { project, id, reason } = input as { project?: string; id: string; reason: string };
         return mutate(ctx, project, ["close", id, "--reason", reason]);
+      }),
+    },
+    {
+      name: "beads_sync_merged",
+      description:
+        "Preview merged PRs recorded on open or in-progress beads; with confirm: true, close them with their verified PR URL as the reason. Returns per-bead results.",
+      inputSchema: z.object({
+        project: projectArg,
+        confirm: z
+          .boolean()
+          .optional()
+          .describe("Only true permits closing beads; omitted is read-only."),
+      }),
+      state_changing: true,
+      requires_confirmation: true,
+      execute: guarded(async (input, ctx) => {
+        const { project, confirm } = input as { project?: string; confirm?: boolean };
+        const resolved = resolveProject(deps, project);
+        if (!resolved.ok) return emitText(ctx, resolved.error, true);
+        const report = await deps.syncMerged(resolved.project, confirm === true);
+        emitText(
+          ctx,
+          JSON.stringify(report, null, 1),
+          Boolean(report.error || report.results.some((entry) => entry.status === "error")),
+        );
       }),
     },
     {

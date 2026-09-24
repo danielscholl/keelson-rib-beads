@@ -16,16 +16,13 @@ import type {
   Measured,
 } from "./bd";
 import { unmeasured } from "./bd";
+import type { GhClient, PrInfo } from "./pr";
 
 export const STALE_DAYS = 7;
 export const RECENT_CLOSE_DAYS = 7;
 // The momentum chart's span. Wider than the close window on purpose: a 7-day
 // bar chart can't show whether this week is faster or slower than last week.
 export const FLOW_WINDOW_DAYS = 14;
-// Run notes cost one `bd show` per in-progress bead. The set is small by
-// construction (a claim is a hand or a run holding work), so the cap is a
-// guard against a pathological tracker, not an expected ceiling.
-export const RUN_INFO_CAP = 12;
 
 export interface ProjectMeasurement {
   project: BeadsProject;
@@ -51,12 +48,10 @@ export interface ProjectMeasurement {
   // dotted ids alone miss it, and `bd list` carries no dependency payload —
   // only `bd show <epic> --include-dependents` names an epic's children.
   epicChildren: Measured<Record<string, string[]>>;
-  // The bead-work run note per in-progress bead (`bd list` carries no notes,
-  // so each is re-read with `bd show`). Envelopes nest deliberately: run info
-  // has no cross-bead coupling, so one failed show degrades one card, not the
-  // whole agents panel — while aggregates that need the complete set (the
-  // in-review split) refuse to answer unless every entry measured.
+  // Run notes for all eligible open and in-progress beads. Individual failures
+  // degrade their bead, while an unmeasured backlog degrades the whole scan.
   runInfo: Measured<Record<string, Measured<BeadRunInfo | undefined>>>;
+  prInfo: Measured<Record<string, Measured<PrInfo | undefined>>>;
 }
 
 function asArray(value: unknown): BdIssue[] {
@@ -143,13 +138,64 @@ export async function fetchIssue(
   const res = await bd.readJSON<unknown>(cwd, ["show", id, "--include-dependents"]);
   if (!res.ok) return res;
   const issue = Array.isArray(res.data) ? (res.data[0] as BdIssue | undefined) : undefined;
-  return issue ? { ok: true, data: issue } : unmeasured(`bd show ${id} returned nothing`);
+  return issue?.id === id
+    ? { ok: true, data: issue }
+    : unmeasured(`bd show ${id} returned no matching issue`);
+}
+
+export function eligibleBeads(rows: readonly BdIssue[]): BdIssue[] {
+  return rows.filter((issue) => issue.status === "open" || issue.status === "in_progress");
+}
+
+export async function readBacklog(bd: BdClient, cwd: string): Promise<Measured<BdIssue[]>> {
+  const res = await bd.readJSON<unknown>(cwd, ["list", "--limit", "0"]);
+  return res.ok ? { ok: true, data: asArray(res.data) } : res;
+}
+
+export async function readRunInfo(
+  bd: BdClient,
+  cwd: string,
+  id: string,
+): Promise<Measured<BeadRunInfo | undefined>> {
+  const issue = await fetchIssue(bd, cwd, id);
+  return issue.ok ? { ok: true, data: parseRunNote(issue.data.notes) } : issue;
+}
+
+export async function collectRecordedPRs(
+  bd: BdClient,
+  gh: GhClient,
+  project: BeadsProject,
+  backlog: Measured<BdIssue[]>,
+): Promise<Pick<ProjectMeasurement, "runInfo" | "prInfo">> {
+  if (!backlog.ok) {
+    return {
+      runInfo: unmeasured(`backlog unmeasured: ${backlog.error}`),
+      prInfo: unmeasured(`backlog unmeasured: ${backlog.error}`),
+    };
+  }
+  const runs: Record<string, Measured<BeadRunInfo | undefined>> = {};
+  const prs: Record<string, Measured<PrInfo | undefined>> = {};
+  const links: { id: string; prUrl: string }[] = [];
+  for (const bead of eligibleBeads(backlog.data)) {
+    const run = await readRunInfo(bd, project.rootPath, bead.id);
+    runs[bead.id] = run;
+    if (!run.ok) {
+      prs[bead.id] = run;
+    } else if (!run.data?.prUrl) {
+      prs[bead.id] = { ok: true, data: undefined };
+    } else {
+      links.push({ id: bead.id, prUrl: run.data.prUrl });
+    }
+  }
+  Object.assign(prs, await gh.readPRs(project, links));
+  return { runInfo: { ok: true, data: runs }, prInfo: { ok: true, data: prs } };
 }
 
 export async function measureProject(
   bd: BdClient,
   project: BeadsProject,
   now: () => Date = () => new Date(),
+  gh?: GhClient,
 ): Promise<ProjectMeasurement> {
   const cwd = project.rootPath;
 
@@ -170,23 +216,6 @@ export async function measureProject(
   const inProgress: Measured<BdIssue[]> = wipRes.ok
     ? { ok: true, data: asArray(wipRes.data) }
     : wipRes;
-
-  // Run notes ride on `bd show`, one per in-progress bead (the serialized
-  // client keeps this safe; the cap keeps it bounded).
-  let runInfo: Measured<Record<string, Measured<BeadRunInfo | undefined>>>;
-  if (!inProgress.ok) {
-    runInfo = unmeasured("in-progress unmeasured, so run notes cannot be read");
-  } else {
-    const map: Record<string, Measured<BeadRunInfo | undefined>> = {};
-    for (const bead of inProgress.data.slice(0, RUN_INFO_CAP)) {
-      const res = await fetchIssue(bd, cwd, bead.id);
-      map[bead.id] = res.ok ? { ok: true, data: parseRunNote(res.data.notes) } : res;
-    }
-    for (const bead of inProgress.data.slice(RUN_INFO_CAP)) {
-      map[bead.id] = unmeasured("run info not fetched — over the per-sweep cap");
-    }
-    runInfo = { ok: true, data: map };
-  }
 
   const readyRes = await bd.readJSON<unknown>(cwd, [
     "ready",
@@ -253,10 +282,14 @@ export async function measureProject(
     ? { ok: true, data: asArray(staleRes.data) }
     : staleRes;
 
-  const backlogRes = await bd.readJSON<unknown>(cwd, ["list", "--limit", "0"]);
-  const backlog: Measured<BdIssue[]> = backlogRes.ok
-    ? { ok: true, data: asArray(backlogRes.data) }
-    : backlogRes;
+  const backlog = await readBacklog(bd, cwd);
+  const { runInfo, prInfo } = gh
+    ? await collectRecordedPRs(bd, gh, project, backlog)
+    : {
+        runInfo:
+          unmeasured<Record<string, Measured<BeadRunInfo | undefined>>>("GitHub reader not bound"),
+        prInfo: unmeasured<Record<string, Measured<PrInfo | undefined>>>("GitHub reader not bound"),
+      };
 
   // One bd show per epic in the open backlog (epics are few); a failed lookup
   // marks the whole map unmeasured rather than presenting partial membership
@@ -296,5 +329,6 @@ export async function measureProject(
     backlog,
     epicChildren,
     runInfo,
+    prInfo,
   };
 }

@@ -133,6 +133,7 @@ function fullMeasurement(): ProjectMeasurement {
     ]),
     epicChildren: ok({}),
     runInfo: ok({ "tl-a": ok(undefined) }),
+    prInfo: ok({ "tl-a": ok(undefined) }),
   };
 }
 
@@ -142,6 +143,7 @@ function fullMeasurement(): ProjectMeasurement {
 function setWip(m: ProjectMeasurement, items: BdIssue[]): void {
   m.inProgress = ok(items);
   m.runInfo = ok(Object.fromEntries(items.map((i) => [i.id, ok(undefined)])));
+  m.prInfo = ok(Object.fromEntries(items.map((i) => [i.id, ok(undefined)])));
 }
 
 describe("recommendNext / unlockChain", () => {
@@ -737,7 +739,7 @@ describe("panel composers", () => {
     });
     const flat = JSON.stringify(view);
     expect(flat).not.toContain("claim-bead");
-    expect(flat).toContain("merge-time act");
+    expect(flat).toContain("acceptance criteria before manual close");
   });
 
   test("the recommendation names the owner when bd only carried one", () => {
@@ -1257,10 +1259,18 @@ describe("the derived review stage", () => {
     expect(stageSplit(missing).ok).toBe(false);
   });
 
-  test("a merged outcome keeps the review stage but says the close is pending", () => {
+  test("only verified PR evidence can mark a bead merged", () => {
     expect(stageChip(info({ outcome: "success" }))).toBe("in review");
     expect(stageChip(info())).toBe("in review");
-    expect(stageChip(info({ outcome: "merged, CI green" }))).toBe("merged — close pending");
+    expect(stageChip(info({ outcome: "merged, CI green" }))).toBe("in review");
+    expect(stageChip(info({ outcome: "not merged" }))).toBe("in review");
+    expect(
+      stageChip(info({ outcome: "success" }), {
+        url: info().prUrl,
+        state: "MERGED",
+        mergedAt: "2026-08-08T10:00:00Z",
+      }),
+    ).toBe("merged — close pending");
   });
 
   test("agents cards carry the stage, the PR link, and the run attribution", () => {
@@ -1326,6 +1336,154 @@ describe("the derived review stage", () => {
   test("prLabel compacts a GitHub PR url and passes anything else through", () => {
     expect(prLabel("https://github.com/acme/demo/pull/64")).toBe("demo#64");
     expect(prLabel("https://example.com/mr/7")).toBe("example.com/mr/7");
+  });
+});
+
+describe("verified merge drift on the board", () => {
+  const url = (n: number) => `https://github.com/acme/demo/pull/${n}`;
+  const pr = (n: number) => ({
+    url: url(n),
+    state: "MERGED" as const,
+    mergedAt: "2026-08-08T10:00:00Z",
+  });
+
+  function mergedBoard(): ProjectMeasurement {
+    const m = fullMeasurement();
+    if (!m.backlog.ok || !m.inProgress.ok) throw new Error("fixture not measured");
+    m.backlog = ok([
+      ...m.backlog.data,
+      ...m.inProgress.data,
+      { id: "tl-f.2", title: "Second child", status: "open", priority: 1 },
+    ]);
+    m.epicChildren = ok({ "tl-f": ["tl-f.2"] });
+    m.runInfo = ok({ "tl-a": ok({ prUrl: url(1), outcome: "success" }) });
+    m.prInfo = ok({ "tl-a": ok(pr(1)), "tl-b": ok(pr(2)), "tl-f.2": ok(pr(3)) });
+    return m;
+  }
+
+  test("attention separates merged PRs from review and shows scoped confirmed action", () => {
+    const m = mergedBoard();
+    const att = composeAttention(m, {});
+    expect(() => validBoard(att)).not.toThrow();
+    const drift = att.sections[0];
+    if (drift?.kind !== "cards") throw new Error("no drift cards");
+    expect(drift.title).toBe("Merged PRs — close pending");
+    expect(drift.items.map((i) => i.pill?.label)).toEqual(["tl-b", "tl-a", "tl-f.2"]);
+    const action = drift.items[0]?.actions?.[1];
+    expect(action?.type).toBe("sync-merged-beads");
+    expect(action?.payload).toEqual({ projectId: "p1" });
+    expect(action?.confirm?.body).toContain("Merged via <canonical PR URL>");
+    expect(drift.items[0]?.fields?.[0]?.href).toBe(url(2));
+    expect(JSON.stringify(att)).not.toContain('"title":"Review to merge"');
+    expect(m.ready.ok && m.ready.data.map((i) => i.id)).toContain("tl-b");
+    expect(m.recentlyClosed.ok && m.recentlyClosed.data.map((i) => i.id)).not.toContain("tl-a");
+  });
+
+  test("a merged open bead appears in both Plan shapes and has no Start affordance", () => {
+    const m = mergedBoard();
+    const plan = composePlan(m, {});
+    const wip = composeWip(m, {});
+    const recommended = composeRecommend(m, {});
+    for (const view of [plan, wip, recommended]) {
+      expect(() => validBoard(view)).not.toThrow();
+    }
+    const epic = plan.sections.find((s) => s.kind === "cards");
+    const singles = plan.sections.find((s) => s.kind === "rows" && s.title === "Standalone work");
+    if (epic?.kind !== "cards" || singles?.kind !== "rows") throw new Error("wrong Plan shapes");
+    expect(JSON.stringify(epic.items.find((i) => i.pill?.label === "tl-f.2"))).toContain(
+      "merged PR · close pending",
+    );
+    expect(singles.items.find((i) => i.chip?.label === "tl-b")?.trailing).toContain(
+      "merged PR · close pending",
+    );
+    expect(JSON.stringify(wip)).toContain("merged — close pending");
+    expect(JSON.stringify(wip)).toContain("merged PR · close pending");
+    expect(JSON.stringify(recommended)).toContain("sync-merged-beads");
+    expect(JSON.stringify(recommended)).not.toContain("claim-bead");
+  });
+
+  test("inspector reconciles merged open beads and never starts a merged alternative", () => {
+    const m = mergedBoard();
+    const picked = m.ready.ok ? m.ready.data[0] : undefined;
+    if (!picked) throw new Error("no pick");
+    const inspected = composeInspect(ok(picked), [], picked, {
+      preselected: true,
+      projectId: m.project.id,
+      prInfo: m.prInfo,
+    });
+    expect(() => validBoard(inspected)).not.toThrow();
+    expect(JSON.stringify(inspected)).toContain("sync-merged-beads");
+    expect(JSON.stringify(inspected)).not.toContain("claim-bead");
+    expect(JSON.stringify(inspected)).toContain("Reconcile it instead");
+    const blocked = composeInspect(
+      ok({ id: "tl-d", title: "Blocked", status: "open", priority: 1 }),
+      [{ id: "tl-d", title: "Blocked", status: "open", priority: 1 }],
+      picked,
+      { prInfo: m.prInfo, projectId: m.project.id },
+    );
+    expect(() => validBoard(blocked)).not.toThrow();
+    expect(JSON.stringify(blocked)).not.toContain(`Start ${picked.id} instead`);
+    expect(JSON.stringify(blocked)).toContain("sync-merged-beads");
+  });
+
+  test("partial PR failures and failed blocked query alarm without concealing drift", () => {
+    const m = mergedBoard();
+    m.prInfo = ok({
+      "tl-a": ok(pr(1)),
+      "tl-b": { ok: false, error: "gh auth failed" },
+      "tl-f.2": ok(undefined),
+    });
+    m.blocked = { ok: false, error: "bd blocked failed" };
+    const att = composeAttention(m, {});
+    expect(() => validBoard(att)).not.toThrow();
+    const flat = JSON.stringify(att);
+    expect(flat).toContain("Merged PRs — close pending");
+    expect(flat).toContain("tl-a");
+    expect(flat).toContain("gh auth failed");
+    expect(flat).toContain("bd blocked failed");
+    expect(JSON.stringify(composeWip(m, {}))).toContain("merged — close pending");
+    m.prInfo = { ok: false, error: "backlog unavailable" };
+    expect(JSON.stringify(composeAttention(m, {}))).toContain("PR merge state");
+    expect(JSON.stringify(composeAttention(m, {}))).toContain("UNMEASURED");
+  });
+
+  test("note wording cannot move an unmerged PR into close pending", () => {
+    const m = mergedBoard();
+    m.runInfo = ok({ "tl-a": ok({ prUrl: url(1), outcome: "not merged" }) });
+    m.prInfo = ok({ "tl-a": ok({ url: url(1), state: "OPEN", mergedAt: null }) });
+    const flat = JSON.stringify(composeAttention(m, {}));
+    expect(flat).not.toContain("Merged PRs — close pending");
+    expect(flat).toContain("Review to merge");
+    expect(JSON.stringify(composeWip(m, {}))).toContain("in review");
+    expect(JSON.stringify(composeWip(m, {}))).not.toContain("merged — close pending");
+  });
+
+  test("an unmeasured PR stays in review flagged as unknown, never as an unverified merge link", () => {
+    const m = mergedBoard();
+    m.prInfo = ok({ "tl-a": { ok: false, error: "gh rate limit" } });
+    const att = composeAttention(m, {});
+    expect(() => validBoard(att)).not.toThrow();
+    const review = att.sections.find((s) => s.kind === "rows" && s.title === "Review to merge");
+    if (review?.kind !== "rows") throw new Error("no review rows");
+    const row = review.items.find((i) => i.chip?.label === "tl-a");
+    expect(row?.glyph).toBe("warn");
+    expect(row?.trailing).toContain("merge state unknown");
+    expect(row?.href).toBeUndefined();
+    expect(JSON.stringify(att)).toContain("UNMEASURED");
+  });
+
+  test("post-close tracker snapshot removes drift rather than fabricating a done row", () => {
+    const m = mergedBoard();
+    m.backlog = ok(
+      m.backlog.ok ? m.backlog.data.filter((i) => !["tl-a", "tl-b", "tl-f.2"].includes(i.id)) : [],
+    );
+    m.inProgress = ok([]);
+    m.runInfo = ok({});
+    m.prInfo = ok({});
+    m.ready = ok([]);
+    const flat = JSON.stringify(composeAttention(m, {}));
+    expect(flat).not.toContain("Merged PRs — close pending");
+    expect(JSON.stringify(composePulse(m))).not.toContain('"label":"Done 7d","n":2');
   });
 });
 

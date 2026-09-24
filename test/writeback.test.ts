@@ -120,6 +120,22 @@ describe("beads-writeback", () => {
     expect(recorded).toContain("update fn-bye --status open --assignee ");
   });
 
+  test("a failed run with a PR records its URL and releases the bead without closing", async () => {
+    installFakeBd("in_progress");
+    writeFileSync(join(artifacts, ".pr-url"), "https://github.com/acme/demo/pull/6\n");
+    writeFileSync(join(artifacts, ".ci-final-status"), "FAIL\n");
+    const { stdout, exitCode } = await runWriteback();
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("claim released (status=open, no assignee)");
+    expect(calls()).toEqual([
+      expect.stringContaining(
+        "note fn-bye bead-work run: PR https://github.com/acme/demo/pull/6 — failed",
+      ),
+      "update fn-bye --status open --assignee ",
+    ]);
+    expect(calls().some((call) => call.startsWith("close "))).toBe(false);
+  });
+
   test("keeps the claim of an in_progress bead whose PR went green", async () => {
     installFakeBd("in_progress");
     writeFileSync(join(artifacts, ".pr-url"), "https://example/pr/6\n");

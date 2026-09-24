@@ -19,6 +19,9 @@ function updateTool() {
     bd: new BdClient(exec),
     beadsProjects: () => [{ id: "project-1", name: "test", rootPath: "/project/root" }],
     refreshBoard: () => {},
+    syncMerged: async () => {
+      throw new Error("not used");
+    },
   });
   const tool = tools.find((entry) => entry.name === "beads_update");
   if (!tool) throw new Error("beads_update tool is missing");
