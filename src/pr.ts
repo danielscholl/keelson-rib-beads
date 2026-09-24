@@ -10,6 +10,7 @@ import type { RibExec } from "@keelson/shared";
 import { z } from "zod";
 import type { BeadsProject, Measured } from "./bd";
 import { unmeasured } from "./bd";
+import { BEAD_ID_PATTERN } from "./bead-id";
 
 const prSchema = z.object({
   url: z.string(),
@@ -43,17 +44,20 @@ export function canonicalPrUrl(value: string): Measured<string> {
   return { ok: true, data: `${url.origin}${url.pathname.replace(/\/$/, "")}` };
 }
 
+// The workflow writes `Bead: <id> — <title>`; only the leading id identifies the bead.
+const LEADING_BEAD_ID = new RegExp(
+  `^(?:\\*\\*)?\`?(${BEAD_ID_PATTERN})\`?(?:\\*\\*)?(?=$|[\\s,:;(])`,
+);
+
 function beadLineError(body: string, beadId: string): string | undefined {
   const lines = [
     ...body.matchAll(/^\s*(?:[-*]\s*)?(?:\*\*)?Bead\s*(?:\*\*)?\s*:\s*(?:\*\*)?(.*)$/gim),
   ];
   if (lines.length === 0) return undefined;
-  const ids = lines.map((match) =>
-    (match[1] ?? "")
-      .trim()
-      .replace(/^`|`$|\*\*$/g, "")
-      .trim(),
-  );
+  const ids = lines.map((match) => {
+    const value = (match[1] ?? "").trim();
+    return LEADING_BEAD_ID.exec(value)?.[1] ?? value;
+  });
   if (ids.length !== 1 || ids[0] !== beadId) {
     return `PR Bead line does not identify ${beadId} exactly: ${ids.join(", ")}`;
   }

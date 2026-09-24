@@ -348,6 +348,7 @@ export function makeBeadsTools(deps: ToolDeps): ToolDefinition[] {
           .describe("Only true permits closing beads; omitted is read-only."),
       }),
       state_changing: true,
+      requires_confirmation: true,
       execute: guarded(async (input, ctx) => {
         const { project, confirm } = input as { project?: string; confirm?: boolean };
         const resolved = resolveProject(deps, project);

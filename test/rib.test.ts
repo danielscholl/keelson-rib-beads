@@ -227,6 +227,7 @@ describe("registered merge reconciliation entry points", () => {
     const f = setup();
     try {
       expect(f.tool?.state_changing).toBe(true);
+      expect(f.tool?.requires_confirmation).toBe(true);
       const before = f.recomposes();
       await f.tool?.execute({}, f.toolCtx as never);
       expect(f.writes).toEqual([]);

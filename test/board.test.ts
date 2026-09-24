@@ -1432,6 +1432,20 @@ describe("verified merge drift on the board", () => {
     expect(JSON.stringify(composeWip(m, {}))).not.toContain("merged — close pending");
   });
 
+  test("an unmeasured PR stays in review flagged as unknown, never as an unverified merge link", () => {
+    const m = mergedBoard();
+    m.prInfo = ok({ "tl-a": { ok: false, error: "gh rate limit" } });
+    const att = composeAttention(m, {});
+    expect(() => validBoard(att)).not.toThrow();
+    const review = att.sections.find((s) => s.kind === "rows" && s.title === "Review to merge");
+    if (review?.kind !== "rows") throw new Error("no review rows");
+    const row = review.items.find((i) => i.chip?.label === "tl-a");
+    expect(row?.glyph).toBe("warn");
+    expect(row?.trailing).toContain("merge state unknown");
+    expect(row?.href).toBeUndefined();
+    expect(JSON.stringify(att)).toContain("UNMEASURED");
+  });
+
   test("post-close tracker snapshot removes drift rather than fabricating a done row", () => {
     const m = mergedBoard();
     m.backlog = ok(

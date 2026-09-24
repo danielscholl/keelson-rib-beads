@@ -917,14 +917,14 @@ export function composeAttention(m: ProjectMeasurement, ctx: PanelContext): Boar
         .filter((i) => !mergedPR(m.prInfo, i.id))
         .map((i) => {
           const info = runInfoOf(m, i.id);
+          const unknown = Boolean(info && info.prUrl !== "none" && prFailure(m, i.id));
+          const stage = unknown ? "merge state unknown" : info ? stageChip(info) : "in review";
           return {
-            glyph: "info" as const,
+            glyph: unknown ? ("warn" as const) : ("info" as const),
             chip: { label: i.id, tone: "neutral" as const },
             text: i.title,
-            ...(info && info.prUrl !== "none" && !prFailure(m, i.id) ? { href: info.prUrl } : {}),
-            trailing: [info ? stageChip(info) : "in review", daysAgo(i.updated_at, now)].join(
-              " · ",
-            ),
+            ...(info && info.prUrl !== "none" && !unknown ? { href: info.prUrl } : {}),
+            trailing: [stage, daysAgo(i.updated_at, now)].join(" · "),
           };
         }),
     });

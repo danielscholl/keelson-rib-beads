@@ -47,6 +47,18 @@ describe("GitHub PR evidence", () => {
     if (result.ok) expect(isMergedPR(result.data)).toBe(false);
   });
 
+  test.each([
+    "**Bead:** `cos-hjf.1` — Reconcile merged PR closures",
+    "- **Bead**: cos-hjf.1 — Reconcile merged PR closures",
+    "Bead: cos-hjf.1 (Reconcile merged PR closures)",
+  ])("accepts the workflow's id-and-title Bead line: %s", async (body) => {
+    const result = await reader(
+      { url, state: "MERGED", mergedAt: "2026-09-22T01:02:03Z", body },
+      [],
+    ).readPR(project, url, "cos-hjf.1");
+    expect(result.ok).toBe(true);
+  });
+
   test("legacy PRs without a Bead line remain linked", async () => {
     const result = await reader(
       { url, state: "MERGED", mergedAt: "2026-09-22T01:02:03Z", body: "A change" },
@@ -82,6 +94,18 @@ describe("GitHub PR evidence", () => {
     },
     { url, state: "MERGED", mergedAt: "2026-09-22T01:02:03Z", body: "**Bead:** `cos-hjf.10`" },
     { url, state: "MERGED", mergedAt: "2026-09-22T01:02:03Z", body: "**Bead:** " },
+    {
+      url,
+      state: "MERGED",
+      mergedAt: "2026-09-22T01:02:03Z",
+      body: "**Bead:** `cos-hjf.10` — Reconcile merged PR closures",
+    },
+    {
+      url,
+      state: "MERGED",
+      mergedAt: "2026-09-22T01:02:03Z",
+      body: "Bead: cos-hjf.1 — first\nBead: cos-hjf.2 — second",
+    },
     {
       url,
       state: "MERGED",
