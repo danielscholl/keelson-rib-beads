@@ -79,10 +79,14 @@ and one that does the work:
   (`Co-authored-by`, "Generated with") are stripped from the run's commits
   before each push, and every dependency manifest or lockfile change is
   audited against the plan and marked UNPLANNED in the PR body and report
-  when the plan never named it. The writeback only touches a bead that still
-  carries the run's claim; one a human closed or deferred mid-run is left
-  as found. It never closes
-  a bead; a failed run releases the claim. Judgment nodes pin `gpt-6-astra`,
+  when the plan never named it. The writeback only touches a bead still
+  in progress; one a human closed or deferred mid-run is left as found.
+  It never closes a bead. If a run is cancelled or fails before writeback,
+  the rib releases a still-in-progress bead to `open` with no assignee only
+  when `create-pr` never started and no PR is recorded. A recorded PR keeps
+  the claim; if PR creation started but no identifier was recorded, the
+  claim stays in place with a note that the PR state is unknown. Runs that
+  reach writeback retain its existing outcome handling. Judgment nodes pin `gpt-6-astra`,
   edit nodes `gpt-5.6-sol`, review lenses `gpt-5.6-terra` on the Copilot
   provider; elsewhere they resolve through the `deep` tier. Needs `gh`, `jq`,
   and a GitHub remote. Pass `review_bot=false` to skip requesting the Copilot
