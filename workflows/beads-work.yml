@@ -131,6 +131,17 @@ nodes:
       [ -z "$DEFAULT" ] && DEFAULT=main
       printf '%s' "$DEFAULT" > "$KEELSON_ARTIFACTS_DIR/.default-branch"
       echo "DEFAULT_BRANCH: $DEFAULT"
+      # Ranges and diffs use the remote-tracking ref: the checkout's local
+      # default branch can lag origin, and a stale base drags already-merged
+      # commits into this run's range. .default-branch stays the bare PR base.
+      BASE_REF="$DEFAULT"
+      if git remote get-url origin >/dev/null 2>&1; then
+        GIT_TERMINAL_PROMPT=0 git fetch --quiet origin "$DEFAULT" 2>/dev/null \
+          || echo "BASE_REF: fetch of origin/$DEFAULT failed; using the last fetched ref"
+        git rev-parse --verify --quiet "refs/remotes/origin/$DEFAULT" >/dev/null && BASE_REF="origin/$DEFAULT"
+      fi
+      printf '%s' "$BASE_REF" > "$KEELSON_ARTIFACTS_DIR/.base-ref"
+      echo "BASE_REF: $BASE_REF"
 
   # Seeds the PR gate with checks discovered from the repo's own manifests
   # (Makefile targets, package.json scripts, pyproject/pytest, cargo, go) —
@@ -935,8 +946,10 @@ nodes:
         echo "TRAILER_SCRUB: skipped — no .default-branch recorded"
         exit 0
       fi
-      if ! MB=$(git merge-base "$BASE" HEAD 2>/dev/null); then
-        echo "TRAILER_SCRUB: skipped — no merge base with $BASE"
+      BASE_REF=$(cat "$KEELSON_ARTIFACTS_DIR/.base-ref" 2>/dev/null | tr -d '[:space:]')
+      [ -z "$BASE_REF" ] && BASE_REF="$BASE"
+      if ! MB=$(git merge-base "$BASE_REF" HEAD 2>/dev/null); then
+        echo "TRAILER_SCRUB: skipped — no merge base with $BASE_REF"
         exit 0
       fi
       # SCRUB_PUSHED=1 rewrites the whole branch and force-pushes the PR's own
@@ -1007,7 +1020,9 @@ nodes:
       set -uo pipefail
       OUT="$KEELSON_ARTIFACTS_DIR/dependency-changes.md"
       BASE=$(cat "$KEELSON_ARTIFACTS_DIR/.default-branch" 2>/dev/null | tr -d '[:space:]')
-      if [ -z "$BASE" ] || ! MB=$(git merge-base "$BASE" HEAD 2>/dev/null); then
+      BASE_REF=$(cat "$KEELSON_ARTIFACTS_DIR/.base-ref" 2>/dev/null | tr -d '[:space:]')
+      [ -z "$BASE_REF" ] && BASE_REF="$BASE"
+      if [ -z "$BASE_REF" ] || ! MB=$(git merge-base "$BASE_REF" HEAD 2>/dev/null); then
         printf 'Dependency audit skipped: no base branch to diff against.\n' > "$OUT"
         echo "DEPENDENCY_CHANGES: unknown — no base branch"
         exit 0
@@ -1025,7 +1040,7 @@ nodes:
       {
         echo "# Dependency changes on this branch"
         echo
-        echo "Manifest files changed since $BASE:"
+        echo "Manifest files changed since $BASE_REF:"
         printf '%s\n' "$CHANGED" | sed 's/^/- /'
         for F in $CHANGED; do
           if printf '%s' "$F" | grep -qE "$LOCK_RE"; then
@@ -1091,7 +1106,7 @@ nodes:
       5. Check existing PRs: `gh pr list --head "$(git branch --show-current)"`.
          If one exists, capture its number and skip creation.
       6. Otherwise: `gh pr create --draft --base "$(cat $ARTIFACTS_DIR/.default-branch)" --title "<conventional title>" --body-file <path>`.
-         Author the body yourself from the branch diff (`git diff <base>...HEAD --stat`
+         Author the body yourself from the branch diff (`git diff "$(cat $ARTIFACTS_DIR/.base-ref 2>/dev/null || cat $ARTIFACTS_DIR/.default-branch)"...HEAD --stat`
          and the hunks that carry the intent) — write it to a file under
          `$ARTIFACTS_DIR` and pass it with `--body-file`, never a bare `$(...)`
          substitution. It must NOT contain a "Generated with Claude Code" footer
@@ -1205,7 +1220,7 @@ nodes:
     depends_on: [enforce-draft]
     bash: |
       set -euo pipefail
-      BASE=$(cat "$KEELSON_ARTIFACTS_DIR/.default-branch")
+      BASE=$(cat "$KEELSON_ARTIFACTS_DIR/.base-ref" 2>/dev/null || cat "$KEELSON_ARTIFACTS_DIR/.default-branch")
       # Parquet exports are regenerated data artifacts. The review lenses hold
       # only Read/Glob/Grep, so handing them binary columnar files wastes a
       # lane on bytes they cannot parse (observed on an early run). They must
@@ -1559,7 +1574,7 @@ nodes:
       $apply-fixes.output
 
       For each must-fix issue, inspect the current code
-      (`git diff "$(cat $ARTIFACTS_DIR/.default-branch)"...HEAD` for the relevant
+      (`git diff "$(cat $ARTIFACTS_DIR/.base-ref 2>/dev/null || cat $ARTIFACTS_DIR/.default-branch)"...HEAD` for the relevant
       files) and confirm it is genuinely resolved and the fix introduced no new
       CRITICAL/HIGH defect. If any issue is still open, or a fix added a new defect,
       fix it now: read, edit, run the narrowest covering check, then
@@ -1594,7 +1609,7 @@ nodes:
         ## Previous iteration of this loop (empty on the first pass)
         $LOOP_PREV_OUTPUT
 
-        Inspect the CURRENT code — `git diff "$(cat $ARTIFACTS_DIR/.default-branch)"...HEAD`
+        Inspect the CURRENT code — `git diff "$(cat $ARTIFACTS_DIR/.base-ref 2>/dev/null || cat $ARTIFACTS_DIR/.default-branch)"...HEAD`
         and the files it touches. For every retained CRITICAL/HIGH finding,
         confirm it is genuinely resolved, and check that the fixes themselves did
         not introduce a new CRITICAL/HIGH defect or leave the repo's own checks
@@ -1662,7 +1677,9 @@ nodes:
       set -uo pipefail
       OUT="$KEELSON_ARTIFACTS_DIR/dependency-changes.md"
       BASE=$(cat "$KEELSON_ARTIFACTS_DIR/.default-branch" 2>/dev/null | tr -d '[:space:]')
-      if [ -z "$BASE" ] || ! MB=$(git merge-base "$BASE" HEAD 2>/dev/null); then
+      BASE_REF=$(cat "$KEELSON_ARTIFACTS_DIR/.base-ref" 2>/dev/null | tr -d '[:space:]')
+      [ -z "$BASE_REF" ] && BASE_REF="$BASE"
+      if [ -z "$BASE_REF" ] || ! MB=$(git merge-base "$BASE_REF" HEAD 2>/dev/null); then
         printf 'Dependency audit skipped: no base branch to diff against.\n' > "$OUT"
         echo "DEPENDENCY_CHANGES: unknown — no base branch"
         exit 0
@@ -1680,7 +1697,7 @@ nodes:
       {
         echo "# Dependency changes on this branch"
         echo
-        echo "Manifest files changed since $BASE:"
+        echo "Manifest files changed since $BASE_REF:"
         printf '%s\n' "$CHANGED" | sed 's/^/- /'
         for F in $CHANGED; do
           if printf '%s' "$F" | grep -qE "$LOCK_RE"; then
@@ -1953,7 +1970,7 @@ nodes:
       - Otherwise CI failed. For EACH failed check, read its failing logs
         (`forge run view <run-id> --log-failed`, or open the URLs in the CI output)
         and this PR's diff
-        (`git diff "$(cat $ARTIFACTS_DIR/.default-branch)"...HEAD`). Classify each:
+        (`git diff "$(cat $ARTIFACTS_DIR/.base-ref 2>/dev/null || cat $ARTIFACTS_DIR/.default-branch)"...HEAD`). Classify each:
         - ACTIONABLE: caused by code THIS PR changed, or a direct consequence of
           it. Add it to `actionable` with the `file` and the `fix`.
         - UNRELATED: a pre-existing failure, an infra/flake (timeouts, network),
@@ -2033,8 +2050,10 @@ nodes:
         echo "TRAILER_SCRUB: skipped — no .default-branch recorded"
         exit 0
       fi
-      if ! MB=$(git merge-base "$BASE" HEAD 2>/dev/null); then
-        echo "TRAILER_SCRUB: skipped — no merge base with $BASE"
+      BASE_REF=$(cat "$KEELSON_ARTIFACTS_DIR/.base-ref" 2>/dev/null | tr -d '[:space:]')
+      [ -z "$BASE_REF" ] && BASE_REF="$BASE"
+      if ! MB=$(git merge-base "$BASE_REF" HEAD 2>/dev/null); then
+        echo "TRAILER_SCRUB: skipped — no merge base with $BASE_REF"
         exit 0
       fi
       # SCRUB_PUSHED=1 rewrites the whole branch and force-pushes the PR's own

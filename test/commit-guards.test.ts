@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -135,6 +135,83 @@ describe("scrub-trailers", () => {
     const remoteMsg = await git(["log", "-1", "--format=%B", "feature/x"], remote);
     expect(remoteMsg).not.toMatch(/co-authored-by/i);
     expect(await git(["rev-parse", "HEAD"])).toBe(await git(["rev-parse", "feature/x"], remote));
+  });
+});
+
+describe("scrub-trailers when the local default branch is behind origin", () => {
+  let remote: string;
+  let upstreamOnly: string;
+
+  // Local main stays at "chore: manifest" while origin/main gains a squash
+  // merge the operator never pulled; the run branch starts from origin/main.
+  // GitHub squash merges keep the PR's Co-authored-by trailers, so the scrub
+  // would rewrite that commit if it ever landed in its range.
+  beforeEach(async () => {
+    remote = join(sandbox, "remote.git");
+    await git(["init", "-q", "--bare", "-b", "main", remote], sandbox);
+    await git(["remote", "add", "origin", remote]);
+    await git(["push", "-q", "origin", "main"]);
+    const other = join(sandbox, "other");
+    await git(["clone", "-q", remote, other], sandbox);
+    await git(["config", "user.name", "Merger"], other);
+    await git(["config", "user.email", "merger@example.com"], other);
+    writeFileSync(join(other, "api.txt"), "object of the day\n");
+    await git(["add", "api.txt"], other);
+    await git(
+      [
+        "commit",
+        "-q",
+        "-m",
+        "feat(api): add object of the day endpoint (#8)\n\nCo-authored-by: Copilot <copilot@github.com>",
+      ],
+      other,
+    );
+    await git(["push", "-q", "origin", "main"], other);
+    upstreamOnly = await git(["rev-parse", "HEAD"], other);
+    await git(["fetch", "-q", "origin"]);
+    await git(["checkout", "-q", "main"]);
+    await git(["branch", "-q", "-D", "feature/x"]);
+
+    const binDir = join(sandbox, "bin");
+    mkdirSync(binDir);
+    writeFileSync(join(binDir, "gh"), "#!/bin/bash\nprintf 'main\\n'\n");
+    chmodSync(join(binDir, "gh"), 0o755);
+    const detect = await runNode("detect-base", { PATH: `${binDir}:${process.env.PATH ?? ""}` });
+    expect(detect.exitCode).toBe(0);
+  });
+
+  async function runCommitWithTrailer(): Promise<string> {
+    await commit("feat: run work\n\nCo-authored-by: Copilot <copilot@github.com>", "a.txt", "a\n");
+    return git(["rev-parse", "HEAD"]);
+  }
+
+  test("rewrites only the run's own commit", async () => {
+    expect(await git(["rev-parse", "main"])).not.toBe(upstreamOnly);
+    await git(["checkout", "-q", "--no-track", "-b", "feature/x", "origin/main"]);
+    await runCommitWithTrailer();
+
+    const { stdout, exitCode } = await runNode("scrub-trailers");
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("rewrote 1 commit(s)");
+    expect(await git(["rev-parse", "HEAD~1"])).toBe(upstreamOnly);
+    expect(await git(["log", "-1", "--format=%B", "HEAD"])).not.toMatch(/co-authored-by/i);
+  });
+
+  test("the final scrub never force-pushes a rewrite of origin/main's commits", async () => {
+    await git(["checkout", "-q", "-b", "feature/x", "origin/main"]);
+    await runCommitWithTrailer();
+    await git(["push", "-q", "-u", "origin", "feature/x"]);
+
+    const { stdout, exitCode } = await runNode("scrub-trailers-final", { SCRUB_PUSHED: "1" });
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("rewrote 1 commit(s)");
+    expect(stdout).toContain("force-pushed");
+    const pushed = await git(["rev-parse", "feature/x"], remote);
+    expect(await git(["rev-parse", `${pushed}~1`], remote)).toBe(upstreamOnly);
+    expect(await git(["merge-base", "main", "feature/x"], remote)).toBe(upstreamOnly);
+    expect(await git(["log", "-1", "--format=%B", "feature/x"], remote)).not.toMatch(
+      /co-authored-by/i,
+    );
   });
 });
 
