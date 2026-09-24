@@ -133,6 +133,7 @@ function fullMeasurement(): ProjectMeasurement {
     ]),
     epicChildren: ok({}),
     runInfo: ok({ "tl-a": ok(undefined) }),
+    prInfo: ok({ "tl-a": ok(undefined) }),
   };
 }
 
@@ -142,6 +143,7 @@ function fullMeasurement(): ProjectMeasurement {
 function setWip(m: ProjectMeasurement, items: BdIssue[]): void {
   m.inProgress = ok(items);
   m.runInfo = ok(Object.fromEntries(items.map((i) => [i.id, ok(undefined)])));
+  m.prInfo = ok(Object.fromEntries(items.map((i) => [i.id, ok(undefined)])));
 }
 
 describe("recommendNext / unlockChain", () => {

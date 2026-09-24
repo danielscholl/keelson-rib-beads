@@ -1,12 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import type { BdIssue } from "../src/bd";
+import type { RibExec } from "@keelson/shared";
+import { BdClient, type BdIssue } from "../src/bd";
 import {
   byPriorityThenAge,
+  measureProject,
   parseRunNote,
   recentCloses,
   subtractInProgress,
   unionBlocked,
 } from "../src/measure";
+import { GhClient } from "../src/pr";
 
 function issue(id: string, extra: Partial<BdIssue> = {}): BdIssue {
   return { id, title: id, status: "open", priority: 2, ...extra };
@@ -56,6 +59,115 @@ describe("parseRunNote", () => {
       prUrl: "https://github.com/acme/demo/pull/64",
       outcome: "success",
       note: "draft PR reviewed and CI green; bead stays claimed until merge",
+    });
+  });
+
+  describe("project PR measurement", () => {
+    const project = { id: "p", name: "Project", rootPath: "/repo" };
+    const url = "https://github.com/acme/demo/pull/42";
+
+    function fake(backlog: BdIssue[], notes: Record<string, string>, failures: string[] = []) {
+      const calls: { command: string; args: string[]; cwd: string }[] = [];
+      const exec = {
+        runJSON: async (command: string, args: string[], opts: { cwd: string }) => {
+          calls.push({ command, args, cwd: opts.cwd });
+          if (command === "gh") {
+            const requested = args[2];
+            if (requested === `${url.replace(/42$/, "43")}`) {
+              return { ok: false, error: "rate limit" };
+            }
+            return {
+              ok: true,
+              data: {
+                url: requested,
+                state: "MERGED",
+                mergedAt: "2026-09-22T01:02:03Z",
+                body: "",
+              },
+            };
+          }
+          const cmd = args[1];
+          if (failures.includes(cmd ?? "")) return { ok: false, error: `${cmd} failed` };
+          if (cmd === "show") {
+            const id = args[2] ?? "";
+            if (failures.includes(id)) return { ok: false, error: `show ${id} failed` };
+            return { ok: true, data: [{ ...issue(id), notes: notes[id] }] };
+          }
+          if (cmd === "status") return { ok: true, data: { summary: {} } };
+          if (cmd === "list" && args.includes("in_progress")) {
+            return { ok: true, data: backlog.filter((bead) => bead.status === "in_progress") };
+          }
+          if (cmd === "list" && args.includes("closed")) return { ok: true, data: [] };
+          if (cmd === "list" && args.includes("blocked")) return { ok: true, data: [] };
+          if (cmd === "list") return { ok: true, data: backlog };
+          return { ok: true, data: [] };
+        },
+        runText: async () => {
+          throw new Error("read-only sweep must not mutate bd");
+        },
+      } as unknown as RibExec;
+      return { bd: new BdClient(exec), gh: new GhClient(exec), calls };
+    }
+
+    test("scans every open and claimed bead, including blocked work beyond 12", async () => {
+      const backlog = [
+        ...Array.from({ length: 14 }, (_, n) =>
+          issue(`tl-${n}`, { status: n % 2 ? "open" : "in_progress", blocked_by: ["root"] }),
+        ),
+        issue("tl-deferred", { status: "deferred" }),
+      ];
+      const notes = Object.fromEntries(
+        backlog.map((bead) => [bead.id, `bead-work run: PR ${url} — success`]),
+      );
+      notes["tl-13"] = `bead-work run: PR ${url}\nbead-work run: PR none — failed`;
+      const { bd, gh, calls } = fake(backlog, notes);
+      const m = await measureProject(bd, project, () => new Date("2026-09-23T00:00:00Z"), gh);
+      expect(m.runInfo.ok).toBe(true);
+      expect(m.prInfo.ok).toBe(true);
+      if (!m.runInfo.ok || !m.prInfo.ok) return;
+      expect(Object.keys(m.runInfo.data)).toHaveLength(14);
+      expect(m.runInfo.data["tl-13"]).toEqual({
+        ok: true,
+        data: { prUrl: "none", outcome: "failed" },
+      });
+      expect(m.prInfo.data["tl-13"]).toEqual({ ok: true, data: undefined });
+      expect(m.prInfo.data["tl-12"]?.ok).toBe(true);
+      expect(calls.filter((call) => call.command === "gh")).toHaveLength(1);
+      expect(calls.filter((call) => call.args[1] === "show")).toHaveLength(14);
+      expect(calls.every((call) => call.cwd === "/repo")).toBe(true);
+    });
+
+    test("keeps per-bead show and gh failures distinct from missing PRs", async () => {
+      const backlog = [
+        issue("tl-bad", { status: "open" }),
+        issue("tl-gh", { status: "in_progress" }),
+        issue("tl-none"),
+        issue("tl-malformed"),
+      ];
+      const { bd, gh } = fake(
+        backlog,
+        {
+          "tl-gh": `bead-work run: PR ${url.replace(/42$/, "43")} — success`,
+          "tl-malformed": "bead-work run: PR not-a-url — success",
+        },
+        ["tl-bad"],
+      );
+      const m = await measureProject(bd, project, undefined, gh);
+      if (!m.prInfo.ok) throw new Error(m.prInfo.error);
+      expect(m.prInfo.data["tl-bad"]?.ok).toBe(false);
+      expect(m.prInfo.data["tl-gh"]).toEqual({
+        ok: false,
+        error: `gh pr view ${url.replace(/42$/, "43")}: rate limit`,
+      });
+      expect(m.prInfo.data["tl-none"]).toEqual({ ok: true, data: undefined });
+      expect(m.prInfo.data["tl-malformed"]?.ok).toBe(false);
+    });
+
+    test("a failed list marks both note and PR scans unmeasured", async () => {
+      const { bd, gh } = fake([], {}, ["list"]);
+      const m = await measureProject(bd, project, undefined, gh);
+      expect(m.runInfo.ok).toBe(false);
+      expect(m.prInfo.ok).toBe(false);
     });
   });
 

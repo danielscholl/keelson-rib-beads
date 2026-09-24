@@ -55,6 +55,20 @@ describe("GitHub PR evidence", () => {
     expect(result.ok).toBe(true);
   });
 
+  test("deduplicates a shared URL but checks each bead's association independently", async () => {
+    const calls: unknown[][] = [];
+    const results = await reader(
+      { url, state: "MERGED", mergedAt: "2026-09-22T01:02:03Z", body: "Bead: cos-hjf.1" },
+      calls,
+    ).readPRs(project, [
+      { id: "cos-hjf.1", prUrl: url },
+      { id: "cos-hjf.2", prUrl: `${url}/` },
+    ]);
+    expect(results["cos-hjf.1"]?.ok).toBe(true);
+    expect(results["cos-hjf.2"]?.ok).toBe(false);
+    expect(calls).toHaveLength(1);
+  });
+
   test.each([
     { url, state: "MERGED", mergedAt: null, body: "" },
     { url, state: "CLOSED", mergedAt: "2026-09-22T01:02:03Z", body: "" },
