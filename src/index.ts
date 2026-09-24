@@ -42,6 +42,8 @@ import {
   WIP_KEY,
 } from "./keys";
 import { fetchIssue, measureProject, type ProjectMeasurement } from "./measure";
+import { GhClient } from "./pr";
+import { type SyncReport, syncMergedPRs } from "./sync";
 import { makeBeadsTools } from "./tools";
 
 // ── Module state, reset on every activation.
@@ -50,6 +52,8 @@ let unregisters: (() => void)[] = [];
 let refreshTimer: ReturnType<typeof setInterval> | undefined;
 let seedTimer: ReturnType<typeof setTimeout> | undefined;
 let bdClient: BdClient | undefined;
+let ghClient: GhClient | undefined;
+const syncingProjects = new Set<string>();
 let getAllProjects: (() => readonly { id: string; name: string; rootPath: string }[]) | undefined;
 let listBeadsProjects: (() => BeadsProject[]) | undefined;
 
@@ -74,6 +78,7 @@ let measureCache: { scopeId: string; at: number; promise: Promise<ProjectMeasure
 
 const selectProjectPayload = z.object({ scopeId: z.string().min(1).optional() });
 const beadPayload = z.object({ id: z.string().min(1) });
+const syncPayload = z.object({ projectId: z.string().min(1) });
 
 function scopedProject(): BeadsProject | undefined {
   if (!scopeId) return undefined;
@@ -89,8 +94,8 @@ function getMeasurement(project: BeadsProject): Promise<ProjectMeasurement> {
   ) {
     return measureCache.promise;
   }
-  if (!bdClient) return Promise.reject(new Error("bd client not bound"));
-  const promise = measureProject(bdClient, project);
+  if (!bdClient || !ghClient) return Promise.reject(new Error("beads clients not bound"));
+  const promise = measureProject(bdClient, project, undefined, ghClient);
   measureCache = { scopeId: project.id, at: now, promise };
   // A failed sweep must not poison the cache window.
   promise.catch(() => {
@@ -106,6 +111,27 @@ function recomposeKeys(keys: readonly string[]): void {
 function refreshAll(): void {
   measureCache = undefined;
   recomposeKeys(ALL_KEYS);
+}
+
+async function reconcile(project: BeadsProject, confirm: boolean): Promise<SyncReport> {
+  if (!bdClient || !ghClient) throw new Error("beads clients not bound");
+  if (syncingProjects.has(project.id))
+    throw new Error(`reconciliation already running for ${project.name}`);
+  syncingProjects.add(project.id);
+  try {
+    return await syncMergedPRs(bdClient, ghClient, project, { confirm });
+  } finally {
+    syncingProjects.delete(project.id);
+    if (confirm) refreshAll();
+  }
+}
+
+function syncErrors(report: SyncReport): string | undefined {
+  const failures = report.results.filter((result) => result.status === "error");
+  return (
+    report.error ??
+    (failures.length ? `${failures.length} bead(s) could not be reconciled` : undefined)
+  );
 }
 
 // Composer factory: every panel resolves the scope the same way — no scope or
@@ -305,7 +331,9 @@ const rib: Rib = {
   ],
 
   registerTools: (ctx: RibContext) => {
-    bdClient = new BdClient(ctx.getExec());
+    const exec = ctx.getExec();
+    bdClient = new BdClient(exec);
+    ghClient = new GhClient(exec);
     listBeadsProjects = () => discoverBeadsProjects(ctx.getProjects?.() ?? []);
     getAllProjects = () => ctx.getProjects?.() ?? [];
 
@@ -441,6 +469,31 @@ const rib: Rib = {
         refreshAll();
         return { ok: true as const, data: { claimed: parsed.data.id } };
       }
+      case "sync-merged-beads": {
+        const parsed = syncPayload.safeParse(action.payload ?? {});
+        if (!parsed.success) {
+          return {
+            ok: false as const,
+            error: "sync-merged-beads payload must be { projectId: string }",
+          };
+        }
+        const project = scopedProject();
+        if (!project || project.id !== parsed.data.projectId) {
+          return {
+            ok: false as const,
+            error: "selected beads project no longer matches this action",
+          };
+        }
+        try {
+          const report = await reconcile(project, true);
+          const error = syncErrors(report);
+          return error
+            ? { ok: false as const, error, data: report }
+            : { ok: true as const, data: report };
+        } catch (err) {
+          return { ok: false as const, error: err instanceof Error ? err.message : String(err) };
+        }
+      }
       default:
         return { ok: false as const, error: `beads does not handle '${action.type}'` };
     }
@@ -460,6 +513,8 @@ const rib: Rib = {
     selectedBeadId = undefined;
     measureCache = undefined;
     bdClient = undefined;
+    ghClient = undefined;
+    syncingProjects.clear();
     getAllProjects = undefined;
     listBeadsProjects = undefined;
   },
@@ -468,11 +523,12 @@ const rib: Rib = {
 // The chat tools share the same client, discovery, and refresh nudge the
 // panels use.
 function makeBeadsToolsBound() {
-  if (!bdClient || !listBeadsProjects) return [];
+  if (!bdClient || !ghClient || !listBeadsProjects) return [];
   return makeBeadsTools({
     bd: bdClient,
     beadsProjects: listBeadsProjects,
     refreshBoard: refreshAll,
+    syncMerged: reconcile,
   });
 }
 
