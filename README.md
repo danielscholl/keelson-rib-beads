@@ -68,8 +68,9 @@ and one that does the work:
   chains grouped by blocker, priority drift, epics eligible to close; every
   finding carries the exact `bd` command that would fix it.
 - `beads-work` — takes one bead from the ready queue to a reviewed draft PR:
-  claims it (or the bead id you pass), investigates or plans, pauses for
-  approval, implements in an isolated worktree, runs the project's own checks
+  claims it (or the bead id you pass, refused while any of its `blocks`
+  dependencies is still open), investigates or plans, pauses for approval,
+  implements in an isolated worktree, runs the project's own checks
   (discovered from its manifests), opens a draft PR, runs a three-lens review
   loop with an independent triage judge, waits on CI, and writes the outcome
   back to the bead as a `bead-work run:` note the board reads. The approver's

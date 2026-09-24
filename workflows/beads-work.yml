@@ -13,7 +13,8 @@ description: |
             reviewed draft PR.
   Triggers: "work the next bead", "fix bead <id>", "implement bead", "beads-work",
             "bead-work", "work a beads issue", "claim the next issue".
-  Does: claims or selects a bead, loads its description and optional GitHub
+  Does: claims or selects a bead (refusing an explicit id that still has open
+        blockers), loads its description and optional GitHub
         mechanism issue, classifies and investigates / plans, pauses for human
         approval, implements the change, discovers and runs the project's own
         checks, self-fixes failures, pushes, creates a draft PR, runs the
@@ -52,6 +53,15 @@ nodes:
         BEAD=$(printf '%s' "${KEELSON_ARGUMENTS:-}" | grep -oE '[a-z][a-z0-9]*-[a-z0-9]+(\.[0-9]+)*' | head -1 || true)
       fi
       if [ -n "$BEAD" ]; then
+        # `bd update --claim` ignores dependencies, so hold an explicit id to the rule `bd ready` applies.
+        BLOCKERS=$(bd show "$BEAD" --json | jq -c 'if type == "array" then .[0] else . end
+          | [(.dependencies // [])[] | select(.dependency_type == "blocks" and .status != "closed") | .id]')
+        if [ "$BLOCKERS" != "[]" ]; then
+          printf '%s' "$BLOCKERS" | jq -c --arg id "$BEAD" '
+            {status:"blocked", id:$id, blockers:.,
+             message:("\($id) not claimed; open blockers: \(join(", "))")}'
+          exit 0
+        fi
         bd update "$BEAD" --claim >/dev/null
       else
         # Atomic claim of the first dependency-ready non-epic issue. Tolerate a
@@ -2452,7 +2462,7 @@ nodes:
       set -uo pipefail
       BEAD_FILE="$KEELSON_ARTIFACTS_DIR/.bead-id"
       if [ ! -f "$BEAD_FILE" ]; then
-        echo "BEADS_WRITEBACK: skipped — no bead was claimed (empty queue or claim failed)"
+        echo "BEADS_WRITEBACK: skipped — no bead was claimed (empty queue, open blockers, or claim failed)"
         exit 0
       fi
       BEAD=$(cat "$BEAD_FILE")
