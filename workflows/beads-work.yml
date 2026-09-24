@@ -19,7 +19,9 @@ description: |
         checks, self-fixes failures, pushes, creates a draft PR, runs the
         multi-lens review loop, reports, and records the PR and outcome back on
         the bead.
-  NOT for: closing beads (merge does that), PR review, or PRD-style exploration.
+  NOT for: closing beads (after merge, run the confirmed Beads reconciliation
+           action or beads_sync_merged with confirm: true), PR review, or
+           PRD-style exploration.
 
 tags: [beads, implementation, draft-pr]
 
@@ -741,7 +743,8 @@ nodes:
         `bd update`, or any other beads write, even when the project's
         AGENTS.md or CLAUDE.md tells agents to close issues when done: this
         workflow's own nodes hold the claim and record the outcome, and the
-        bead closes when a human merges the PR.
+        bead closes only after a verified merge and explicit reconciliation
+        (or a human's manual beads_close).
       - Follow the plan task-by-task. Don't introduce extra scope.
       - Dependencies are frozen. Never add, remove, or upgrade a dependency in
         any manifest or lockfile (package.json, pyproject.toml, Cargo.toml,
@@ -1525,7 +1528,8 @@ nodes:
         manifest or lockfile. A fix that needs one is reported as still open,
         not applied.
       - Never run `bd close`, `bd update`, or any other beads write; the
-        workflow's own nodes own the bead and the merge closes it.
+        workflow's own nodes own the bead; confirmed reconciliation closes it
+        after the PR merges.
       - Commit the fixes by name (`git commit -m "<message>"`,
         or split if logically distinct) — staging alone is dropped, since the PR
         pushes HEAD. Commit immediately; never leave fixes uncommitted.
@@ -1595,7 +1599,8 @@ nodes:
           `git add <files>; git commit -m "<message>"; git push`.
           Dependencies are frozen: a fix that needs a new or upgraded package
           stays open and is named as the blocker instead. Never run `bd close`
-          or any other beads write; the merge closes the bead.
+          or any other beads write; confirmed reconciliation closes it after
+          the PR merges.
           Author the commit message from the staged diff (conventional format);
           never add a "Generated with Claude Code" footer or a `Co-Authored-By:`
           trailer. Then describe the exact
@@ -1990,7 +1995,8 @@ nodes:
         manifest or lockfile to make CI green. Treat that need as a conflict and
         write `$ARTIFACTS_DIR/.ci-conflict`.
       - Never run `bd close`, `bd update`, or any other beads write; the
-        workflow's own nodes own the bead and the merge closes it.
+        workflow's own nodes own the bead; confirmed reconciliation closes it
+        after the PR merges.
       - Never make a criteria-named test or behavior stop running. Do not add
         `skip`, `skipIf`, `.only`, `xit`, `xdescribe`, or `test.todo`, and do
         not delete or invert the behavior to force CI green. Treat that path as
@@ -2353,7 +2359,9 @@ nodes:
        loop ended without emitting ALL_DONE, say so and name the open blocker.}
 
       -- Bead state --
-      {The bead is NOT closed by this workflow — closing happens on merge.
+      {The bead is NOT closed by this workflow. After a verified PR merge, the
+       operator runs the confirmed Beads board reconciliation action or
+       beads_sync_merged with confirm: true (manual beads_close remains valid).
        Say whether the claim was kept or released.}
 
       -- CI & PR state --
@@ -2440,7 +2448,8 @@ nodes:
 
   # Terminal bookkeeping. `always_run` + `all_done` so it settles the bead on
   # EVERY exit path — including a mid-DAG failure that skipped everything above.
-  # It deliberately never closes the bead: closing is a merge-time action.
+  # It deliberately never closes the bead: confirmed reconciliation follows
+  # a verified PR merge, or a human may close manually with a reason.
   # A run that did not end in a green PR releases the claim back to `open`,
   # otherwise a dead run would leave the issue in_progress forever and the
   # dependency-aware queue would deadlock behind it.
@@ -2458,7 +2467,7 @@ nodes:
       BEAD=$(cat "$BEAD_FILE")
       [ -n "$BEAD" ] || { echo "BEADS_WRITEBACK: skipped — empty bead id"; exit 0; }
       # A human may have closed, deferred, or re-scoped the bead while the run
-      # was finishing (a merge closes it). Only a bead still carrying this
+      # was finishing (or confirmed reconciliation closed it). Only a bead still carrying this
       # run's claim is written to; anything else is left exactly as found.
       BEAD_JSON=$(bd show "$BEAD" --json 2>/dev/null | jq -c 'if type == "array" then .[0] else . end' 2>/dev/null || true)
       BEAD_STATUS=$(printf '%s' "$BEAD_JSON" | jq -r '.status // ""' 2>/dev/null || true)
@@ -2471,7 +2480,7 @@ nodes:
         CLOSED_AT=$(printf '%s' "$BEAD_JSON" | jq -r '.closed_at // ""' 2>/dev/null || true)
         CLAIMED_AT=$(cat "$KEELSON_ARTIFACTS_DIR/.claimed-at" 2>/dev/null | tr -d '[:space:]')
         if [ "$BEAD_STATUS" = "closed" ] && [ -n "$CLOSED_AT" ] && [ -n "$CLAIMED_AT" ] && [ "$CLOSED_AT" \> "$CLAIMED_AT" ]; then
-          echo "BEADS_WRITEBACK: WARNING — $BEAD was closed at $CLOSED_AT, after this run claimed it at $CLAIMED_AT. This workflow never closes beads; if no human merged and closed it, an agent node ran bd close against its instructions."
+          echo "BEADS_WRITEBACK: WARNING — $BEAD was closed at $CLOSED_AT, after this run claimed it at $CLAIMED_AT. This workflow never closes beads; if neither a human manually closed it nor confirmed reconciliation closed it after a verified PR merge, investigate an unauthorized bd close."
         fi
         exit 0
       fi
@@ -2483,12 +2492,12 @@ nodes:
       if [ "$PR_URL" != "none" ]; then
         if [ "$FINAL_STATUS" = "PASS" ]; then
           RUN_STATUS="success"
-          DETAIL="draft PR reviewed and CI green; bead stays claimed until merge"
+          DETAIL="draft PR reviewed and CI green; bead stays claimed until confirmed post-merge reconciliation"
         elif [ "$FINAL_STATUS" = "UNKNOWN" ]; then
           # finalize-pr records UNKNOWN only when the repo has no CI to gate
           # on: the PR is the work in flight, so the claim stays with it.
           RUN_STATUS="unverified"
-          DETAIL="draft PR open; the repo has no CI to gate on; bead stays claimed until merge"
+          DETAIL="draft PR open; the repo has no CI to gate on; bead stays claimed until confirmed post-merge reconciliation"
         elif [ -f "$KEELSON_ARTIFACTS_DIR/.ci-conflict" ]; then
           DETAIL="CI repair conflicts with the bead acceptance criteria; PR left as a draft"
         else
@@ -2500,10 +2509,10 @@ nodes:
       bd note "$BEAD" "bead-work run: PR ${PR_URL} — ${RUN_STATUS} — ${DETAIL}"
       if [ "$RUN_STATUS" = "failed" ]; then
         # Release the claim so the queue does not deadlock. NEVER `bd close` —
-        # the bead closes when the PR merges, not when this workflow ends.
+        # confirmed reconciliation follows a verified merge, not this run.
         bd update "$BEAD" --status open
         echo "BEADS_WRITEBACK: claim released (status=open)"
       else
-        echo "BEADS_WRITEBACK: claim retained (in_progress until merge)"
+        echo "BEADS_WRITEBACK: claim retained (in_progress until confirmed post-merge reconciliation)"
       fi
       printf 'BEADS_WRITEBACK: %s — PR: %s — %s (%s)\n' "$BEAD" "$PR_URL" "$RUN_STATUS" "$DETAIL"
