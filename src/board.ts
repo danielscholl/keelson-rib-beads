@@ -6,37 +6,34 @@
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 
-// The Beads surface is an overview + inspector: each panel owns one stable
-// spatial role, composed from a shared measurement. Order of attention — the
-// operator's questions, most urgent first: pulse (with the flow strip) →
-// agents at work vs needs-a-human → one recommendation (explained,
-// actionable) → portfolio vs momentum → the selected-bead inspector → the
-// Plan inventory. Selecting any card (action `select-bead`) opens the inspector in
-// the canvas drawer (in view no matter how deep the click was) and pins it to
-// the Selected-bead panel; long descriptions live THERE, never stretched
-// inside the inventory.
+// The Beads surface answers three questions in the order a status
+// conversation runs: Doing (In flight, Needs you), To do (Next up, Epics,
+// Backlog), Done (Shipped). A header sentence says the totals once in words
+// above the flow strip, and reports a shared cause (an old bd, a failing gh)
+// once instead of letting every panel alarm on its own.
 //
-// Visual grammar (operator feedback, 2026-08-09). Two channels, never one:
-// colour and the leading dot carry LIFECYCLE (accent startable, ok in
-// progress, info on hold) while every conditional signal — waiting on N, N
-// downstream, bug, paused by hand, closeout review — goes to the trailing
-// DECISION RAIL. Blocking is a condition, so it never tints a dot; that
-// conflation is what made one bead read green in one panel and red in
-// another. Priority is a quiet `P0`–`P4`, ids are neutral chips, the title is
-// the scan target, and the rail is empty on most beads by design.
+// Every bead renders in one shape. A card when there is evidence to show:
+// lane dot, full title, a meta line that leads with the id as bd prints it,
+// at most one signal pill, and the evidence (close reason, newest comment,
+// run remark) as the card's reason line. A row when a list is dense and has
+// no evidence: lane dot, title, then id and signal on the right. The dot is
+// the lane (to do, in flight, done) and nothing else; waiting, staleness and
+// merge drift are signals, never colours.
 
 import type { CanvasBoardView, CanvasTone } from "@keelson/shared";
-import type { BdEpicRow, BdIssue, BdLinked, BeadRunInfo, Measured } from "./bd";
-import { unmeasured } from "./bd";
-import type { ProjectMeasurement } from "./measure";
-import { byPriorityThenAge, FLOW_WINDOW_DAYS, RECENT_CLOSE_DAYS, STALE_DAYS } from "./measure";
+import type { BdComment, BdEpicRow, BdIssue, BdLinked, BeadRunInfo, Measured } from "./bd";
+import { bdFloorLabel, unmeasured } from "./bd";
+import type { EpicMember, ProjectMeasurement } from "./measure";
+import { bdBelowFloor, byPriorityThenAge, parseRunNote, STALE_DAYS } from "./measure";
 import { isMergedPR, type PrInfo } from "./pr";
 
 const ATTENTION_CAP = 8;
 const DAMS_CAP = 5;
-const MOMENTUM_CAP = 12;
-const PLAN_CAP = 80;
+const SHIPPED_CAP = 12;
+const BACKLOG_CAP = 80;
+const LADDER_DONE_LISTED = 4;
 const PARA_CAP = 24;
+const TITLE_BUDGET = 140;
 
 type Board = CanvasBoardView;
 type BoardSection = CanvasBoardView["sections"][number];
@@ -45,12 +42,10 @@ type LeafSection = Extract<
   BoardSection,
   { kind: "columns" }
 >["columns"][number]["sections"][number];
-// One card item as the canvas schema defines it — wider than any single
-// composer's literal, so a card carrying `actions` sits in the same array as
-// one that does not.
 type CardItem = Extract<BoardSection, { kind: "cards" }>["items"][number];
+type RowItem = Extract<BoardSection, { kind: "rows" }>["items"][number];
+type Pill = NonNullable<CardItem["pill"]>;
 
-// What the composers need beyond the measurement itself.
 export interface PanelContext {
   selectedId?: string;
 }
@@ -73,31 +68,25 @@ export function statusGlyph(status: string): string {
 
 // bd spells the same human two ways depending on which query answered: `bd
 // list` and `bd ready` carry `owner` (an email), while `bd list --status
-// in_progress` and `bd show` carry `assignee` (a display name). Measured on
-// the live tracker, `bd ready` returned 26 of 31 rows with an owner and only
-// one with an assignee — so reading `assignee` alone reported work as
-// unclaimed when it was owned. Always read both, in that order.
+// in_progress` and `bd show` carry `assignee` (a display name). Always read
+// both, in that order, or owned work reads as unclaimed.
 export function personOf(i: BdIssue): string | undefined {
   const raw = (i.assignee ?? i.owner ?? "").trim();
   return raw.length > 0 ? raw : undefined;
 }
 
-// ── Two channels, deliberately separate ──────────────────────────────────
-//
-// LIFECYCLE is where a bead sits in its own life: exactly one value, always
-// present. CONDITION is what the dependency graph is doing to it: zero or one,
-// and it overlays ANY lifecycle. A bead can be in progress AND waiting.
-//
-// Conflating them is what made the same bead render green under In progress
-// and red under Needs attention — it looked like a contradiction because one
-// dot was being asked to answer two questions. `blocked` is bd's status name
-// but it is a condition, so it folds to `open` here and re-appears in the
-// rail. `ready` likewise never becomes a lifecycle value: it is the ABSENCE of
-// a waiting condition, and it was only ever restating the queue the bead was
-// already listed in.
+// An email shows as its local part; a display name as written.
+export function shortPerson(person: string | undefined): string | undefined {
+  if (!person) return undefined;
+  const at = person.indexOf("@");
+  return at > 0 ? person.slice(0, at) : person;
+}
+
+// Where a bead sits in its own life. `blocked` is bd's status name but a
+// condition, so it folds to `open` and reappears as a signal.
 export type Lifecycle = "open" | "in_progress" | "deferred" | "closed";
 
-export function lifecycleOf(i: BdIssue): Lifecycle {
+export function lifecycleOf(i: { status: string }): Lifecycle {
   switch (i.status) {
     case "in_progress":
       return "in_progress";
@@ -105,34 +94,22 @@ export function lifecycleOf(i: BdIssue): Lifecycle {
       return "deferred";
     case "closed":
       return "closed";
-    // "blocked" lands here on purpose — see above.
     default:
       return "open";
   }
 }
 
-// `error` is deliberately absent: alarm belongs to the waiting CONDITION in
-// the rail, never to a lifecycle value. Startable open work keeps the accent.
-export function lifecycleTone(l: Lifecycle, startable: boolean): CanvasTone | undefined {
-  if (l === "in_progress") return "ok";
-  if (l === "deferred") return "info";
-  if (l === "closed") return "neutral";
-  return startable ? "accent" : undefined;
+// The lane colour: to do, in flight, done. On hold is to do with no urgency.
+export function lifecycleTone(l: Lifecycle): CanvasTone {
+  if (l === "in_progress") return "info";
+  if (l === "closed") return "ok";
+  if (l === "deferred") return "neutral";
+  return "accent";
 }
 
-// The default lifecycle carries no word — every other one does, so no state
-// ever rests on colour alone.
-export function lifecycleChip(l: Lifecycle): string | undefined {
-  if (l === "in_progress") return "in progress";
-  if (l === "deferred") return "on hold";
-  if (l === "closed") return "closed";
-  return undefined;
-}
-
-// `bd blocked` rows carry no `dependent_count` at all (verified live: 0 of 3),
-// while `bd list` carries it for the whole backlog. Panels built from the
-// blocked union therefore have to read leverage through the backlog, or they
-// would report every blocked bead as having no downstream work.
+// `bd blocked` rows carry no `dependent_count` (verified live), while `bd
+// list` carries it for the whole backlog, so leverage reads through the
+// backlog for blocked beads.
 export function backlogIndex(m: ProjectMeasurement): ReadonlyMap<string, BdIssue> {
   return new Map((m.backlog.ok ? m.backlog.data : []).map((i) => [i.id, i]));
 }
@@ -141,44 +118,9 @@ export function declaredDownstream(i: BdIssue, index: ReadonlyMap<string, BdIssu
   return i.dependent_count ?? index.get(i.id)?.dependent_count ?? 0;
 }
 
-// ── The decision rail ────────────────────────────────────────────────────
-//
-// One predictable trailing location for the signals that are exceptional —
-// never a reserved column per signal, which is the disease this replaces: four
-// mostly-empty columns cost every row their width to pay off on a handful.
-// Empty on most beads, and that emptiness is the feature.
-//
-// Fixed order, so the eye learns one scan path.
-export interface RailContext {
-  waitingOn?: readonly string[];
-  downstream?: number;
-  handPaused?: boolean;
-  closeout?: boolean;
-  mergePending?: boolean;
-}
-
-export function decisionRail(i: BdIssue, c: RailContext = {}): string[] {
-  const rail: string[] = [];
-  // Type keys on the typed field, never `labels` — a bead can carry a "bug"
-  // label while typed a task, and the label is the looser claim.
-  if (i.issue_type === "bug") rail.push("bug");
-  if (i.issue_type === "epic") rail.push("epic");
-  if (c.waitingOn?.length) rail.push(`waiting on ${c.waitingOn.join(", ")}`);
-  else if (c.handPaused) rail.push("paused by hand");
-  if ((c.downstream ?? 0) > 0) rail.push(`${c.downstream} downstream`);
-  if (c.closeout) rail.push("closeout review");
-  if (c.mergePending) rail.push("merged PR · close pending");
-  return rail;
-}
-
-// Who owns the visible work, said in the fewest places that stay truthful.
-// Repeating one name on every card is noise; assuming one name is a bug the
-// day a second person appears. So the shape of the answer follows the data:
-//
-//   everyone the same   → hoist to the panel title, cards say nothing
-//   nobody assigned     → say nothing at all; unassigned is the backlog default
-//   mixed or several    → per card, and the unassigned ones are MARKED, because
-//                         a gap beside assigned siblings is itself the signal
+// Who owns the visible work, said in the fewest places that stay truthful:
+// one owner hoists to the panel title, nobody assigned says nothing, and a
+// mix goes per bead with the unassigned ones marked.
 export interface AssigneeView {
   sharedTitle?: string;
   perItem: boolean;
@@ -186,7 +128,7 @@ export interface AssigneeView {
 }
 
 export function assigneeView(items: readonly BdIssue[]): AssigneeView {
-  const people = items.map((i) => personOf(i));
+  const people = items.map((i) => shortPerson(personOf(i)));
   const named = people.filter((p): p is string => p !== undefined);
   if (named.length === 0) return { perItem: false, markUnassigned: false };
   const uniform = named.length === people.length && named.every((p) => p === named[0]);
@@ -195,51 +137,9 @@ export function assigneeView(items: readonly BdIssue[]): AssigneeView {
   return { perItem: true, markUnassigned: true };
 }
 
-// P0 is a fire, P1 urgent, P2 normal, everything after that is backlog noise.
-export function priorityTone(priority: number | undefined): CanvasTone {
-  if (priority === 0) return "error";
-  if (priority === 1) return "warn";
-  if (priority === 2) return "info";
-  return "neutral";
-}
-
-// The Plan tree, mirroring `bd list`: parentage comes from dotted ids
-// (tl-65z.6 belongs under tl-65z) plus explicit parent-child edges (epic
-// membership — `childToParent`, from bd show's dependents). Roots order by
-// priority; a root's children stay attached to it as a group.
-export interface PlanGroup {
-  root: BdIssue;
-  children: BdIssue[];
-}
-
-export function planGroups(
-  backlog: BdIssue[],
-  childToParent?: ReadonlyMap<string, string>,
-): PlanGroup[] {
-  const byId = new Map(backlog.map((i) => [i.id, i]));
-  const children = new Map<string, BdIssue[]>();
-  const roots: BdIssue[] = [];
-  for (const issue of backlog) {
-    const dot = issue.id.lastIndexOf(".");
-    const parentId = (dot > 0 ? issue.id.slice(0, dot) : undefined) ?? childToParent?.get(issue.id);
-    if (parentId && parentId !== issue.id && byId.has(parentId)) {
-      const siblings = children.get(parentId) ?? [];
-      siblings.push(issue);
-      children.set(parentId, siblings);
-    } else {
-      roots.push(issue);
-    }
-  }
-  roots.sort(byPriorityThenAge);
-  return roots.map((root) => ({
-    root,
-    children: (children.get(root.id) ?? []).sort((a, b) => (a.id < b.id ? -1 : 1)),
-  }));
-}
-
 // The recommendation: leverage first (dependent_count — finishing it frees
-// the most stuck work), priority second, age third. Deliberately ONE pick
-// with a named runner-up: a queue of twelve is a report, not a decision.
+// the most stuck work), priority second, age third. ONE pick with a named
+// runner-up: a queue of twelve is a report, not a decision.
 export function recommendNext(ready: BdIssue[]): { pick?: BdIssue; runnerUp?: BdIssue } {
   const ranked = [...ready].sort((a, b) => {
     const la = a.dependent_count ?? 0;
@@ -250,28 +150,9 @@ export function recommendNext(ready: BdIssue[]): { pick?: BdIssue; runnerUp?: Bd
   return { pick: ranked[0], runnerUp: ranked[1] };
 }
 
-// The inspector's resting state was a dead panel one click from useful, and
-// "Nothing selected" is a neutral answer to a board that already has an
-// opinion. So when nothing has been chosen it shows the pick.
-//
-// Deliberately narrow: this never writes `selectedBeadId` and never feeds the
-// `selected` flags on the other panels. A selection ring means "you clicked
-// this" — if the fallback lit one, the ring would claim a click that never
-// happened, and every panel would disagree about what "selected" means.
-// Epics cannot appear here: the ready queue already excludes them.
-export function fallbackSelectedId(m: ProjectMeasurement): string | undefined {
-  return m.ready.ok ? recommendNext(m.ready.data).pick?.id : undefined;
-}
-
-// Who waits on this bead, by name — read off the blocked union's blocked_by
-// edges so the recommendation is explainable, never magical. Walked hop by
-// hop to exhaustion: the first level is what finishing this bead releases
-// immediately, every later level comes free as each hop clears. `seen` closes
-// the walk against dependency cycles, which bd permits.
-//
-// Bounded by the blocked union we measured — a bead nobody reported blocked
-// cannot appear here — so this undercounts rather than invents, which is the
-// direction a leverage claim should err.
+// Who waits on this bead, by name, walked hop by hop off the blocked union's
+// blocked_by edges. `seen` closes the walk against cycles, which bd permits.
+// Bounded by the union, so it undercounts rather than invents.
 export function unlockLevels(id: string, blocked: BdIssue[]): BdIssue[][] {
   const levels: BdIssue[][] = [];
   const seen = new Set<string>([id]);
@@ -288,7 +169,6 @@ export function unlockLevels(id: string, blocked: BdIssue[]): BdIssue[][] {
   return levels;
 }
 
-// The first two hops, named — the shape the panels read.
 export function unlockChain(
   id: string,
   blocked: BdIssue[],
@@ -477,62 +357,224 @@ function board(sections: BoardSection[], header?: Board["header"]): Board {
 }
 
 // A panel whose measurement failed must alarm, never render empty-healthy.
-// The raw error goes in `detail` (a disclosure), not `trailing`: trailing
-// shares the row's line with `text`, and a long log line crushes the alarm
-// sentence to a one-character sliver in a half-width column.
-function failedBoard(what: string, error: string): Board {
-  return board([
-    {
-      kind: "rows",
-      items: [
-        {
-          icon: "⚠",
-          chip: { label: "UNMEASURED", tone: "error" },
-          text: `${what} could not be measured — this is not an empty-and-healthy panel.`,
-          detail: error.slice(0, 1000),
-        },
-      ],
-    },
-  ]);
+// The raw error goes in `detail`, a disclosure, so a long log line never
+// crushes the alarm sentence. Below the bd version floor any failure is
+// suspect, so the panel points at the header, which names the cause once.
+function alarmRow(what: string, error: string, m?: Pick<ProjectMeasurement, "bd">): RowItem {
+  const floor = m ? bdBelowFloor(m) : undefined;
+  if (floor) {
+    return {
+      icon: "⚠",
+      chip: { label: "UNMEASURED", tone: "error" },
+      text: `${capitalize(what)} needs bd ${bdFloorLabel()}. See the header.`,
+      ...(error.includes(floor) ? {} : { detail: error.slice(0, 1000) }),
+    };
+  }
+  return {
+    icon: "⚠",
+    chip: { label: "UNMEASURED", tone: "error" },
+    text: `${capitalize(what)} could not be measured. This is not an empty panel.`,
+    detail: error.slice(0, 1000),
+  };
+}
+
+function failedBoard(what: string, error: string, m?: Pick<ProjectMeasurement, "bd">): Board {
+  return board([{ kind: "rows", items: [alarmRow(what, error, m)] }]);
+}
+
+function quiet(text: string, glyph: CanvasTone = "neutral"): BoardSection {
+  return { kind: "rows", items: [{ glyph, text }] };
 }
 
 // The rib's explicit empty signal: zero sections hides the region entirely.
 const HIDDEN: Board = { view: "board", sections: [] };
 
-function daysAgo(iso: string | undefined, now: Date): string {
-  if (!iso) return "age unknown";
-  const days = Math.max(0, Math.floor((now.getTime() - new Date(iso).getTime()) / 86_400_000));
-  if (days === 0) return "touched today";
-  return `quiet ${days}d`;
+const capitalize = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1);
+const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+export const clampTitle = (raw: string, budget: number = TITLE_BUDGET): string => {
+  if (raw.length <= budget) return raw;
+  const cut = raw.slice(0, budget);
+  const lastSpace = cut.lastIndexOf(" ");
+  const kept = lastSpace > budget * 0.6 ? cut.slice(0, lastSpace) : cut;
+  return `${kept.trimEnd()}…`;
+};
+
+// The first sentence of a close reason or comment, which on the trackers
+// measured names the PR and what it delivered; the inspector holds the rest.
+export function firstSentence(text: string, cap = 180): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  const end = /[.!?](?=\s+[A-Z(“"'`])/.exec(flat);
+  const sentence = end ? flat.slice(0, end.index + 1) : flat;
+  return clampTitle(sentence, cap);
 }
 
-// ── Pulse: the flow strip IS the pulse. The four stat tiles it once carried
-// each restated a strip population — kept only because a segment had no
-// unmeasured affordance while a tile could show `?`. Now `n: null` renders a
-// hatched slot (unmeasured is not zero), so the strip carries its own
-// fail-closed reading per stage and the tiles retire whole, per the board
-// guidance: don't repeat one fact across sections. The counts still read
-// from the strip's own legend.
+// Elapsed time, coarse on purpose: a row says how long, not when.
+export function ago(iso: string | undefined, now: Date): string | undefined {
+  if (!iso) return undefined;
+  const ms = now.getTime() - new Date(iso).getTime();
+  if (!Number.isFinite(ms)) return undefined;
+  const minutes = Math.max(0, Math.floor(ms / 60_000));
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+// Days are elapsed 24h windows from asOf, the arithmetic every age uses.
+function dayLabel(iso: string, now: Date): string {
+  const days = Math.max(0, Math.floor((now.getTime() - new Date(iso).getTime()) / 86_400_000));
+  if (days === 0) return "Today";
+  if (days === 1) return "Yesterday";
+  return `${MONTHS[Number(iso.slice(5, 7)) - 1] ?? "?"} ${Number(iso.slice(8, 10))}`;
+}
+
+function stamp(iso: string | undefined): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const hh = String(d.getUTCHours()).padStart(2, "0");
+  const mm = String(d.getUTCMinutes()).padStart(2, "0");
+  return `${MONTHS[d.getUTCMonth()] ?? "?"} ${d.getUTCDate()} ${hh}:${mm}Z`;
+}
+
+function clock(iso: string | undefined): string {
+  return stamp(iso).split(" ").pop() ?? "";
+}
+
+// The PR a closed bead shipped through: the run note first, then any GitHub
+// PR URL in the close reason.
+export function shippedPR(i: BdIssue): string | undefined {
+  const run = parseRunNote(i.notes);
+  if (run?.prUrl) return run.prUrl;
+  return /https:\/\/github\.com\/[^\s/]+\/[^\s/]+\/pull\/\d+/.exec(i.close_reason ?? "")?.[0];
+}
+
+// How far along a claim is, from the evidence the tracker and GitHub hold:
+// claimed, PR open (with draft, CI and review state when gh answered), or a
+// verified merge waiting on the close.
+export function flightStage(
+  i: BdIssue,
+  info: BeadRunInfo | undefined,
+  pr: PrInfo | undefined,
+  now: Date,
+): string {
+  if (info?.prUrl) {
+    if (pr && isMergedPR(pr)) return "merged · close pending";
+    return [
+      "PR open",
+      ...(pr?.draft ? ["draft"] : []),
+      ...(pr?.checks ? [`CI ${pr.checks}`] : []),
+      ...(pr?.review ? [pr.review] : []),
+    ].join(" · ");
+  }
+  if (info?.prState === "number-only") return `PR #${info.prNumber} · link unknown`;
+  if (info?.prState === "unknown") return "PR state unknown";
+  const since = ago(i.started_at, now);
+  return since ? `claimed ${since} ago` : "claimed · time not recorded";
+}
+
+// The one signal a bead carries, most pressing first. Most beads carry none.
+export interface SignalContext {
+  waitingOn?: readonly string[];
+  handPaused?: boolean;
+  staleDays?: number;
+  closeout?: boolean;
+  mergePending?: boolean;
+}
+
+export function signalOf(i: BdIssue, c: SignalContext = {}): Pill | undefined {
+  if (c.mergePending) return { label: "merged · close pending", tone: "warn" };
+  if (c.waitingOn?.length) return { label: `waits on ${c.waitingOn.length}`, tone: "caution" };
+  if (c.handPaused) return { label: "paused by hand", tone: "caution" };
+  if (c.staleDays !== undefined) return { label: `stale ${c.staleDays}d`, tone: "warn" };
+  if (c.closeout) return { label: "closeout review", tone: "warn" };
+  if (i.status === "deferred") return { label: "on hold", tone: "neutral" };
+  if (i.priority === 0) return { label: "P0", tone: "error" };
+  if (i.priority === 1) return { label: "P1", tone: "warn" };
+  return undefined;
+}
+
+interface BeadCardOptions {
+  meta?: (string | undefined | false)[];
+  signal?: Pill;
+  evidence?: { label?: string; text: string };
+  fields?: NonNullable<CardItem["fields"]>;
+  actions?: CardItem["actions"];
+  footnote?: string;
+  selectedId?: string;
+  tone?: CanvasTone;
+}
+
+// The card form of a bead. The id leads the meta line in bd's own spelling,
+// never truncated; the title wraps instead of clamping.
+function beadCard(
+  i: { id: string; title: string; status: string },
+  o: BeadCardOptions = {},
+): CardItem {
+  const meta = [i.id, ...(o.meta ?? [])].filter((x): x is string => Boolean(x));
+  return {
+    title: clampTitle(i.title),
+    dot: o.tone ?? lifecycleTone(lifecycleOf(i)),
+    ...(o.signal ? { pill: o.signal } : {}),
+    selected: o.selectedId === i.id,
+    action: { type: "select-bead", payload: { id: i.id } },
+    fields: [{ value: meta.join(" · ") }, ...(o.fields ?? [])],
+    ...(o.evidence ? { reason: o.evidence } : {}),
+    ...(o.actions ? { actions: o.actions } : {}),
+    ...(o.footnote ? { footnote: o.footnote } : {}),
+  };
+}
+
+// The row form of a bead, for dense lists with no evidence line.
+function beadRow(
+  i: { id: string; title: string; status: string },
+  trailing: (string | undefined | false)[],
+  ctx: PanelContext,
+  tone?: CanvasTone,
+): RowItem {
+  return {
+    glyph: tone ?? lifecycleTone(lifecycleOf(i)),
+    text: i.title,
+    trailing: [i.id, ...trailing].filter((x): x is string => Boolean(x)).join(" · "),
+    action: { type: "select-bead", payload: { id: i.id } },
+    selected: ctx.selectedId === i.id,
+  };
+}
+
+function prField(url: string): NonNullable<CardItem["fields"]>[number] {
+  return { label: "PR", value: prLabel(url), href: url };
+}
+
+function commentEvidence(c: BdComment, now: Date): { label: string; text: string } {
+  const who = shortPerson(c.author) ?? "comment";
+  const when = ago(c.created_at, now);
+  return { label: when ? `${who} · ${when} ago` : who, text: firstSentence(c.text) };
+}
+
+function latestCommentOf(m: ProjectMeasurement, id: string): BdComment | undefined {
+  if (!m.latestComment.ok) return undefined;
+  const entry = m.latestComment.data[id];
+  return entry?.ok ? entry.data : undefined;
+}
+
+function staleDaysOf(m: ProjectMeasurement, i: BdIssue, now: Date): number | undefined {
+  if (!m.stale.ok || !m.stale.data.some((s) => s.id === i.id)) return undefined;
+  const at = i.updated_at ?? i.started_at;
+  if (!at) return STALE_DAYS;
+  return Math.max(STALE_DAYS, Math.floor((now.getTime() - new Date(at).getTime()) / 86_400_000));
+}
+
+// ── Header: one sentence with the week's totals, the flow strip, and the
+// preflight, so one cause reads as one line.
 export function composePulse(m: ProjectMeasurement): Board {
-  if (!m.summary.ok) return failedBoard("the KPI summary", m.summary.error);
-  const s = m.summary.data;
-  // The strip is a distribution, so its populations must be disjoint — which
-  // the panels deliberately are not (a claimed bead can sit in the blocked
-  // union too; that overlap is the two-channel grammar). For the strip only,
-  // the overlap folds INTO "In progress": the waiting still shows on the
-  // bead's own card as a rail, so no signal is lost, and the segments sum to
-  // a population instead of double-counting one bead across two stages.
-  // "Done 7d" is a window, not a stage, and its label says so.
+  const floor = bdBelowFloor(m);
   const split = stageSplit(m);
-  // Each stage measures independently: a failed input hatches ITS segment
-  // while the rest keep answering. "Waiting" needs the claimed-set
-  // subtraction, so it hatches when either the blocked union or the
-  // in-progress list is unmeasured.
-  //
-  // The stages are one ordered flow, so they wear the ordinal ramp
-  // (light→dark tracks waiting→done) rather than five unrelated semantic
-  // hues — "waiting" must not borrow the tone that elsewhere means
-  // "nothing to say", nor "done" the brand hue.
+  // The strip is a distribution, so its populations must be disjoint: a
+  // claimed bead that is also blocked counts once, under in progress.
   const wipIds = new Set(m.inProgress.ok ? m.inProgress.data.map((i) => i.id) : []);
   const segments: Extract<BoardSection, { kind: "segments" }>["items"] = [
     {
@@ -552,116 +594,119 @@ export function composePulse(m: ProjectMeasurement): Board {
       tone: "ramp-5",
     },
   ];
+  const count = (x: Measured<unknown[]>): string => (x.ok ? String(x.data.length) : "?");
+  const left = m.backlog.ok
+    ? String(
+        m.backlog.data.filter(
+          (i) => i.issue_type !== "epic" && i.status !== "in_progress" && i.status !== "deferred",
+        ).length,
+      )
+    : "?";
+  const sentence = `This week: ${count(m.recentlyClosed)} shipped · ${count(m.inProgress)} in flight · ${left} left to do`;
+
+  const preflight: RowItem[] = [];
+  if (floor && m.bd.ok && m.bd.data) {
+    preflight.push({
+      icon: "⚠",
+      chip: { label: "bd too old", tone: "error" },
+      text: `bd ${m.bd.data.version} is on PATH and the board needs ${bdFloorLabel()}. Epics, run notes, PR state and the inspector wait on it; upgrade the beads CLI and the board fills in.`,
+    });
+  }
+  const gh = ghHealth(m);
+  if (gh.failing) {
+    preflight.push({
+      icon: "⚠",
+      chip: { label: "gh failing", tone: "error" },
+      text: "Every PR lookup failed, so merge, CI and review state are unverified. PR links still come from the run notes.",
+      ...(gh.error ? { detail: gh.error.slice(0, 1000) } : {}),
+    });
+  }
   const flowFailures = [
     ...(m.blocked.ok ? [] : [`waiting: ${m.blocked.error}`]),
     ...(m.ready.ok ? [] : [`ready: ${m.ready.error}`]),
-    ...(split.ok ? [] : [`stage split: ${split.error}`]),
+    ...(split.ok || (floor && split.error.includes(floor)) ? [] : [`stage split: ${split.error}`]),
     ...(m.recentlyClosed.ok ? [] : [`closes: ${m.recentlyClosed.error}`]),
   ];
-  // The caption names the strip's population and its exclusions, because the
-  // header chip counts a DIFFERENT population (bd's open count includes the
-  // epics the strip excludes as structure) and a numerate reader's first move
-  // is to reconcile the two. Only a fully measured strip claims a total; the
-  // exclusion clauses degrade independently, Plan-style, when their source
-  // is unmeasured.
-  const allMeasured = segments.every((s) => s.n !== null);
-  const flowTotal = segments.reduce((a, s) => a + (s.n ?? 0), 0);
-  const epicCount = m.epics.ok ? m.epics.data.length : 0;
-  const deferredCount = m.backlog.ok
-    ? m.backlog.data.filter((i) => i.status === "deferred").length
-    : 0;
-  const stripTitle = allMeasured
-    ? [
-        `Flow — ${flowTotal} work item${flowTotal === 1 ? "" : "s"}`,
-        ...(epicCount > 0 ? [`${epicCount} epic${epicCount === 1 ? "" : "s"} excluded`] : []),
-        ...(deferredCount > 0 ? [`${deferredCount} deferred not shown`] : []),
-      ].join(" · ")
-    : undefined;
+  if (flowFailures.length && !floor) {
+    preflight.push({
+      icon: "⚠",
+      chip: { label: "UNMEASURED", tone: "error" },
+      text: "Hatched segments could not be measured. Never read them as zero.",
+      detail: flowFailures.join("\n").slice(0, 1000),
+    });
+  }
+
+  const chip = [
+    m.bd.ok && m.bd.data ? `bd ${m.bd.data.version}` : m.bd.ok ? "bd version unknown" : undefined,
+    gh.label,
+    `measured ${m.asOf.slice(11, 16)}Z`,
+  ].filter(Boolean);
   return board(
     [
-      // A `segments` SECTION, not `header.segments`: the surface renders
-      // header segments legend-only in the region head, while a section gets
-      // the full-width proportional strip (with its own count legend).
-      { kind: "segments", ...(stripTitle ? { title: stripTitle } : {}), items: segments },
-      // The hatch says WHICH stage is unmeasured; this line says WHY.
-      ...(flowFailures.length === 0
-        ? []
-        : ([
-            {
-              kind: "rows",
-              items: [
-                {
-                  icon: "⚠",
-                  chip: { label: "UNMEASURED", tone: "error" },
-                  text: "hatched segments could not be measured — never read them as zero.",
-                  detail: flowFailures.join("\n").slice(0, 1000),
-                },
-              ],
-            },
-          ] satisfies BoardSection[])),
+      { kind: "segments", title: sentence, items: segments },
+      ...(preflight.length ? [{ kind: "rows" as const, items: preflight }] : []),
     ],
     {
-      status: { label: m.project.name, tone: "ok" },
-      chip: `${s.open_issues} open · measured ${m.asOf.slice(0, 16).replace("T", " ")}Z`,
+      status: { label: m.project.name, tone: floor || gh.failing ? "error" : "ok" },
+      chip: chip.join(" · "),
     },
   );
 }
 
-// ── Recommended next: one confident pick with its unlock chain and actions.
+// gh is healthy when at least one recorded PR answered; it is failing when
+// there were PRs to read and none did. No PRs to read says nothing.
+function ghHealth(m: ProjectMeasurement): { label?: string; failing: boolean; error?: string } {
+  if (!m.prInfo.ok) return { failing: false };
+  const lookups = Object.entries(m.prInfo.data).filter(([id]) => {
+    const run = runInfoOf(m, id);
+    return Boolean(run?.prUrl);
+  });
+  if (lookups.length === 0) return { failing: false };
+  const failed = lookups.filter(([, e]) => !e.ok);
+  if (failed.length === lookups.length) {
+    const first = failed[0]?.[1];
+    return {
+      label: "gh failing",
+      failing: true,
+      ...(first && !first.ok ? { error: first.error } : {}),
+    };
+  }
+  return { label: "gh ok", failing: false };
+}
+
+// ── Next up: one confident pick, why, and the runner-up.
 export function composeRecommend(m: ProjectMeasurement, ctx: PanelContext): Board {
-  if (!m.ready.ok) return failedBoard("the ready queue", m.ready.error);
+  if (!m.ready.ok) return failedBoard("the ready queue", m.ready.error, m);
   const blocked = m.blocked.ok ? m.blocked.data : [];
   const { pick, runnerUp } = recommendNext(m.ready.data);
   if (!pick) {
     return board([
-      {
-        kind: "rows",
-        items: [
-          {
-            glyph: "warn",
-            text: "Nothing is ready to start — everything open is blocked or deferred. See Needs attention for what would release work.",
-          },
-        ],
-      },
+      quiet(
+        "Nothing is ready to start. Everything open is blocked or on hold; Needs you shows what would release work.",
+        "warn",
+      ),
     ]);
   }
-  // Two metrics, deliberately not one word. They answer different questions
-  // and can legitimately disagree, so forcing them into a single "unlocks N"
-  // meant the headline and the evidence beneath it contradicted each other:
-  //
-  //   downstream — declared `dependent_count`. Everything that hangs off this
-  //     bead, ever. Complete, authoritative, and what recommendNext ranks on.
-  //   releases now — measured blocked edges that go ready the moment this
-  //     closes. Explains the immediate consequence and is what the hop chain
-  //     audits. Bounded by the blocked union, so it undercounts, never invents.
-  //
-  // The case that broke the single word now reads honestly:
-  // `3 downstream · releases 0 now` — the leverage is real but deferred.
+  // Two leverage numbers that can disagree: declared downstream (everything
+  // that hangs off this bead, what the ranking uses) and releases now (the
+  // measured blocked edges that go ready the moment it closes).
   const levels = unlockLevels(pick.id, blocked);
   const downstream = pick.dependent_count ?? 0;
   const releasesNow = levels[0]?.length ?? 0;
-  const leverage =
+  const why =
     downstream > 0 || releasesNow > 0
       ? `${downstream} downstream · releases ${releasesNow} now`
-      : "nothing waits on it — picked on priority";
+      : "picked on priority · nothing waits on it";
   const mergedPick = mergedPR(m.prInfo, pick.id);
-  const fields: { label?: string; value?: string }[] = [
-    {
-      value: `${mergedPick ? "merged PR · close pending (still ready in bd)" : "ready"} · ${personOf(pick) ?? "unclaimed"} · P${pick.priority} · ${leverage}`,
-    },
-  ];
-  // The chain itself, hop by hop — one arrow per level, names inside a level
-  // comma-joined. This is what makes the leverage claim auditable at a glance
-  // instead of a number you have to trust. At a glance is the constraint: a
-  // deep graph turns the full BFS into three lines of ids, so past a handful
-  // the first hop stays verbatim (it is what "releases N now" audits) and
-  // the deeper levels compress to a count.
+  const fields: NonNullable<CardItem["fields"]> = [];
+  // The chain, hop by hop, so the leverage claim is auditable. Past a
+  // handful the first hop stays verbatim and deeper levels compress.
   if (levels.length > 0) {
     const CHAIN_ID_CAP = 8;
     const total = levels.reduce((a, lvl) => a + lvl.length, 0);
     if (total <= CHAIN_ID_CAP) {
       const hops = levels.map((lvl) => lvl.map((b) => b.id).join(", "));
-      fields.push({ value: [pick.id, ...hops].join(" → ") });
+      fields.push({ label: "unlocks", value: hops.join(" → ") });
     } else {
       const first = levels[0] ?? [];
       const firstShown = first.slice(0, CHAIN_ID_CAP);
@@ -670,30 +715,26 @@ export function composeRecommend(m: ProjectMeasurement, ctx: PanelContext): Boar
         (first.length > firstShown.length ? ` +${first.length - firstShown.length} more` : "");
       const deeper = total - first.length;
       const deeperLevels = levels.length - 1;
-      const tail =
-        deeper > 0
-          ? ` → … ${deeper} more across ${deeperLevels} level${deeperLevels === 1 ? "" : "s"}`
-          : "";
-      fields.push({ value: `${pick.id} → ${firstText}${tail}` });
+      const tail = deeper > 0 ? ` → … ${deeper} more across ${plural(deeperLevels, "level")}` : "";
+      fields.push({ label: "unlocks", value: `${firstText}${tail}` });
     }
   }
   return board([
     {
       kind: "cards",
       items: [
-        {
-          title: pick.title,
-          pill: { label: pick.id, tone: "neutral" },
-          dot: "accent",
-          stacked: true,
-          selected: ctx.selectedId === pick.id,
+        beadCard(pick, {
+          meta: [
+            mergedPick ? "merged PR · still ready in bd" : "ready",
+            shortPerson(personOf(pick)) ?? "unclaimed",
+            `P${pick.priority}`,
+          ],
+          ...(mergedPick ? { signal: { label: "merged · close pending", tone: "warn" } } : {}),
+          evidence: { label: "why", text: why },
           fields,
+          selectedId: ctx.selectedId,
           actions: [
-            {
-              type: "select-bead",
-              label: "Inspect",
-              payload: { id: pick.id },
-            },
+            { type: "select-bead", label: "Inspect", payload: { id: pick.id } },
             mergedPick
               ? reconcileAction(m.project.id)
               : {
@@ -710,171 +751,119 @@ export function composeRecommend(m: ProjectMeasurement, ctx: PanelContext): Boar
                 },
           ],
           footnote: runnerUp
-            ? `runner-up: ${runnerUp.id} — ${clampTitle(runnerUp.title)}`
-            : "the ready queue holds nothing else",
-        },
+            ? `runner-up: ${runnerUp.id} · ${clampTitle(runnerUp.title, 80)}`
+            : "runner-up: none, the ready queue holds nothing else",
+        }),
       ],
     },
   ]);
 }
 
-// ── Agents at work: the in-flight band, joined to what bead-work runs
-// reported. bd attributes every claim to a human (`assignee`) even when a
-// workflow run holds the bead, so the card says "bead-work run" whenever a
-// run note exists — attribution follows the evidence, not the field. Kept
-// visible even when empty — a predictable location — but compact (one quiet
-// row) rather than a dead zone.
+// ── In flight: every claim, how far along it is, and the newest evidence.
+// bd attributes every claim to a human even when a bead-work run holds it,
+// so the title counts runs whenever a run note exists.
 export function composeWip(m: ProjectMeasurement, ctx: PanelContext): Board {
-  if (!m.inProgress.ok) return failedBoard("in-progress work", m.inProgress.error);
+  if (!m.inProgress.ok) return failedBoard("in-flight work", m.inProgress.error, m);
   const now = new Date(m.asOf);
   if (m.inProgress.data.length === 0) {
-    return board([
-      {
-        kind: "rows",
-        items: [
-          { glyph: "ok", text: "No agent or human holds a claim — start the recommended bead." },
-        ],
-      },
-    ]);
+    return board([quiet("Nothing is claimed. Next up has the pick.")]);
   }
-  // A claimed bead can also sit in the blocked union — active AND waiting.
-  // Both are true at once, which is exactly why they are separate channels
-  // now: the lifecycle stays `in progress`, and the waiting shows in the rail.
+  const floor = bdBelowFloor(m);
   const blockers = new Map<string, string[]>(
     (m.blocked.ok ? m.blocked.data : []).map((b) => [b.id, b.blocked_by ?? []]),
   );
-  const index = backlogIndex(m);
   const people = assigneeView(m.inProgress.data);
-  // bd attributes every claim to a human, so the hoisted "All claimed by
-  // <name>" would shout the exact misattribution this panel exists to end
-  // the moment a run note proves an agent holds the bead. When any note
-  // exists the title counts the actors honestly instead, and the no-note
-  // claims keep their human name down on the card.
   const runCount = m.inProgress.data.filter((i) => runInfoOf(m, i.id) !== undefined).length;
   const otherCount = m.inProgress.data.length - runCount;
   const title =
     runCount > 0
       ? [
-          `${runCount} bead-work run${runCount === 1 ? "" : "s"}`,
-          ...(otherCount > 0 ? [`${otherCount} other claim${otherCount === 1 ? "" : "s"}`] : []),
+          plural(runCount, "bead-work run"),
+          ...(otherCount > 0 ? [plural(otherCount, "other claim")] : []),
         ].join(" · ")
       : people.sharedTitle;
-  return board([
-    {
-      kind: "cards",
-      ...(title ? { title } : {}),
-      items: m.inProgress.data.map((i): CardItem => {
-        const person = personOf(i);
-        const entry = m.runInfo.ok ? m.runInfo.data[i.id] : undefined;
-        const info = entry?.ok ? entry.data : undefined;
-        // Card-level degrade: this bead's show failed, so this card alarms
-        // its run line while its siblings stay measured. A missing envelope
-        // is the same alarm — "no note" is a measurement, absence is not.
-        const runError = !m.runInfo.ok
-          ? m.runInfo.error
-          : entry
-            ? entry.ok
-              ? undefined
-              : entry.error
-            : "no run-note envelope for this bead";
-        const prError = prFailure(m, i.id);
-        const meta = [
-          `P${i.priority}`,
-          // The derived stage replaces the flat "in progress" word: a run
-          // note means implemented-and-waiting-on-a-human, which is the state
-          // close-on-merge otherwise hides.
-          info ? stageChip(info, mergedPR(m.prInfo, i.id)) : "in progress",
-          daysAgo(i.updated_at, now),
-          ...(info ? ["bead-work run"] : []),
-          // An unassigned bead beside assigned siblings is worth marking; an
-          // all-unassigned panel is just the backlog default and says nothing.
-          // When the hoist gave way to the run count, a no-note claim keeps
-          // its human name here — the run cards deliberately do not.
-          ...(people.perItem
-            ? [person ?? (people.markUnassigned ? "unassigned" : "")]
-            : !info && runCount > 0 && person
-              ? [person]
-              : []),
-        ].filter(Boolean);
-        const rail = decisionRail(i, {
-          waitingOn: blockers.get(i.id),
-          downstream: declaredDownstream(i, index),
-          mergePending: Boolean(mergedPR(m.prInfo, i.id)),
-        });
-        const runLine = info ? [info.outcome, info.note].filter(Boolean).join(" — ") : "";
-        return {
-          title: clampTitle(i.title, BAND_TITLE_BUDGET),
-          pill: { label: i.id, tone: "neutral" as const },
-          // Lifecycle only. Stuck-ness is the rail's job now — a warn dot here
-          // was the lifecycle channel answering a condition's question.
-          dot: "ok" as const,
-          selected: ctx.selectedId === i.id,
-          action: { type: "select-bead", payload: { id: i.id } },
-          fields: [
-            { value: meta.join(" · ") },
-            ...(info?.prUrl
-              ? prError
-                ? []
-                : [{ label: "PR", value: prLabel(info.prUrl), href: info.prUrl }]
-              : info?.prState === "number-only"
-                ? [{ label: "PR", value: `#${info.prNumber} (URL unknown)` }]
-                : info?.prState === "unknown"
-                  ? [{ label: "PR", value: "unknown" }]
-                  : []),
-            ...(runLine ? [{ value: `run: ${runLine}`.slice(0, 140) }] : []),
-            ...(runError
-              ? [
-                  {
-                    value: `UNMEASURED — run note: ${runError}`.slice(0, 120),
-                    tone: "error" as const,
-                  },
-                ]
-              : []),
-            ...(prError
-              ? [
-                  {
-                    value: `UNMEASURED — PR: ${prError}`.slice(0, 120),
-                    tone: "error" as const,
-                  },
-                ]
-              : []),
-            ...(rail.length ? [{ value: rail.join(" · ") }] : []),
-          ],
-        };
+  const cards = [...m.inProgress.data].sort(byPriorityThenAge).map((i): CardItem => {
+    const entry = m.runInfo.ok ? m.runInfo.data[i.id] : undefined;
+    const info = entry?.ok ? entry.data : undefined;
+    const pr = info?.prUrl ? livePR(m, i.id) : undefined;
+    // Card-level degrade: this bead's reads failed, its siblings stay measured.
+    const runError = floor
+      ? undefined
+      : !m.runInfo.ok
+        ? m.runInfo.error
+        : entry
+          ? entry.ok
+            ? undefined
+            : entry.error
+          : "no run-note envelope for this bead";
+    const prError = floor || ghHealth(m).failing ? undefined : prFailure(m, i.id);
+    const person = shortPerson(personOf(i));
+    const comment = latestCommentOf(m, i.id);
+    const evidence = comment
+      ? commentEvidence(comment, now)
+      : info?.note
+        ? { label: `run ${info.outcome ?? "note"}`, text: firstSentence(info.note) }
+        : undefined;
+    return beadCard(i, {
+      meta: [
+        people.perItem
+          ? (person ?? (people.markUnassigned ? "unassigned" : undefined))
+          : !info && runCount > 0
+            ? person
+            : undefined,
+        flightStage(i, info, pr, now),
+      ],
+      signal: signalOf(i, {
+        mergePending: Boolean(mergedPR(m.prInfo, i.id)),
+        waitingOn: blockers.get(i.id),
+        staleDays: staleDaysOf(m, i, now),
       }),
-    },
+      ...(evidence ? { evidence } : {}),
+      fields: [
+        ...(info?.prUrl ? [prField(info.prUrl)] : []),
+        ...(runError
+          ? [{ value: `UNMEASURED run note: ${runError}`.slice(0, 120), tone: "error" as const }]
+          : []),
+        ...(prError
+          ? [{ value: `UNMEASURED PR: ${prError}`.slice(0, 120), tone: "error" as const }]
+          : []),
+      ],
+      selectedId: ctx.selectedId,
+    });
+  });
+  return board([
+    ...(floor
+      ? [{ kind: "rows" as const, items: [alarmRow("run notes and PR state", floor, m)] }]
+      : []),
+    { kind: "cards", ...(title ? { title } : {}), items: cards },
   ]);
 }
 
-// ── Needs a human: the operator's queue, most actionable first — PRs
-// waiting on a merge, then the dams (blockers aggregated by what they hold),
-// then hand-paused work, stale claims, and epic closeouts. The per-bead
-// blocked listing this replaces printed the same dam once per held bead —
-// eleven mentions, zero aggregation — so the grouping IS the redesign.
+function livePR(m: ProjectMeasurement, id: string): PrInfo | undefined {
+  if (!m.prInfo.ok) return undefined;
+  const entry = m.prInfo.data[id];
+  return entry?.ok ? entry.data : undefined;
+}
+
+// ── Needs you: the operator's queue, most actionable first — merged PRs
+// waiting on a close, reviews to merge, dams, hand-paused work, stale
+// claims, and epic closeouts.
 export function composeAttention(m: ProjectMeasurement, ctx: PanelContext): Board {
   const now = new Date(m.asOf);
+  const floor = bdBelowFloor(m);
   const blocked = m.blocked.ok ? m.blocked.data : [];
   const index = backlogIndex(m);
   const readyIds = new Set(m.ready.ok ? m.ready.data.map((i) => i.id) : []);
   const sections: BoardSection[] = [];
-  // A measured zero is quiet; a failed measurement must not be. A conditional
-  // section that renders nothing on failure is indistinguishable from a clean
-  // board, so every input this panel folds in alarms inline on failure.
-  const alarmRow = (what: string, error: string): BoardSection => ({
-    kind: "rows",
-    items: [
-      {
-        icon: "⚠",
-        chip: { label: "UNMEASURED", tone: "error" },
-        text: `${what} could not be measured — this is not an empty-and-healthy panel.`,
-        detail: error.slice(0, 1000),
-      },
-    ],
-  });
+  const failures: { what: string; error: string }[] = [];
+  // Every input this panel folds in alarms on failure, since a section that
+  // renders nothing would read as a clean board.
+  const alarm = (what: string, error: string) => {
+    failures.push({ what, error });
+  };
 
-  // Merge drift is independent of the blocked query and of note outcome prose.
   if (!m.prInfo.ok) {
-    sections.push(alarmRow("PR merge state", m.prInfo.error));
+    alarm("PR merge state", m.prInfo.error);
   } else {
     const drift = m.backlog.ok
       ? m.backlog.data.flatMap((i) => {
@@ -885,433 +874,619 @@ export function composeAttention(m: ProjectMeasurement, ctx: PanelContext): Boar
     if (drift.length > 0) {
       sections.push({
         kind: "cards",
-        title: "Merged PRs — close pending",
-        items: drift.map(
-          ({ i, pr }): CardItem => ({
-            title: clampTitle(i.title, BAND_TITLE_BUDGET),
-            pill: { label: i.id, tone: "neutral" },
-            dot: "warn",
-            fields: [
-              { label: "PR", value: prLabel(pr.url), href: pr.url },
-              { value: `merged ${pr.mergedAt} · bead still ${i.status}` },
+        title: "Merged, close pending",
+        items: drift.map(({ i, pr }) =>
+          beadCard(i, {
+            meta: [
+              `merged ${ago(pr.mergedAt, now) ?? ""} ago`,
+              `bead still ${i.status.replace("_", " ")}`,
             ],
-            actions: [
-              { type: "select-bead", label: "Inspect", payload: { id: i.id } },
-              reconcileAction(m.project.id),
-            ],
+            signal: { label: "reconcile", tone: "warn" },
+            fields: [prField(pr.url)],
+            actions: [reconcileAction(m.project.id)],
+            selectedId: ctx.selectedId,
           }),
         ),
       });
     }
-    if (!m.backlog.ok) sections.push(alarmRow("merge drift backlog", m.backlog.error));
-    const failures = Object.entries(m.prInfo.data)
-      .filter(([, entry]) => !entry.ok)
-      .map(([id, entry]) => `${id}: ${entry.ok ? "" : entry.error}`);
-    if (failures.length)
-      sections.push(alarmRow("PR merge state for some beads", failures.join("\n")));
+    if (!m.backlog.ok) alarm("merge drift", m.backlog.error);
+    if (!ghHealth(m).failing) {
+      const failures = Object.entries(m.prInfo.data)
+        .filter(([, entry]) => !entry.ok)
+        .map(([id, entry]) => `${id}: ${entry.ok ? "" : entry.error}`);
+      if (failures.length) alarm("PR state for some beads", failures.join("\n"));
+    }
   }
-  if (!m.blocked.ok) sections.push(alarmRow("the blocked union", m.blocked.error));
+  if (!m.blocked.ok) alarm("the blocked union", m.blocked.error);
 
-  // (a) Review to merge — the human act only a human can do. The whole row
-  // links to the PR: merging happens there, not in the inspector.
+  // Review to merge: the act only a human can do, on GitHub.
   const split = stageSplit(m);
   if (!split.ok) {
-    sections.push(alarmRow("review-stage work", split.error));
-  } else if (split.data.inReview.some((i) => !mergedPR(m.prInfo, i.id))) {
-    sections.push({
-      kind: "rows",
-      title: "Review to merge",
-      items: split.data.inReview
-        .filter((i) => !mergedPR(m.prInfo, i.id))
-        .map((i) => {
+    alarm("review-stage work", split.error);
+  } else {
+    const reviews = split.data.inReview.filter((i) => !mergedPR(m.prInfo, i.id));
+    if (reviews.length > 0) {
+      sections.push({
+        kind: "cards",
+        title: "Review to merge",
+        items: reviews.map((i) => {
           const info = runInfoOf(m, i.id);
-          const unknown = Boolean(info?.prUrl && prFailure(m, i.id));
-          const stage = unknown ? "merge state unknown" : info ? stageChip(info) : "in review";
-          return {
-            glyph: unknown ? ("warn" as const) : ("info" as const),
-            chip: { label: i.id, tone: "neutral" as const },
-            text: i.title,
-            ...(info?.prUrl && !unknown ? { href: info.prUrl } : {}),
-            trailing: [stage, daysAgo(i.updated_at, now)].join(" · "),
-          };
+          const pr = livePR(m, i.id);
+          return beadCard(i, {
+            meta: [flightStage(i, info, pr, now), ago(i.updated_at, now)],
+            ...(pr?.checks === "failing"
+              ? { signal: { label: "CI failing", tone: "error" as const } }
+              : pr?.review === "changes requested"
+                ? { signal: { label: "changes requested", tone: "warn" as const } }
+                : {}),
+            fields: info?.prUrl ? [prField(info.prUrl)] : [],
+            selectedId: ctx.selectedId,
+          });
         }),
-    });
-  } else if (split.data.working.length > 0) {
-    // The predictable location states its emptiness: while claims are still
-    // working, the review slot is the next thing that will ask for a human,
-    // so it holds its place instead of vanishing.
-    const n = split.data.working.length;
-    sections.push({
-      kind: "rows",
-      title: "Review to merge",
-      items: [
-        {
-          glyph: "neutral" as const,
-          text: `Nothing waits on a merge yet — ${n} claim${n === 1 ? "" : "s"} still working.`,
-        },
-      ],
-    });
+      });
+    }
   }
 
-  // (b) Dams — ranked by held count. One ROW per dam, not a card: this
-  // section's question is "which dam is biggest", and a per-row meter makes
-  // that comparison pre-attentive where four lines of card prose made it a
-  // reading exercise. The meter is {value, total} against the LARGEST dam
-  // shown (dams sort held-desc, so index 0 carries the max) — a shared total
-  // is what keeps fill lengths comparable across rows; per-row segments
-  // would normalize every dam to full width and lose exactly that. The held
-  // ids move to the inspector, one click away — the row keeps the counts.
+  // Dams, ranked by held count. One row per dam with a meter against the
+  // largest dam shown, so fill lengths compare across rows.
   const dams = damGroups(blocked, index, readyIds);
   if (dams.length > 0) {
     const maxHeld = Math.max(1, dams[0]?.held.length ?? 1);
     sections.push({
       kind: "rows",
-      title: dams.length > DAMS_CAP ? `Dams — top ${DAMS_CAP} of ${dams.length}` : "Dams",
-      items: dams.slice(0, DAMS_CAP).map((d) => {
-        const dot = d.blocker ? lifecycleTone(lifecycleOf(d.blocker), d.startable) : undefined;
-        const rank = [
-          ...(d.blocker ? [`P${d.blocker.priority}`] : []),
-          `holds ${d.held.length} now`,
+      title: dams.length > DAMS_CAP ? `Dams, top ${DAMS_CAP} of ${dams.length}` : "Dams",
+      items: dams.slice(0, DAMS_CAP).map((d) => ({
+        glyph: d.blocker ? lifecycleTone(lifecycleOf(d.blocker)) : ("neutral" as const),
+        text: d.blocker ? clampTitle(d.blocker.title, 96) : d.blockerId,
+        bar: { value: d.held.length, total: maxHeld },
+        trailing: [
+          d.blockerId,
+          `holds ${d.held.length}`,
           ...(d.transitive > d.held.length ? [`${d.transitive} transitive`] : []),
-          ...(d.startable ? ["startable now"] : []),
-        ];
-        return {
-          ...(dot ? { glyph: dot } : {}),
-          chip: { label: d.blockerId, tone: "neutral" as const },
-          text: d.blocker ? clampTitle(d.blocker.title, BAND_TITLE_BUDGET) : d.blockerId,
-          bar: { value: d.held.length, total: maxHeld },
-          trailing: rank.join(" · "),
-          action: { type: "select-bead" as const, payload: { id: d.blockerId } },
-          selected: ctx.selectedId === d.blockerId,
-        };
-      }),
+          ...(d.startable ? ["startable"] : []),
+        ].join(" · "),
+        action: { type: "select-bead" as const, payload: { id: d.blockerId } },
+        selected: ctx.selectedId === d.blockerId,
+      })),
     });
   }
 
-  // (c) Paused by hand — status-blocked with no dependency edge: someone
-  // stopped this on purpose, and only a person can decide to resume it.
+  // Paused by hand: status-blocked with no dependency edge.
   const paused = blocked.filter((i) => !i.blocked_by?.length);
   if (paused.length > 0) {
     sections.push({
       kind: "cards",
       title: "Paused by hand",
-      items: paused.slice(0, ATTENTION_CAP).map(
-        (i): CardItem => ({
-          title: clampTitle(i.title, BAND_TITLE_BUDGET),
-          pill: { label: i.id, tone: "neutral" as const },
-          selected: ctx.selectedId === i.id,
-          action: { type: "select-bead", payload: { id: i.id } },
-          fields: [{ value: [`P${i.priority}`, "paused by hand"].join(" · ") }],
+      items: paused.slice(0, ATTENTION_CAP).map((i) =>
+        beadCard(i, {
+          meta: [
+            shortPerson(personOf(i)),
+            ago(i.updated_at, now) && `paused ${ago(i.updated_at, now)}`,
+          ],
+          signal: { label: "paused by hand", tone: "caution" },
+          selectedId: ctx.selectedId,
         }),
       ),
     });
   }
 
-  // (d) Stale claims.
+  if (!m.stale.ok) alarm("stale claims", m.stale.error);
   const staleItems = m.stale.ok ? m.stale.data : [];
-  if (!m.stale.ok) sections.push(alarmRow("stale claims", m.stale.error));
-  if (staleItems.length > 0)
+  if (staleItems.length > 0) {
     sections.push({
       kind: "cards",
-      title: `Stale ${STALE_DAYS}d+`,
-      items: staleItems.map((i) => ({
-        title: clampTitle(i.title, BAND_TITLE_BUDGET),
-        pill: { label: i.id, tone: "neutral" as const },
-        dot: "warn" as const,
-        selected: ctx.selectedId === i.id,
-        action: { type: "select-bead", payload: { id: i.id } },
-        fields: [{ value: `claimed but ${daysAgo(i.updated_at, now)} — verify or release` }],
-      })),
+      title: `Stale claims, quiet ${STALE_DAYS}d+`,
+      items: staleItems.map((i) => {
+        const comment = latestCommentOf(m, i.id);
+        return beadCard(i, {
+          meta: [shortPerson(personOf(i)), "verify or release"],
+          signal: signalOf(i, { staleDays: staleDaysOf(m, i, now) ?? STALE_DAYS }),
+          ...(comment ? { evidence: commentEvidence(comment, now) } : {}),
+          selectedId: ctx.selectedId,
+        });
+      }),
     });
+  }
 
-  // (e) Epic closeouts — a review ask, never a close button: closing is a
-  // merge-time human act with a written reason, so the action inspects.
+  // Epic closeouts: a review ask, never a close button. Closing is a
+  // merge-time human act with a written reason.
   if (!m.epics.ok) {
-    sections.push(alarmRow("epic closeout eligibility", m.epics.error));
+    alarm("epic closeout eligibility", m.epics.error);
   } else {
     const eligible = m.epics.data.filter((r) => r.eligible_for_close);
     if (eligible.length > 0)
       sections.push({
         kind: "cards",
         title: "Epic closeout review",
-        items: eligible.map(
-          (r): CardItem => ({
-            title: clampTitle(r.epic.title, BAND_TITLE_BUDGET),
-            pill: { label: r.epic.id, tone: "neutral" as const },
-            dot: "warn" as const,
-            selected: ctx.selectedId === r.epic.id,
-            ...(r.total_children > 0
-              ? { bar: { value: r.closed_children, total: r.total_children } }
-              : {}),
-            action: { type: "select-bead", payload: { id: r.epic.id } },
-            fields: [
-              {
-                value: `epic · ${r.closed_children}/${r.total_children} done · closeout review`,
-              },
-            ],
+        items: eligible.map((r) => ({
+          ...beadCard(r.epic, {
+            meta: ["epic", `${r.closed_children}/${r.total_children} done`],
+            signal: { label: "closeout review", tone: "warn" },
+            selectedId: ctx.selectedId,
           }),
-        ),
+          ...(r.total_children > 0
+            ? { bar: { value: r.closed_children, total: r.total_children } }
+            : {}),
+        })),
       });
   }
 
-  // Sections can only be empty when every input measured (each failure alarms
-  // above), so an empty panel is a real all-clear — except for the theoretical
-  // bead whose every edge was structural: that one still renders in the Plan
-  // with its rail, and the count here keeps this panel from hiding it.
-  if (sections.length === 0) {
-    if (blocked.length === 0) {
-      return board([
-        {
-          kind: "rows",
-          items: [
-            {
-              glyph: "ok",
-              text: "Nothing needs a human — no reviews waiting, no dams, no stale claims, no closeouts.",
-            },
-          ],
-        },
-      ]);
+  // Below the version floor the failures share one cause, so they share a row.
+  const alarms: RowItem[] = floor
+    ? failures.length
+      ? [
+          alarmRow(
+            "this panel",
+            failures
+              .filter((f) => !f.error.includes(floor))
+              .map((f) => `${f.what}: ${f.error}`)
+              .join("\n") || floor,
+            m,
+          ),
+        ]
+      : []
+    : failures.map((f) => alarmRow(f.what, f.error, m));
+  if (sections.length === 0 && alarms.length === 0) {
+    return board([
+      quiet(
+        blocked.length === 0
+          ? "Nothing needs you. No merges to reconcile, reviews, dams, stale claims or closeouts."
+          : `Nothing needs you. ${plural(blocked.length, "blocked bead")} wait only on structure and sit in the backlog.`,
+        "ok",
+      ),
+    ]);
+  }
+  return board([...(alarms.length ? [{ kind: "rows" as const, items: alarms }] : []), ...sections]);
+}
+
+// ── Epics: one ladder per open epic. The head card carries the stage meter;
+// the rungs beneath list the children in the order the edges allow: done,
+// in flight, ready (the pick first), then waiting by chain depth.
+export function ladderOrder(
+  members: readonly EpicMember[],
+  blockedBy: ReadonlyMap<string, readonly string[]>,
+  pickId?: string,
+): EpicMember[] {
+  const inside = new Set(members.map((c) => c.id));
+  const openById = new Map(members.filter((c) => c.status !== "closed").map((c) => [c.id, c]));
+  const depthMemo = new Map<string, number>();
+  const depth = (id: string, trail: Set<string>): number => {
+    const memo = depthMemo.get(id);
+    if (memo !== undefined) return memo;
+    if (trail.has(id)) return 0;
+    trail.add(id);
+    const deps = (blockedBy.get(id) ?? []).filter((d) => inside.has(d) && openById.has(d));
+    const d = deps.length ? 1 + Math.max(...deps.map((x) => depth(x, trail))) : 0;
+    trail.delete(id);
+    depthMemo.set(id, d);
+    return d;
+  };
+  const rank = (c: EpicMember): number => {
+    if (c.status === "closed") return 0;
+    if (c.status === "in_progress") return 1;
+    if (c.id === pickId) return 2;
+    if (c.status === "deferred") return 9;
+    return (blockedBy.get(c.id)?.length ?? 0) > 0 || c.status === "blocked" ? 4 : 3;
+  };
+  return [...members].sort((a, b) => {
+    const ra = rank(a);
+    const rb = rank(b);
+    if (ra !== rb) return ra - rb;
+    if (ra === 4) {
+      const da = depth(a.id, new Set());
+      const db = depth(b.id, new Set());
+      if (da !== db) return da - db;
     }
+    const pa = a.priority ?? 2;
+    const pb = b.priority ?? 2;
+    if (pa !== pb) return pa - pb;
+    return a.id.localeCompare(b.id, undefined, { numeric: true });
+  });
+}
+
+export function composeLadders(m: ProjectMeasurement, ctx: PanelContext): Board {
+  if (!m.epics.ok) return failedBoard("epics", m.epics.error, m);
+  const open = m.epics.data.filter((r) => r.epic.status !== "closed");
+  if (open.length === 0) return HIDDEN;
+  const wipIds = new Set(m.inProgress.ok ? m.inProgress.data.map((i) => i.id) : []);
+  const blockedBy = new Map<string, readonly string[]>(
+    (m.blocked.ok ? m.blocked.data : []).map((b) => [b.id, b.blocked_by ?? []]),
+  );
+  const split = stageSplit(m);
+  const stagesMeasured = m.epicChildren.ok && m.ready.ok && split.ok;
+  const readyIds = new Set(m.ready.ok ? m.ready.data.map((i) => i.id) : []);
+  const reviewIds = new Set(split.ok ? split.data.inReview.map((i) => i.id) : []);
+  const workingIds = new Set(split.ok ? split.data.working.map((i) => i.id) : []);
+  const pickId = m.ready.ok ? recommendNext(m.ready.data).pick?.id : undefined;
+  const epics = open.map((r) => {
+    const members = m.epicChildren.ok ? (m.epicChildren.data[r.epic.id] ?? []) : [];
+    const childIds = members.map((c) => c.id);
+    const inFlight = childIds.filter((id) => wipIds.has(id)).length;
+    const gate =
+      m.blocked.ok && childIds.length > 0 ? epicGate(childIds, blockedBy, wipIds) : undefined;
+    const ratio = r.total_children > 0 ? r.closed_children / r.total_children : 0;
+    return { r, members, childIds, inFlight, gate, ratio };
+  });
+  // Where the work is first, then what is nearly landed, parked epics last.
+  epics.sort((a, b) => {
+    if (a.inFlight !== b.inFlight) return b.inFlight - a.inFlight;
+    if (a.ratio !== b.ratio) return b.ratio - a.ratio;
+    return byPriorityThenAge(a.r.epic, b.r.epic);
+  });
+  const sections: BoardSection[] = [];
+  if (!m.epicChildren.ok) {
+    sections.push({ kind: "rows", items: [alarmRow("epic membership", m.epicChildren.error, m)] });
+  }
+  for (const { r, members, childIds, inFlight, gate } of epics) {
+    const inSet = (ids: Set<string>) => childIds.filter((id) => ids.has(id)).length;
+    const bar =
+      r.total_children === 0
+        ? undefined
+        : stagesMeasured
+          ? (() => {
+              const review = inSet(reviewIds);
+              const working = inSet(workingIds);
+              const ready = inSet(readyIds);
+              const waiting = Math.max(
+                0,
+                r.total_children - r.closed_children - review - working - ready,
+              );
+              return {
+                segments: [
+                  { label: "done", n: r.closed_children, tone: "ramp-5" as const },
+                  { label: "in review", n: review, tone: "ramp-4" as const },
+                  { label: "in progress", n: working, tone: "ramp-3" as const },
+                  { label: "ready", n: ready, tone: "ramp-2" as const },
+                  { label: "waiting", n: waiting, tone: "ramp-1" as const },
+                ],
+              };
+            })()
+          : { value: r.closed_children, total: r.total_children };
     sections.push({
-      kind: "rows",
+      kind: "cards",
       items: [
         {
-          glyph: "neutral",
-          text: `${blocked.length} blocked bead${blocked.length === 1 ? "" : "s"} carry only structural edges — they render in the Plan with their rails.`,
+          ...beadCard(r.epic, {
+            meta: [
+              `${r.closed_children} of ${r.total_children} done`,
+              inFlight > 0 && `${inFlight} in flight`,
+              gate &&
+                (gate.all
+                  ? `gated on ${gate.blockerId}`
+                  : `${gate.count} waiting on ${gate.blockerId}`),
+            ],
+            ...(r.eligible_for_close
+              ? { signal: { label: "closeout review", tone: "warn" as const } }
+              : {}),
+            selectedId: ctx.selectedId,
+          }),
+          ...(bar ? { bar } : {}),
         },
       ],
     });
+    if (members.length === 0) continue;
+    const ordered = ladderOrder(members, blockedBy, pickId);
+    const done = ordered.filter((c) => c.status === "closed");
+    const rest = ordered.filter((c) => c.status !== "closed");
+    const rungs: RowItem[] = [];
+    if (done.length > LADDER_DONE_LISTED) {
+      rungs.push({
+        glyph: "ok",
+        text: `${done.length} done`,
+        trailing: `${done[0]?.id} … ${done.at(-1)?.id}`,
+        action: { type: "select-bead", payload: { id: r.epic.id } },
+      });
+    } else {
+      for (const c of done) rungs.push(beadRow(c, ["done"], ctx));
+    }
+    for (const c of rest) {
+      const waits = (blockedBy.get(c.id) ?? []).filter((d) => d !== r.epic.id);
+      const state =
+        c.status === "in_progress"
+          ? "in flight"
+          : c.status === "deferred"
+            ? "on hold"
+            : waits.length
+              ? `waits on ${waits.join(", ")}`
+              : c.status === "blocked"
+                ? "paused by hand"
+                : c.id === pickId
+                  ? "ready · next up"
+                  : "ready";
+      rungs.push(beadRow(c, [state], ctx));
+    }
+    sections.push({ kind: "rows", items: rungs });
   }
   return board(sections);
 }
 
-// ── The Plan: the one canonical inventory, grouped by hierarchy — a flat
-// grid erased the dependency/epic structure that makes beads distinctive.
-// Epics render as boxed panels: the epic lives in the section title (with
-// its n/m meter), its children are the cards — epics are structure, never
-// work items. A non-epic parent leads its own boxed group (it IS work), └
-// marking its children. Everything unparented flows under "Standalone work".
-// Cards stay short: title, id, state dot, and one line of
-// priority · state · leverage. Clicking a card opens the inspector —
-// descriptions live there, so the inventory never stretches.
-//
-// Two section flags are deliberately absent, both measured on the surface:
-// `boxed` renders the single meta field as a stacked inset pill (an
-// affordance for copyable credential lists, not a one-line state readout),
-// and `columns` declares bench capacity — its "set size" is height as well as
-// width, so every card holds a fixed seat and short ones sit in dead space.
-// Auto-fit `grid` alone lets a card end where its content ends.
-//
-// Height is then bounded at the source instead: the card owes you enough to
-// recognize a bead, not the whole sentence — the inspector one click away
-// holds the full title. Budgeting the title to about two wrapped lines keeps
-// a card to three rows including its meta line, and uniform title lengths
-// make auto-fit rows land level, which is the rhythm `columns` was buying.
-//
-// The budget is a character count standing in for a line count: the host owns
-// the track width, so a narrow surface can still wrap a capped title to three
-// lines. It bounds the worst case rather than guaranteeing an exact one.
-const PLAN_TITLE_BUDGET = 64;
-// The operational band is one or two wide cards, not an auto-fit grid, so it
-// has no density pressure to answer for and a title that survives is worth
-// more than a level row. Measured across the live tracker's titles (median 60,
-// max 107), the Plan's 64 clamps roughly half while this clamps the outliers
-// only.
-const BAND_TITLE_BUDGET = 96;
-
-export const clampTitle = (raw: string, budget: number = PLAN_TITLE_BUDGET): string => {
-  if (raw.length <= budget) return raw;
-  const cut = raw.slice(0, budget);
-  const lastSpace = cut.lastIndexOf(" ");
-  // Break on a word when one is near the end; mid-word otherwise, so a single
-  // long token (a path, an identifier) still gets cut rather than escaping.
-  const kept = lastSpace > budget * 0.6 ? cut.slice(0, lastSpace) : cut;
-  return `${kept.trimEnd()}…`;
-};
-
-export function composePlan(m: ProjectMeasurement, ctx: PanelContext): Board {
-  if (!m.backlog.ok) return failedBoard("the backlog inventory", m.backlog.error);
-  if (m.backlog.data.length === 0) return HIDDEN;
-  const readyIds = new Set(m.ready.ok ? m.ready.data.map((i) => i.id) : []);
-  const epicProgress = new Map<string, BdEpicRow>(
-    (m.epics.ok ? m.epics.data : []).map((row) => [row.epic.id, row]),
-  );
+// ── Backlog: everything open that is neither in flight nor on an epic's
+// ladder, one row per bead, grouped by priority so the sort order is said
+// rather than implied.
+export function composeBacklog(m: ProjectMeasurement, ctx: PanelContext): Board {
+  if (!m.backlog.ok) return failedBoard("the backlog", m.backlog.error, m);
+  const openEpics = new Set(m.backlog.data.filter((i) => i.issue_type === "epic").map((i) => i.id));
+  // Ladder membership: parent-child edges when measured, else dotted ids, so
+  // an unmeasured sweep degrades to a less grouped backlog, never a thinner one.
+  const onLadder = new Set<string>();
+  if (m.epicChildren.ok) {
+    for (const members of Object.values(m.epicChildren.data))
+      for (const c of members) onLadder.add(c.id);
+  } else {
+    for (const i of m.backlog.data) {
+      const dot = i.id.lastIndexOf(".");
+      if (dot > 0 && openEpics.has(i.id.slice(0, dot))) onLadder.add(i.id);
+    }
+  }
   const blockers = new Map<string, string[]>(
     (m.blocked.ok ? m.blocked.data : []).map((b) => [b.id, b.blocked_by ?? []]),
   );
-  const index = backlogIndex(m);
-  // The meta line answers "what is this bead"; the rail answers "why should I
-  // look at it". Priority and lifecycle are always-present facts, so they sit
-  // in the meta; everything conditional goes right, in one place.
-  const meta = (i: BdIssue): string => {
-    const life = lifecycleChip(lifecycleOf(i));
-    return [`P${i.priority}`, ...(life ? [life] : [])].join(" · ");
-  };
-  const railOf = (i: BdIssue): string[] =>
-    decisionRail(i, {
-      waitingOn: blockers.get(i.id),
-      // The Plan shows DECLARED downstream only. `releases N now` is measured,
-      // volatile and costlier, and it earns its place when weighing one
-      // specific action — not while scanning an inventory.
-      downstream: declaredDownstream(i, index),
-      handPaused: i.status === "blocked" && (blockers.get(i.id)?.length ?? 0) === 0,
-      closeout: epicProgress.get(i.id)?.eligible_for_close,
-      mergePending: Boolean(mergedPR(m.prInfo, i.id)),
-    });
-  const card = (i: BdIssue, child = false): CardItem => {
-    const dot = lifecycleTone(lifecycleOf(i), readyIds.has(i.id));
-    const rail = railOf(i);
-    return {
-      title: `${child ? "└ " : ""}${clampTitle(i.title)}`,
-      pill: { label: i.id, tone: "neutral" as const },
-      ...(dot ? { dot } : {}),
-      selected: ctx.selectedId === i.id,
-      action: { type: "select-bead", payload: { id: i.id } },
-      // Cards have no right-aligned slot, so the rail is a POSITION rather
-      // than an alignment: always the last field, present only when it has
-      // something to say. Fields join inline, so it reads as the tail.
-      fields: [{ value: meta(i) }, ...(rail.length ? [{ value: rail.join(" · ") }] : [])],
-    };
-  };
-
-  // Epic membership edges; when unmeasured the plan degrades to dotted-id
-  // parentage — every bead still renders, just less grouped.
-  const childToParent = new Map<string, string>();
-  if (m.epicChildren.ok) {
-    for (const [epicId, childIds] of Object.entries(m.epicChildren.data)) {
-      for (const id of childIds) childToParent.set(id, epicId);
-    }
+  const items = m.backlog.data
+    .filter(
+      (i) =>
+        i.issue_type !== "epic" &&
+        i.status !== "in_progress" &&
+        i.status !== "closed" &&
+        !(onLadder.has(i.id) && m.epics.ok && m.epics.data.length > 0),
+    )
+    .sort(byPriorityThenAge);
+  if (items.length === 0) {
+    return board([quiet("Nothing loose. Everything open is on an epic's ladder or in flight.")]);
   }
-  const groups = planGroups(m.backlog.data, childToParent);
-  const epicFamilies = groups.filter((g) => g.root.issue_type === "epic");
-  const parentFamilies = groups.filter(
-    (g) => g.root.issue_type !== "epic" && g.children.length > 0,
-  );
-  const singles = groups
-    .filter((g) => g.root.issue_type !== "epic" && g.children.length === 0)
-    .map((g) => g.root);
-
-  const total = m.backlog.data.length;
+  const shown = items.slice(0, BACKLOG_CAP);
   const sections: BoardSection[] = [];
-  let shown = 0;
-  const room = () => PLAN_CAP - shown;
-  const push = (title: string | undefined, items: CardItem[]) => {
-    if (items.length === 0) return;
+  const byPriority = new Map<number, BdIssue[]>();
+  for (const i of shown) {
+    const p = i.priority ?? 2;
+    byPriority.set(p, [...(byPriority.get(p) ?? []), i]);
+  }
+  const PRIORITY_NAME = ["urgent", "high", "normal", "low", "someday"];
+  for (const [p, group] of [...byPriority.entries()].sort((a, b) => a[0] - b[0])) {
     sections.push({
-      kind: "cards",
-      grid: true,
-      ...(title ? { title } : {}),
-      items,
+      kind: "rows",
+      title: `P${p} · ${PRIORITY_NAME[p] ?? "backlog"} · ${group.length}`,
+      items: group.map((i) => {
+        const waits = blockers.get(i.id) ?? [];
+        const signal = mergedPR(m.prInfo, i.id)
+          ? "merged · close pending"
+          : waits.length
+            ? `waits on ${waits.join(", ")}`
+            : i.status === "blocked"
+              ? "paused by hand"
+              : i.status === "deferred"
+                ? "on hold"
+                : declaredDownstream(i, backlogIndex(m)) > 0
+                  ? `${declaredDownstream(i, backlogIndex(m))} downstream`
+                  : undefined;
+        return beadRow(i, [shortPerson(personOf(i)), signal, i.issue_type === "bug" && "bug"], ctx);
+      }),
     });
-    shown += items.length;
-  };
-  // Closed children are evidence, not authorization: they do not demonstrate
-  // that the epic's own acceptance criteria are met, and closing here is a
-  // merge-time act carrying a written reason — which is why this rib never
-  // auto-closes anything. So the exception asks for a look, never offers the
-  // close, and its action is `select-bead` (open the inspector, read it, then
-  // decide) rather than the `claim-bead` mutation every other card carries.
-  const eligibleEpics = epicFamilies.filter((f) => epicProgress.get(f.root.id)?.eligible_for_close);
-  if (eligibleEpics.length > 0) {
+  }
+  if (shown.length < items.length) {
+    sections.push({
+      kind: "rows",
+      items: [{ icon: "…", text: `Showing ${shown.length} of ${items.length}.` }],
+    });
+  }
+  return board(sections);
+}
+
+// ── Shipped: this week against last, then every close in the fortnight by
+// day with the PR and the close reason's first sentence.
+export function composeShipped(m: ProjectMeasurement, ctx: PanelContext = {}): Board {
+  if (!m.closedFortnight.ok) return failedBoard("recent closes", m.closedFortnight.error, m);
+  const now = new Date(m.asOf);
+  const weekAgo = new Date(now.getTime() - 7 * 86_400_000).toISOString();
+  const closed = [...m.closedFortnight.data].sort((a, b) =>
+    (a.closed_at ?? "") > (b.closed_at ?? "") ? -1 : 1,
+  );
+  const thisWeek = closed.filter((i) => (i.closed_at ?? "") >= weekAgo).length;
+  const lastWeek = closed.length - thisWeek;
+  const delta = (a: number, b: number) => ({
+    text: a === b ? "±0" : a > b ? `+${a - b}` : `−${b - a}`,
+    direction: a === b ? ("flat" as const) : a > b ? ("up" as const) : ("down" as const),
+    tone: "neutral" as const,
+  });
+  const stats: Extract<BoardSection, { kind: "stats" }>["items"] = [
+    {
+      label: "Shipped this week",
+      value: thisWeek,
+      sub: `last week ${lastWeek}`,
+      delta: delta(thisWeek, lastWeek),
+    },
+  ];
+  if (m.backlog.ok) {
+    const created = [...m.backlog.data, ...m.closedFortnight.data].filter(
+      (i) => i.issue_type !== "epic",
+    );
+    const seen = new Set<string>();
+    let createdThis = 0;
+    let createdLast = 0;
+    const fortnight = new Date(now.getTime() - 14 * 86_400_000).toISOString();
+    for (const i of created) {
+      if (seen.has(i.id) || !i.created_at) continue;
+      seen.add(i.id);
+      if (i.created_at >= weekAgo) createdThis += 1;
+      else if (i.created_at >= fortnight) createdLast += 1;
+    }
+    stats.push({
+      label: "Created this week",
+      value: createdThis,
+      sub: `last week ${createdLast}`,
+      delta: delta(createdThis, createdLast),
+    });
+  } else {
+    stats.push({ label: "Created this week", value: null, sub: "backlog unmeasured" });
+  }
+  const sections: BoardSection[] = [{ kind: "stats", items: stats }];
+  if (closed.length === 0) {
+    sections.push(quiet("Nothing closed in the last 14 days."));
+    return board(sections);
+  }
+  const shown = closed.slice(0, SHIPPED_CAP);
+  let day: { title: string; items: CardItem[] } | undefined;
+  for (const i of shown) {
+    const label = i.closed_at ? dayLabel(i.closed_at, now) : "Date not recorded";
+    if (!day || day.title !== label) {
+      day = { title: label, items: [] };
+      sections.push({ kind: "cards", title: day.title, items: day.items });
+    }
+    const pr = shippedPR(i);
+    day.items.push(
+      beadCard(i, {
+        meta: [i.issue_type === "epic" && "epic", shortPerson(personOf(i)), clock(i.closed_at)],
+        evidence: i.close_reason?.trim()
+          ? { text: firstSentence(i.close_reason) }
+          : { text: "Closed without a written reason." },
+        fields: pr ? [prField(pr)] : [],
+        selectedId: ctx.selectedId,
+      }),
+    );
+  }
+  if (closed.length > shown.length) {
     sections.push({
       kind: "rows",
       items: [
         {
-          icon: "▸",
-          chip: { label: "closeout review", tone: "warn" },
-          text: `${eligibleEpics.length} epic${eligibleEpics.length === 1 ? "" : "s"} ${eligibleEpics.length === 1 ? "has" : "have"} no open children left — review ${eligibleEpics.length === 1 ? "it" : "them"} against the epic's own acceptance criteria before closing.`,
-          trailing: eligibleEpics.map((f) => f.root.id).join(", "),
+          icon: "…",
+          text: `Showing the newest ${shown.length} of ${closed.length} closes in 14 days. beads_list with status closed has the rest.`,
         },
       ],
     });
   }
-  for (const fam of epicFamilies) {
-    if (room() <= 0) break;
-    const p = epicProgress.get(fam.root.id);
-    const meter = p
-      ? ` — ${p.closed_children}/${p.total_children} done${p.eligible_for_close ? " · needs closeout review" : ""}`
-      : "";
-    // An epic whose open children have all closed still needs a face: the
-    // epic card itself stands in so the group never renders empty — and when
-    // it is eligible that card is also where the review action lives.
-    const items: CardItem[] = fam.children.length
-      ? fam.children.slice(0, room()).map((c) => card(c))
-      : [card(fam.root)];
-    if (p?.eligible_for_close) {
-      items.unshift({
-        ...card(fam.root),
-        fields: [{ value: `epic · ${p.closed_children}/${p.total_children} done` }],
-        actions: [{ type: "select-bead", label: "Review epic", payload: { id: fam.root.id } }],
-      });
-    }
-    push(`▸ ${fam.root.title}${meter}`, items);
-    // The epic itself is on screen — as the group title, or as the leading
-    // review card when eligible (which `push` already counted). Leaving it out
-    // of the tally made the caption read "Showing 45 of 50" on a Plan that was
-    // hiding nothing, which is a truncation warning that cries wolf.
-    if (!p?.eligible_for_close) shown += 1;
-  }
-  for (const fam of parentFamilies) {
-    if (room() <= 0) break;
-    push(undefined, [card(fam.root), ...fam.children.map((c) => card(c, true))].slice(0, room()));
-  }
-  // Standalone work is the long tail — unparented beads with no structure to
-  // show. Rendering it as more of the same grid turned the bottom of the page
-  // into wallpaper, so it gets the other shape: one dense line per bead,
-  // id · title · state, which both compresses the tail and gives the page a
-  // second rhythm against the boxed groups above.
-  //
-  // Rows carry the cards click contract now, so the tail selects into the
-  // inspector like everything else — which is strictly more than the old
-  // inline `detail` disclosure said (the inspector adds links, actions, and
-  // full prose), and `action` and `detail` are mutually exclusive anyway.
-  if (room() > 0 && singles.length > 0) {
-    const tail = singles.slice(0, room());
-    sections.push({
-      kind: "rows",
-      title: "Standalone work",
-      items: tail.map((i) => {
-        const dot = lifecycleTone(lifecycleOf(i), readyIds.has(i.id));
-        // A row DOES have a right-aligned slot, so here the rail is literal:
-        // meta first, exceptions last, in the same order the cards use.
-        return {
-          ...(dot ? { glyph: dot } : {}),
-          chip: { label: i.id, tone: "neutral" as const },
-          text: i.title,
-          trailing: [meta(i), ...railOf(i)].join(" · "),
-          action: { type: "select-bead" as const, payload: { id: i.id } },
-          selected: ctx.selectedId === i.id,
-        };
-      }),
-    });
-    shown += tail.length;
-  }
-  sections.push({
-    kind: "rows",
-    items: [
-      {
-        icon: "ℹ",
-        chip: { label: "how to read this", tone: "neutral" },
-        text: `Dot color is lifecycle: teal startable · green in progress · blue on hold. The trailing note is the exception — waiting on, N downstream, bug, closeout review — and most beads have none. ▸ panels are epics (their beads inside), └ marks a bead under the parent leading its box. P0 is most urgent, P4 least. Click any card or row to open it in the inspector.${shown < total ? ` Showing ${shown} of ${total}.` : ""}`,
-      },
-    ],
-  });
   return board(sections);
 }
 
-// ── The inspector: the selected bead in full — meta, dependency links both
-// ways, description and acceptance criteria as wrapped prose. `recommended`
-// is the board's current pick, offered as the alternative when the inspected
-// bead itself cannot be started.
+// ── The inspector: one bead in full, in the canvas drawer. Facts and links
+// on the left; description, acceptance criteria and the evidence timeline on
+// the right.
 export interface InspectOptions {
-  // Present only when the inspected bead is an epic the measurement knows —
-  // it turns the structural notice into a closeout review with real counts.
   epicRow?: BdEpicRow;
-  // The bead arrived from the board's recommendation rather than a click, so
-  // the panel says so instead of impersonating a selection.
-  preselected?: boolean;
   prInfo?: ProjectMeasurement["prInfo"];
   projectId?: string;
+  comments?: Measured<BdComment[]>;
+}
+
+const linkedId = (l: BdLinked): string => l.id ?? l.depends_on_id ?? l.issue_id ?? "?";
+const edgeType = (l: BdLinked): string | undefined => l.dependency_type ?? l.type;
+
+// What happened on a bead, oldest first: created, claimed, the plan and run
+// notes, comments, and the close. A stop the tracker did not record renders
+// hollow and says so rather than borrowing another field's time.
+export function beadTimeline(
+  i: BdIssue,
+  comments: readonly BdComment[],
+  pr: PrInfo | undefined,
+): RowItem[] {
+  interface Stop {
+    at?: string;
+    order: number;
+    row: RowItem;
+  }
+  const stops: Stop[] = [];
+  const epic = (i.dependencies ?? []).find((d) => edgeType(d) === "parent-child");
+  stops.push({
+    at: i.created_at,
+    order: 0,
+    row: {
+      icon: "+",
+      text: [
+        `Created${i.created_by ? ` by ${i.created_by}` : ""}`,
+        ...(epic ? [`in epic ${linkedId(epic)}`] : []),
+      ].join(" "),
+      trailing: stamp(i.created_at),
+    },
+  });
+  const claimed = i.status === "in_progress" || i.status === "closed" || Boolean(i.started_at);
+  if (claimed) {
+    const who = shortPerson(personOf(i));
+    stops.push({
+      at: i.started_at,
+      order: 1,
+      row: i.started_at
+        ? { icon: "◐", text: `Claimed${who ? ` by ${who}` : ""}`, trailing: stamp(i.started_at) }
+        : {
+            icon: "○",
+            text: `Claimed${who ? ` by ${who}` : ""}, time not recorded`,
+          },
+    });
+  }
+  for (const line of (i.notes ?? "").split("\n")) {
+    const plan = /^bead-work plan:\s*(.+)$/.exec(line.trim());
+    if (plan?.[1]) {
+      stops.push({
+        at: i.started_at,
+        order: 2,
+        row: { icon: "☰", text: `Plan ${plan[1].split("—")[0]?.trim() ?? plan[1]}` },
+      });
+    }
+  }
+  const run = parseRunNote(i.notes);
+  if (run) {
+    const face = run.prUrl
+      ? `PR ${prLabel(run.prUrl)}`
+      : run.prState === "number-only"
+        ? `PR #${run.prNumber}, link unknown`
+        : run.prState === "unknown"
+          ? "PR state unknown"
+          : "No PR";
+    const live = pr
+      ? isMergedPR(pr)
+        ? `merged ${stamp(pr.mergedAt)}`
+        : [
+            pr.state.toLowerCase(),
+            ...(pr.draft ? ["draft"] : []),
+            ...(pr.checks ? [`CI ${pr.checks}`] : []),
+            ...(pr.review ? [pr.review] : []),
+          ].join(" · ")
+      : undefined;
+    stops.push({
+      at: undefined,
+      order: 3,
+      row: {
+        icon: "↗",
+        text: [face, run.outcome, run.note].filter(Boolean).join(" · "),
+        ...(run.prUrl ? { href: run.prUrl } : {}),
+        ...(live ? { trailing: live } : {}),
+      },
+    });
+  }
+  for (const c of comments) {
+    const who = c.author ?? "comment";
+    stops.push({
+      at: c.created_at,
+      order: 4,
+      row: {
+        icon: "“",
+        text: `${who}: ${firstSentence(c.text, 140)}`,
+        trailing: stamp(c.created_at),
+        ...(c.text.length > 140 || firstSentence(c.text, 140) !== c.text.trim()
+          ? { detail: c.text.slice(0, 4000) }
+          : {}),
+      },
+    });
+  }
+  if (i.status === "closed") {
+    const reason = i.close_reason?.trim();
+    stops.push({
+      at: i.closed_at ?? "9999",
+      order: 5,
+      row: {
+        icon: "✓",
+        text: reason ? `Closed: ${firstSentence(reason, 140)}` : "Closed without a written reason",
+        ...(i.closed_at ? { trailing: stamp(i.closed_at) } : {}),
+        ...(reason && firstSentence(reason, 140) !== reason
+          ? { detail: reason.slice(0, 4000) }
+          : {}),
+      },
+    });
+  }
+  // Untimed stops (plan, run) sit after the claim and before anything later.
+  const claimAt = i.started_at ?? i.created_at ?? "";
+  return stops
+    .map((s) => ({ ...s, key: s.at ?? claimAt }))
+    .sort((a, b) => (a.key === b.key ? a.order - b.order : a.key < b.key ? -1 : 1))
+    .map((s) => s.row);
 }
 
 export function composeInspect(
@@ -1320,42 +1495,34 @@ export function composeInspect(
   recommended?: BdIssue,
   opts: InspectOptions = {},
 ): Board {
-  const { epicRow, preselected } = opts;
+  const { epicRow } = opts;
   if (!issue) {
-    return board([
-      {
-        kind: "rows",
-        items: [
-          {
-            glyph: "neutral",
-            text: "Nothing selected — click any card in the Plan, the recommendation, or Needs attention to inspect it here.",
-          },
-        ],
-      },
-    ]);
+    return board([quiet("Nothing selected. Click any bead on the board to open it here.")]);
   }
   if (!issue.ok) return failedBoard("the selected bead", issue.error);
   const i = issue.data;
   const merged =
     i.status === "open" || i.status === "in_progress" ? mergedPR(opts.prInfo, i.id) : undefined;
   const mergedAlternative = recommended && mergedPR(opts.prInfo, recommended.id);
-  const linked = (list: readonly BdLinked[] | null | undefined): string[] =>
-    (list ?? []).map((l) => {
-      const id = l.id ?? l.depends_on_id ?? l.issue_id ?? "?";
-      return l.title ? `${id} — ${l.title}` : id;
-    });
-  // Only dependencies that still hold anything up. `bd show` returns every
-  // edge ever declared, closed ones included, so listing them raw put a
-  // satisfied dependency under "Waits on" directly beneath an enabled "Start
-  // this bead" — the panel telling you to start and to wait in one breath.
-  // Unknown status is kept: absence of proof that it is done is not proof.
-  const waitsOn = linked((i.dependencies ?? []).filter((d) => d.status !== "closed"));
-  const unlocks = linked(i.dependents);
+  const linked = (list: readonly BdLinked[]): string[] =>
+    list.map((l) => (l.title ? `${linkedId(l)} · ${l.title}` : linkedId(l)));
+  // Only blocking edges that still hold. A parent-child edge is membership,
+  // and a closed blocker is satisfied; unknown status is kept, since absence
+  // of proof that it is done is not proof.
+  const deps = i.dependencies ?? [];
+  const epicEdge = deps.find((d) => edgeType(d) === "parent-child");
+  const waitsOn = linked(
+    deps.filter((d) => edgeType(d) !== "parent-child" && d.status !== "closed"),
+  );
+  const children = (i.dependents ?? []).filter((d) => edgeType(d) === "parent-child");
+  const unlocks = linked((i.dependents ?? []).filter((d) => edgeType(d) !== "parent-child"));
   const blockedEntry = blocked.find((b) => b.id === i.id);
-  const blockedBy = blockedEntry?.blocked_by ?? [];
-  // Blocked means the union says so OR the status is blocked by hand: either
-  // way, starting THIS bead is the wrong move and the action must say so.
-  const isBlocked = i.status === "blocked" || blockedEntry !== undefined;
+  const blockedBy = (blockedEntry?.blocked_by ?? []).filter(
+    (id) => id !== linkedId(epicEdge ?? {}),
+  );
+  const isBlocked =
+    i.status === "blocked" ||
+    (blockedEntry !== undefined && (blockedBy.length > 0 || waitsOn.length > 0));
   const blockerCount = blockedBy.length || waitsOn.length;
   const meta: LeafSection = {
     kind: "rows",
@@ -1363,34 +1530,22 @@ export function composeInspect(
     items: [
       { text: "status", trailing: `${statusGlyph(i.status)} ${i.status.replace("_", " ")}` },
       { text: "priority", trailing: `P${i.priority}` },
-      { text: "owner", trailing: i.assignee ?? i.owner ?? "unassigned" },
+      { text: "owner", trailing: shortPerson(personOf(i)) ?? "unassigned" },
       ...(i.issue_type ? [{ text: "type", trailing: i.issue_type }] : []),
+      ...(epicEdge
+        ? [
+            {
+              text: "epic",
+              trailing: epicEdge.title
+                ? `${linkedId(epicEdge)} · ${epicEdge.title}`
+                : linkedId(epicEdge),
+            },
+          ]
+        : []),
       ...(i.labels?.length ? [{ text: "labels", trailing: i.labels.join(", ") }] : []),
-      { text: "updated", trailing: (i.updated_at ?? "").slice(0, 10) || "—" },
-      ...(i.comment_count ? [{ text: "comments", trailing: String(i.comment_count) }] : []),
     ],
   };
-  // The panel is a full-width band: facts and links in a narrow left column,
-  // prose given the remaining two-thirds — short and wide, never a tall
-  // sliver beside the Plan.
   const left: LeafSection[] = [meta];
-  // Nothing was clicked — say so plainly. The panel showing the pick is more
-  // useful than an empty neutral state, but it must not read as a selection
-  // the operator made, or the next click will feel like it changed nothing.
-  if (preselected) {
-    left.unshift({
-      kind: "rows",
-      items: [
-        {
-          glyph: "accent",
-          chip: { label: "the board's pick", tone: "accent" },
-          text: merged
-            ? "Nothing selected yet — this is the board's pick, but its PR has merged. Reconcile it instead of starting it again."
-            : "Nothing selected yet — this is what the board recommends starting. Click any card to inspect that bead instead.",
-        },
-      ],
-    });
-  }
   const right: LeafSection[] = [];
   if (isBlocked) {
     left.push({
@@ -1400,8 +1555,8 @@ export function composeInspect(
           glyph: "error",
           chip: { label: "blocked", tone: "error" },
           text: blockerCount
-            ? `Blocked by ${blockerCount} bead${blockerCount === 1 ? "" : "s"} — listed under “Waits on” below.`
-            : "Paused by hand — no blocking dependency recorded.",
+            ? `Waits on ${plural(blockerCount, "bead")}, listed below.`
+            : "Paused by hand. No blocking dependency recorded.",
         },
       ],
     });
@@ -1412,18 +1567,16 @@ export function composeInspect(
       items: [
         {
           glyph: "warn",
-          chip: { label: "merged PR · close pending", tone: "warn" },
-          text: `PR ${merged.url} merged ${merged.mergedAt}; the bead remains ${i.status}. Reconcile after reviewing the recorded link.`,
+          chip: { label: "merged · close pending", tone: "warn" },
+          text: `PR ${prLabel(merged.url)} merged ${stamp(merged.mergedAt)}; the bead is still ${i.status.replace("_", " ")}. Reconcile after reviewing the recorded link.`,
           href: merged.url,
         },
       ],
     });
     if (opts.projectId) left.push({ kind: "actions", items: [reconcileAction(opts.projectId)] });
   }
-  // An epic is structure, never a work item — so the inspector must not offer
-  // to start one. Without this an open epic renders the same "Start this bead"
-  // claim button as any task, which is the same contract breach the ready
-  // query already prevents with `--exclude-type=epic`.
+  // An epic is structure, never a work item, so the inspector never offers
+  // to start one.
   if (i.issue_type === "epic") {
     const p = epicRow?.epic.id === i.id ? epicRow : undefined;
     left.push({
@@ -1433,8 +1586,8 @@ export function composeInspect(
           glyph: p?.eligible_for_close ? "warn" : "neutral",
           chip: { label: "epic", tone: "neutral" },
           text: p?.eligible_for_close
-            ? `All ${p.total_children} children are closed. Review this epic against its own acceptance criteria before manual close${merged ? " or reconciling its own linked PR" : ""}.`
-            : "An epic is structure, not work — start one of its children instead.",
+            ? `All ${p.total_children} children are closed. Review this epic against its own acceptance criteria before closing it by hand${merged ? " or reconciling its own linked PR" : ""}.`
+            : "An epic is structure, not work. Start one of its children instead.",
           ...(p ? { trailing: `${p.closed_children}/${p.total_children} done` } : {}),
         },
       ],
@@ -1458,14 +1611,10 @@ export function composeInspect(
     });
     left.push({
       kind: "actions",
-      // Starting blocked work is a semantic error, not a preference: the
-      // primary action disables itself and offers the board's pick instead.
       items: isBlocked
         ? [
             claim(i.id, "Start this bead", {
-              reason: blockerCount
-                ? `blocked by ${blockerCount} bead${blockerCount === 1 ? "" : "s"}`
-                : "paused by hand",
+              reason: blockerCount ? `waits on ${plural(blockerCount, "bead")}` : "paused by hand",
             }),
             ...(recommended && recommended.id !== i.id
               ? mergedAlternative
@@ -1485,6 +1634,16 @@ export function composeInspect(
       items: (waitsOn.length ? waitsOn : blockedBy).map((text) => ({ icon: "●", text })),
     });
   }
+  if (children.length) {
+    left.push({
+      kind: "rows",
+      title: "Children",
+      items: children.map((c) => ({
+        icon: statusGlyph(c.status ?? "open"),
+        text: c.title ? `${linkedId(c)} · ${c.title}` : linkedId(c),
+      })),
+    });
+  }
   if (unlocks.length) {
     left.push({
       kind: "rows",
@@ -1498,342 +1657,58 @@ export function composeInspect(
       .trim()
       .split(/\n{2,}/)
       .slice(0, PARA_CAP);
-    right.push({
-      kind: "rows",
-      title: label,
-      items: paras.map((p) => ({ text: p })),
-    });
+    right.push({ kind: "rows", title: label, items: paras.map((p) => ({ text: p })) });
   };
   prose("Description", i.description);
   prose("Acceptance criteria", i.acceptance_criteria);
-  prose("Notes", i.notes);
-  if (right.length === 0) {
-    right.push({
-      kind: "rows",
-      items: [{ glyph: "neutral", text: "No description recorded on this bead." }],
-    });
-  }
-  const sections: BoardSection[] = [
-    {
-      kind: "columns",
-      // The trailing empty column caps the reading measure: without it, prose
-      // stretches across the whole band on a wide display (~110ch lines). The
-      // remaining space stays deliberately unfilled.
-      columns: [
-        { weight: 1, sections: left },
-        { weight: 2, sections: right },
-        { weight: 0.8, sections: [] },
-      ],
-    },
-  ];
-  return board(sections, {
-    status: {
-      label: `${i.id} · ${i.status.replace("_", " ")}`,
-      tone: i.status === "blocked" ? "error" : i.status === "in_progress" ? "ok" : "neutral",
-    },
-    chip: i.title.slice(0, 80),
-  });
-}
-
-// ── Portfolio: one meter per epic — how far along each initiative is, read
-// at a glance. Cards, not bars: a bars section carries no action, and every
-// meter here must open the inspector (where an eligible epic's closeout
-// review already lives).
-export function composePortfolio(m: ProjectMeasurement, ctx: PanelContext): Board {
-  if (!m.epics.ok) return failedBoard("the epic portfolio", m.epics.error);
-  if (m.epics.data.length === 0) return HIDDEN;
-  const wipIds = new Set(m.inProgress.ok ? m.inProgress.data.map((i) => i.id) : []);
-  const blockedBy = new Map<string, readonly string[]>(
-    (m.blocked.ok ? m.blocked.data : []).map((b) => [b.id, b.blocked_by ?? []]),
+  // The bead-work lines render in the timeline; anything else a person wrote
+  // in notes stays as prose.
+  prose(
+    "Notes",
+    (i.notes ?? "")
+      .split("\n")
+      .filter((l) => !/^bead-work (run|plan):/.test(l.trim()))
+      .join("\n"),
   );
-  // The meter's stage composition — the flow strip's vocabulary at epic
-  // scale, same stage→tone mapping, mirrored order: a meter fills from the
-  // left with what is furthest along, so done (darkest) anchors left and
-  // waiting (lightest) trails. Composition needs every stage set measured;
-  // otherwise the meter degrades to the plain done/total fill.
-  const split = stageSplit(m);
-  const stagesMeasured = m.epicChildren.ok && m.ready.ok && split.ok;
-  const readyIds = new Set(m.ready.ok ? m.ready.data.map((i) => i.id) : []);
-  const reviewIds = new Set(split.ok ? split.data.inReview.map((i) => i.id) : []);
-  const workingIds = new Set(split.ok ? split.data.working.map((i) => i.id) : []);
-  const rows = m.epics.data.map((r) => {
-    // In-flight children and the gate only when membership measured — the
-    // Plan's degrade precedent: the meter stays, the clauses drop.
-    const childIds = m.epicChildren.ok ? (m.epicChildren.data[r.epic.id] ?? []) : [];
-    const inFlight = m.inProgress.ok ? childIds.filter((id) => wipIds.has(id)).length : 0;
-    const gate =
-      m.blocked.ok && childIds.length > 0 ? epicGate(childIds, blockedBy, wipIds) : undefined;
-    const ratio = r.total_children > 0 ? r.closed_children / r.total_children : 0;
-    return { r, childIds, inFlight, gate, ratio };
+  const comments = opts.comments?.ok ? opts.comments.data : [];
+  const pr = opts.prInfo?.ok ? opts.prInfo.data[i.id] : undefined;
+  right.push({
+    kind: "rows",
+    title: "History",
+    items: [
+      ...beadTimeline(i, comments, pr?.ok ? pr.data : undefined),
+      ...(opts.comments && !opts.comments.ok ? [alarmRow("comments", opts.comments.error)] : []),
+    ],
   });
-  // The five-second read is the SORT: where the agents are first, then what
-  // is nearly landed, parked epics last. bd's own order buried the one
-  // active epic beneath four untouched ones.
-  rows.sort((a, b) => {
-    if (a.inFlight !== b.inFlight) return b.inFlight - a.inFlight;
-    if (a.ratio !== b.ratio) return b.ratio - a.ratio;
-    return byPriorityThenAge(a.r.epic, b.r.epic);
-  });
-  return board([
+  return board(
+    [
+      {
+        kind: "columns",
+        columns: [
+          { weight: 1, sections: left },
+          { weight: 2, sections: right },
+        ],
+      },
+    ],
     {
-      kind: "cards",
-      items: rows.map(({ r, childIds, inFlight, gate }): CardItem => {
-        const meta = [
-          `${r.closed_children}/${r.total_children} done`,
-          ...(inFlight > 0 ? [`${inFlight} in progress`] : []),
-          ...(r.eligible_for_close ? ["needs closeout review"] : []),
-          // The rail position: why a parked epic is parked, said once here
-          // instead of once per child down in the Plan.
-          ...(gate
-            ? [
-                gate.all
-                  ? `gated on ${gate.blockerId}`
-                  : `${gate.count} waiting on ${gate.blockerId}`,
-              ]
-            : []),
-        ];
-        return {
-          title: clampTitle(r.epic.title, BAND_TITLE_BUDGET),
-          pill: { label: r.epic.id, tone: "neutral" as const },
-          // warn, not ok: an epic with nothing open left is an ask on a
-          // human's time, and this rib never closes it for you.
-          ...(r.eligible_for_close ? { dot: "warn" as const } : {}),
-          selected: ctx.selectedId === r.epic.id,
-          ...(r.total_children > 0
-            ? {
-                bar: (() => {
-                  if (!stagesMeasured) return { value: r.closed_children, total: r.total_children };
-                  // childIds includes closed children (membership is every
-                  // parent-child edge), so the open-stage sets intersect
-                  // cleanly. The remainder is blocked or deferred children —
-                  // "waiting" in the flow strip's sense, approximately: it
-                  // also absorbs any child the open sets don't claim.
-                  const inSet = (ids: Set<string>) => childIds.filter((id) => ids.has(id)).length;
-                  const review = inSet(reviewIds);
-                  const working = inSet(workingIds);
-                  const ready = inSet(readyIds);
-                  const waiting = Math.max(
-                    0,
-                    r.total_children - r.closed_children - review - working - ready,
-                  );
-                  return {
-                    segments: [
-                      { label: "done", n: r.closed_children, tone: "ramp-5" as const },
-                      { label: "in review", n: review, tone: "ramp-4" as const },
-                      { label: "in progress", n: working, tone: "ramp-3" as const },
-                      { label: "ready", n: ready, tone: "ramp-2" as const },
-                      { label: "waiting", n: waiting, tone: "ramp-1" as const },
-                    ],
-                  };
-                })(),
-              }
-            : {}),
-          action: { type: "select-bead", payload: { id: r.epic.id } },
-          fields: [{ value: meta.join(" · ") }],
-        };
-      }),
+      status: {
+        label: `${i.id} · ${i.status.replace("_", " ")}`,
+        tone: lifecycleTone(lifecycleOf(i)),
+      },
+      chip: clampTitle(i.title, 80),
     },
-  ]);
-}
-
-// ── Momentum: what happened lately — a closed-vs-created chart over the
-// fortnight for the shape, then the event feed for the names, newest first.
-export function composeMomentum(m: ProjectMeasurement, ctx: PanelContext = {}): Board {
-  if (!m.recentlyClosed.ok) return failedBoard("recent closes", m.recentlyClosed.error);
-  const now = new Date(m.asOf);
-  const floor = new Date(now.getTime() - RECENT_CLOSE_DAYS * 86_400_000).toISOString();
-  interface MomentumEvent {
-    at: string;
-    icon: string;
-    id: string;
-    title: string;
-    verb: string;
-  }
-  // recentlyClosed is already the 7-day window (measure.ts owns it).
-  const events: MomentumEvent[] = m.recentlyClosed.data.map((i) => ({
-    at: i.closed_at ?? "",
-    icon: "✓",
-    id: i.id,
-    title: i.title,
-    verb: "closed",
-  }));
-  const alarms: BoardSection[] = [];
-  const seen = new Set(events.map((e) => e.id));
-  // "touched", honestly: bd records no started_at, and updated_at moves on
-  // any mutation — claim time is not knowable from here, so the feed never
-  // claims it. One line per bead, most final event wins: a bead created and
-  // already claimed reads as its touch; created and closed inside the window
-  // reads as its close (`bd list` scope is non-closed, so no double entry).
-  if (m.inProgress.ok) {
-    for (const i of m.inProgress.data) {
-      if ((i.updated_at ?? "") >= floor && !seen.has(i.id)) {
-        seen.add(i.id);
-        events.push({
-          at: i.updated_at ?? "",
-          icon: "◐",
-          id: i.id,
-          title: i.title,
-          verb: "touched",
-        });
-      }
-    }
-  } else {
-    alarms.push({
-      kind: "rows",
-      items: [
-        {
-          icon: "⚠",
-          chip: { label: "UNMEASURED", tone: "error" },
-          text: "in-progress touches could not be measured — the feed is missing them.",
-          trailing: m.inProgress.error.slice(0, 120),
-        },
-      ],
-    });
-  }
-  if (m.backlog.ok) {
-    for (const i of m.backlog.data) {
-      // New epics are structure, not momentum — the portfolio carries them.
-      if (i.issue_type === "epic") continue;
-      if ((i.created_at ?? "") >= floor && !seen.has(i.id)) {
-        events.push({ at: i.created_at ?? "", icon: "+", id: i.id, title: i.title, verb: "new" });
-      }
-    }
-  } else {
-    alarms.push({
-      kind: "rows",
-      items: [
-        {
-          icon: "⚠",
-          chip: { label: "UNMEASURED", tone: "error" },
-          text: "new beads could not be measured — the feed is missing them.",
-          trailing: m.backlog.error.slice(0, 120),
-        },
-      ],
-    });
-  }
-  events.sort((a, b) => (a.at > b.at ? -1 : 1));
-  const shown = events.slice(0, MOMENTUM_CAP);
-  const sections: BoardSection[] = [];
-  // One header per day instead of "3d ago" repeated on every line. Days are
-  // elapsed 24h windows from asOf (the same arithmetic every age label on
-  // the board uses), not calendar midnights.
-  const MONTHS = [
-    "Jan",
-    "Feb",
-    "Mar",
-    "Apr",
-    "May",
-    "Jun",
-    "Jul",
-    "Aug",
-    "Sep",
-    "Oct",
-    "Nov",
-    "Dec",
-  ];
-  const dayLabel = (iso: string): string => {
-    const days = Math.max(0, Math.floor((now.getTime() - new Date(iso).getTime()) / 86_400_000));
-    if (days === 0) return "Today";
-    if (days === 1) return "Yesterday";
-    return `${MONTHS[Number(iso.slice(5, 7)) - 1] ?? "?"} ${Number(iso.slice(8, 10))}`;
-  };
-  type RowItem = Extract<BoardSection, { kind: "rows" }>["items"][number];
-  let day: { title: string; items: RowItem[] } | undefined;
-  for (const e of shown) {
-    const label = dayLabel(e.at);
-    if (!day || day.title !== label) {
-      day = { title: label, items: [] };
-      sections.push({ kind: "rows", title: day.title, items: day.items });
-    }
-    day.items.push({
-      icon: e.icon,
-      chip: { label: e.id, tone: "neutral" as const },
-      text: e.title,
-      trailing: e.verb,
-      // Rows carry the cards click contract now — the feed feeds the
-      // inspector like every other panel.
-      action: { type: "select-bead", payload: { id: e.id } },
-      selected: ctx.selectedId === e.id,
-    });
-  }
-  // Truncation says so — a capped feed that reads complete is the quiet
-  // sibling of the empty-but-healthy panel.
-  if (events.length > shown.length)
-    sections.push({
-      kind: "rows",
-      items: [{ icon: "…", text: `showing ${shown.length} of ${events.length} events this week` }],
-    });
-  sections.push(...alarms);
-  // The chart: closes and creates bucketed into the same elapsed-24h windows
-  // the day headers use, oldest day leftmost. Creates read created_at across
-  // backlog ∪ recent closes (a bead created and already closed inside the
-  // window is only in the closed list) and skip epics like the feed does; a
-  // bead created and closed in the window counts once in EACH series — the
-  // two measure different verbs. When the backlog is unmeasured the Created
-  // series drops and the feed's alarm above already says why.
-  const dayIndex = (iso: string): number =>
-    Math.floor((now.getTime() - new Date(iso).getTime()) / 86_400_000);
-  const closesPerDay: number[] = new Array(FLOW_WINDOW_DAYS).fill(0);
-  const closedRecently = m.closedFortnight.ok ? m.closedFortnight.data : [];
-  for (const i of closedRecently) {
-    const d = dayIndex(i.closed_at ?? "");
-    if (d >= 0 && d < FLOW_WINDOW_DAYS && closesPerDay[d] !== undefined) closesPerDay[d] += 1;
-  }
-  const createsPerDay: number[] = new Array(FLOW_WINDOW_DAYS).fill(0);
-  if (m.backlog.ok) {
-    for (const i of [...m.backlog.data, ...closedRecently]) {
-      if (i.issue_type === "epic") continue;
-      const d = dayIndex(i.created_at ?? "");
-      if (d >= 0 && d < FLOW_WINDOW_DAYS && createsPerDay[d] !== undefined) createsPerDay[d] += 1;
-    }
-  }
-  // Calendar labels throughout (today included) so the axis reads uniformly.
-  const chartLabel = (daysBack: number): string => {
-    const t = new Date(now.getTime() - daysBack * 86_400_000);
-    return `${MONTHS[t.getUTCMonth()] ?? "?"} ${t.getUTCDate()}`;
-  };
-  const daysOldestFirst = Array.from(
-    { length: FLOW_WINDOW_DAYS },
-    (_, k) => FLOW_WINDOW_DAYS - 1 - k,
   );
-  const chartHasData =
-    closesPerDay.some((n) => n > 0) || (m.backlog.ok && createsPerDay.some((n) => n > 0));
-  const chart: BoardSection[] = chartHasData
-    ? [
-        {
-          kind: "chart",
-          title: `Closed vs created — last ${FLOW_WINDOW_DAYS} days`,
-          mark: "bar",
-          series: [
-            {
-              label: "Closed",
-              points: daysOldestFirst.map((d) => ({
-                x: chartLabel(d),
-                y: closesPerDay[d] ?? 0,
-              })),
-            },
-            ...(m.backlog.ok
-              ? [
-                  {
-                    label: "Created",
-                    points: daysOldestFirst.map((d) => ({
-                      x: chartLabel(d),
-                      y: createsPerDay[d] ?? 0,
-                    })),
-                  },
-                ]
-              : []),
-          ],
-        },
-      ]
-    : [];
-  // Zero sections only when every input measured and the fortnight was quiet.
-  if (sections.length === 0 && chart.length === 0) return HIDDEN;
-  return board([...chart, ...sections]);
 }
 
-// ── Scope resting states, rendered on the pulse panel (the one always-on
-// region); every other panel hides itself via the zero-section signal.
+// The inspector when bd is below the floor: `bd show --include-dependents`
+// would fail on every click, so it says why once.
+export function composeInspectNeedsBd(m: Pick<ProjectMeasurement, "bd">): Board {
+  const floor = bdBelowFloor(m) ?? "bd is below the supported version";
+  return failedBoard("the inspector", floor, m);
+}
+
+// ── Scope resting states, rendered on the header (the one always-on region);
+// every other panel hides itself via the zero-section signal.
 export function composeNoTrackerPulse(
   projectName: string,
   beadsProjects: readonly { name: string }[],
@@ -1860,7 +1735,7 @@ export function composeNoTrackerPulse(
               },
               {
                 title: "The board measures it",
-                text: "Ready, in-progress, blocked, epics, momentum and stale work — measured with bd, never inferred.",
+                text: "What is in flight, what is left and what shipped, measured with bd, never inferred.",
               },
               {
                 title: "Drive work from chat",

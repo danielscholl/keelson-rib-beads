@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { RibExec } from "@keelson/shared";
 import type { BeadsProject } from "../src/bd";
-import { canonicalPrUrl, GhClient, isMergedPR } from "../src/pr";
+import { canonicalPrUrl, GhClient, isMergedPR, rollupChecks } from "../src/pr";
 
 const project: BeadsProject = { id: "p", name: "Project", rootPath: "/repo" };
 const url = "https://github.com/acme/demo/pull/42";
@@ -31,10 +31,62 @@ describe("GitHub PR evidence", () => {
     expect(calls).toEqual([
       [
         "gh",
-        ["pr", "view", url, "--json", "url,state,mergedAt,body"],
+        [
+          "pr",
+          "view",
+          url,
+          "--json",
+          "url,state,mergedAt,body,isDraft,reviewDecision,statusCheckRollup",
+        ],
         { cwd: "/repo", timeoutMs: 30_000 },
       ],
     ]);
+  });
+
+  test("an open PR carries its draft, review and CI state when gh reports them", async () => {
+    const result = await reader(
+      {
+        url,
+        state: "OPEN",
+        mergedAt: null,
+        body: "Bead: cos-hjf.1",
+        isDraft: true,
+        reviewDecision: "CHANGES_REQUESTED",
+        statusCheckRollup: [{ status: "COMPLETED", conclusion: "SUCCESS" }],
+      },
+      [],
+    ).readPR(project, url, "cos-hjf.1");
+    expect(result).toEqual({
+      ok: true,
+      data: {
+        url,
+        state: "OPEN",
+        mergedAt: null,
+        draft: true,
+        review: "changes requested",
+        checks: "passing",
+      },
+    });
+  });
+
+  test("CI rolls up to the worst check: failing beats pending beats passing", () => {
+    expect(rollupChecks(undefined)).toBeUndefined();
+    expect(rollupChecks([])).toBeUndefined();
+    expect(rollupChecks([{ status: "COMPLETED", conclusion: "SUCCESS" }])).toBe("passing");
+    expect(
+      rollupChecks([
+        { status: "COMPLETED", conclusion: "SUCCESS" },
+        { status: "IN_PROGRESS", conclusion: "" },
+      ]),
+    ).toBe("pending");
+    expect(
+      rollupChecks([
+        { status: "IN_PROGRESS", conclusion: "" },
+        { status: "COMPLETED", conclusion: "FAILURE" },
+      ]),
+    ).toBe("failing");
+    expect(rollupChecks([{ state: "SUCCESS" }])).toBe("passing");
+    expect(rollupChecks([{ state: "PENDING" }])).toBe("pending");
   });
 
   test.each(["OPEN", "CLOSED"] as const)("a %s PR without a merge is not merged", async (state) => {

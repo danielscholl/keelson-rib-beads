@@ -30,8 +30,13 @@ export interface BdIssue {
   assignee?: string;
   owner?: string;
   created_at?: string;
+  created_by?: string;
   updated_at?: string;
+  // Written by bd from 1.2 on; older claims have none, and updated_at is no
+  // substitute because it moves on any edit.
+  started_at?: string;
   closed_at?: string;
+  close_reason?: string;
   labels?: string[];
   dependency_count?: number;
   dependent_count?: number;
@@ -48,6 +53,12 @@ export interface BdIssue {
   dependents?: readonly BdLinked[] | null;
 }
 
+export interface BdComment {
+  author?: string;
+  text: string;
+  created_at?: string;
+}
+
 export interface BdLinked {
   id?: string;
   issue_id?: string;
@@ -60,6 +71,32 @@ export interface BdLinked {
   // "blocks" or "parent-child" — the latter is epic membership.
   dependency_type?: string;
 }
+
+// The oldest bd that answers every query the rib sends: `bd show
+// --include-dependents` arrived in 1.2.0.
+export const BD_VERSION_FLOOR = [1, 2, 0] as const;
+
+export type BdVersion = { version: string; supported: boolean };
+
+export function parseBdVersion(raw: unknown): BdVersion | undefined {
+  const version = (raw as { version?: unknown } | null)?.version;
+  if (typeof version !== "string") return undefined;
+  const parts = /^(\d+)\.(\d+)\.(\d+)/.exec(version.trim());
+  if (!parts) return undefined;
+  const have = parts.slice(1, 4).map(Number);
+  let supported = true;
+  for (let k = 0; k < BD_VERSION_FLOOR.length; k++) {
+    const a = have[k] ?? 0;
+    const b = BD_VERSION_FLOOR[k] ?? 0;
+    if (a !== b) {
+      supported = a > b;
+      break;
+    }
+  }
+  return { version: version.trim(), supported };
+}
+
+export const bdFloorLabel = (): string => `${BD_VERSION_FLOOR[0]}.${BD_VERSION_FLOOR[1]}+`;
 
 // What a bead-work run reported about a bead, read from the notes convention
 // (`bead-work run: PR <url|#number|unknown|none> — <outcome> — <free text>`). The join to live

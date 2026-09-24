@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { RibExec } from "@keelson/shared";
-import { BdClient, type BdIssue } from "../src/bd";
+import { BD_VERSION_FLOOR, BdClient, type BdIssue, parseBdVersion } from "../src/bd";
 import {
+  bdBelowFloor,
   byPriorityThenAge,
   measureProject,
   parseRunNote,
@@ -235,5 +236,95 @@ describe("run notes and project PR measurement", () => {
         "bead-work run: PR https://github.com/acme/demo/pull/9 — success\nbead-work run: PR unknown — failed",
       ),
     ).toEqual({ prState: "unknown", outcome: "failed" });
+  });
+});
+
+describe("bd preflight and evidence sweeps", () => {
+  const project = { id: "p", name: "Project", rootPath: "/repo" };
+
+  function fake(version: string, rows: BdIssue[]) {
+    const calls: string[][] = [];
+    const exec = {
+      runJSON: async (_command: string, args: string[]) => {
+        calls.push(args);
+        const cmd = args[1];
+        if (cmd === "version") return { ok: true, data: { version } };
+        if (cmd === "status") return { ok: true, data: { summary: {} } };
+        if (cmd === "comments")
+          return {
+            ok: true,
+            data: [
+              { author: "a", text: "newer", created_at: "2026-09-02T00:00:00Z" },
+              { author: "a", text: "older", created_at: "2026-09-01T00:00:00Z" },
+            ],
+          };
+        if (cmd === "show") {
+          const id = args[2];
+          if (id === "ep")
+            return {
+              ok: true,
+              data: [
+                {
+                  ...issue("ep", { issue_type: "epic" }),
+                  dependents: [
+                    { id: "ep.1", title: "One", status: "closed", dependency_type: "parent-child" },
+                    { id: "x", title: "Other", status: "open", dependency_type: "blocks" },
+                  ],
+                },
+              ],
+            };
+          return { ok: true, data: [issue(id ?? "")] };
+        }
+        if (cmd === "list" && args.includes("in_progress"))
+          return { ok: true, data: rows.filter((r) => r.status === "in_progress") };
+        if (cmd === "list" && (args.includes("closed") || args.includes("blocked")))
+          return { ok: true, data: [] };
+        if (cmd === "list") return { ok: true, data: rows };
+        return { ok: true, data: [] };
+      },
+      runText: async () => {
+        throw new Error("read-only sweep must not mutate bd");
+      },
+    } as unknown as RibExec;
+    return { bd: new BdClient(exec), gh: new GhClient(exec), calls };
+  }
+
+  const rows = [
+    issue("ep", { issue_type: "epic" }),
+    issue("w", { status: "in_progress", comment_count: 2 }),
+    issue("q", { status: "in_progress", comment_count: 0 }),
+  ];
+
+  test("the floor matches the flag the rib needs", () => {
+    expect(BD_VERSION_FLOOR).toEqual([1, 2, 0]);
+    expect(parseBdVersion({ version: "1.2.0" })?.supported).toBe(true);
+    expect(parseBdVersion({ version: "1.10.1" })?.supported).toBe(true);
+    expect(parseBdVersion({ version: "1.0.4" })?.supported).toBe(false);
+    expect(parseBdVersion({ version: "dev" })).toBeUndefined();
+    expect(parseBdVersion([])).toBeUndefined();
+  });
+
+  test("a bd below the floor sends no --include-dependents query and says why", async () => {
+    const { bd, gh, calls } = fake("1.0.4", rows);
+    const m = await measureProject(bd, project, () => new Date("2026-09-03T00:00:00Z"), gh);
+    expect(calls.some((args) => args.includes("--include-dependents"))).toBe(false);
+    expect(bdBelowFloor(m)).toBe("bd 1.0.4 is older than 1.2+");
+    expect(m.runInfo.ok).toBe(false);
+    expect(m.epicChildren.ok).toBe(false);
+  });
+
+  test("a supported bd reads epic members and the newest comment on claims that have any", async () => {
+    const { bd, gh, calls } = fake("1.2.2", rows);
+    const m = await measureProject(bd, project, () => new Date("2026-09-03T00:00:00Z"), gh);
+    expect(bdBelowFloor(m)).toBeUndefined();
+    expect(m.epicChildren).toEqual({
+      ok: true,
+      data: { ep: [{ id: "ep.1", title: "One", status: "closed" }] },
+    });
+    expect(calls.filter((args) => args[1] === "comments").map((args) => args[2])).toEqual(["w"]);
+    expect(m.latestComment.ok && m.latestComment.data.w).toEqual({
+      ok: true,
+      data: { author: "a", text: "newer", created_at: "2026-09-02T00:00:00Z" },
+    });
   });
 });

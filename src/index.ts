@@ -18,31 +18,37 @@ import { z } from "zod";
 import { BdClient, type BeadsProject, discoverBeadsProjects } from "./bd";
 import {
   composeAttention,
+  composeBacklog,
   composeInspect,
-  composeMomentum,
+  composeInspectNeedsBd,
+  composeLadders,
   composeNoTrackerPulse,
-  composePlan,
-  composePortfolio,
   composePulse,
   composeRecommend,
+  composeShipped,
   composeWip,
   EMPTY_PANEL,
-  fallbackSelectedId,
   recommendNext,
 } from "./board";
 import {
   ALL_KEYS,
   ATTENTION_KEY,
+  BACKLOG_KEY,
   BEADS_SURFACE_ID,
   INSPECT_KEY,
-  MOMENTUM_KEY,
-  PLAN_KEY,
-  PORTFOLIO_KEY,
+  LADDERS_KEY,
   PULSE_KEY,
   RECOMMEND_KEY,
+  SHIPPED_KEY,
   WIP_KEY,
 } from "./keys";
-import { fetchIssue, measureProject, type ProjectMeasurement } from "./measure";
+import {
+  bdBelowFloor,
+  fetchIssue,
+  measureProject,
+  type ProjectMeasurement,
+  readComments,
+} from "./measure";
 import { GhClient } from "./pr";
 import { type SyncReport, syncMergedPRs } from "./sync";
 import { makeBeadsTools } from "./tools";
@@ -69,7 +75,7 @@ const REFRESH_MS = 300_000;
 // Boot-time compose can race project loading; one early re-seed repaints the
 // first frames without waiting a full cadence.
 const SEED_RETRY_MS = 15_000;
-// One bd sweep feeds all seven panels: composers share this cache, and only
+// One bd sweep feeds every panel: composers share this cache, and only
 // refreshAll() (cadence, mutation, scope change) pays for a re-measure —
 // invalidation is event-driven, so the TTL matches the cadence and exists
 // only as a backstop. A short TTL made every selection pay a full serialized
@@ -296,96 +302,78 @@ const rib: Rib = {
     }),
   ),
 
-  // Stable spatial roles in the OPERATOR's order — what's moving and what
-  // needs me first, then the board's own pick, then how far along each
-  // initiative is and what happened lately, then the inspector band and the
-  // Plan grid. Column STACKS (keelson 0.103.0, the peer floor) let each
-  // column's height flow independently of its row siblings: the pick tucks
-  // under Agents at work instead of forcing its own full-width row barrier,
-  // and the one-region Portfolio/Momentum stacks stop stretching to each
-  // other's height. The row break between the two zones keeps the pick
-  // above the portfolio pair in both columns. Columns still cannot stick,
-  // so the inspector never sits beside the (much taller) Plan — selection
-  // opens it in the drawer instead. The rib drives refresh in-process (a
-  // cadence without a workflow binding is inert), so regions declare none.
+  // Three zones in the order a status conversation runs: what is moving,
+  // what is left, what landed. A column entry may be a stack, so Next up and
+  // the epic ladders share one column and a project without epics leaves no
+  // empty column behind. The inspector has no region; selection opens it in
+  // the canvas drawer. The rib drives refresh in-process, so regions declare
+  // no cadence.
   surfaces: [
     {
       id: BEADS_SURFACE_ID,
       title: "Beads",
       heading: "Beads backlog",
-      subtitle: "Measured with bd — what's moving, what needs you, then the inventory.",
+      subtitle: "Measured with bd: what's in flight, what's left, and what shipped.",
       projectScoped: true,
       layout: {
         header: {
           key: PULSE_KEY,
-          title: "Pulse",
+          title: "Overview",
           glyph: { char: "◉", tone: "accent" },
           live: true,
         },
         rows: [
           {
+            zoneTitle: "Doing",
+            columns: [
+              {
+                key: WIP_KEY,
+                title: "In flight",
+                glyph: { char: "◐", tone: "info" },
+                live: true,
+              },
+              {
+                key: ATTENTION_KEY,
+                title: "Needs you",
+                glyph: { char: "●", tone: "warn" },
+                live: true,
+              },
+            ],
+          },
+          {
+            zoneTitle: "To do",
             columns: [
               [
                 {
-                  key: WIP_KEY,
-                  title: "Agents at work",
-                  glyph: { char: "◐", tone: "ok" },
-                  live: true,
-                },
-                {
                   key: RECOMMEND_KEY,
-                  title: "Recommended next",
+                  title: "Next up",
                   glyph: { char: "→", tone: "accent" },
                   live: true,
                 },
-              ],
-              [
                 {
-                  key: ATTENTION_KEY,
-                  title: "Needs a human",
-                  glyph: { char: "●", tone: "error" },
+                  key: LADDERS_KEY,
+                  title: "Epics",
+                  glyph: { char: "▰", tone: "accent" },
                   live: true,
+                  hideWhenEmpty: true,
                 },
               ],
-            ],
-          },
-          {
-            columns: [
-              [
-                {
-                  key: PORTFOLIO_KEY,
-                  title: "Portfolio",
-                  glyph: { char: "▰", tone: "brand" },
-                  live: true,
-                },
-              ],
-              [
-                {
-                  key: MOMENTUM_KEY,
-                  title: "Momentum",
-                  glyph: { char: "✓", tone: "ok" },
-                  live: true,
-                },
-              ],
-            ],
-          },
-          {
-            columns: [
               {
-                key: INSPECT_KEY,
-                title: "Selected bead",
-                glyph: { char: "☰", tone: "neutral" },
+                key: BACKLOG_KEY,
+                title: "Backlog",
+                glyph: { char: "○", tone: "accent" },
                 live: true,
                 collapsible: true,
               },
             ],
           },
           {
+            zoneTitle: "Done",
             columns: [
               {
-                key: PLAN_KEY,
-                title: "Plan",
-                glyph: { char: "▤", tone: "brand" },
+                key: SHIPPED_KEY,
+                title: "Shipped",
+                glyph: { char: "✓", tone: "ok" },
                 live: true,
                 collapsible: true,
               },
@@ -412,30 +400,30 @@ const rib: Rib = {
         "## The surface",
         "",
         "Project-scoped (the host's project picker chooses the backlog) and arranged",
-        "in the operator's order: the Pulse — a proportional flow strip (waiting →",
-        "ready → in progress → in review → done 7d, ordinal ramp tones, the review",
-        "stage derived from linked PRs in bead-work run notes; an unmeasured stage renders as a",
-        "hatched segment, never a zero); an Agents-at-work vs Needs-a-human pair",
-        "(runs and their PRs on the cards; verified merges pending close, reviews",
-        "to merge, dams — blockers grouped",
-        "by what they hold — hand-paused work, stale claims, and epic closeouts in",
-        "the queue); ONE recommended-next bead (leverage first, priority second) with",
-        "its unlock chain named and Inspect / Start actions; a Portfolio of per-epic",
-        "stage-composition meters (done → in review → in progress → ready → waiting,",
-        "the strip's vocabulary at epic scale) beside Momentum — a closed-vs-created",
-        "per-day chart over the fortnight, then the event feed (closes, touches, new",
-        "beads); a Selected-bead inspector band that renders any clicked card's or",
-        "row's description, acceptance criteria, and dependency links (a click also",
-        "opens it in the canvas drawer, so the detail is in view no matter where on",
-        "the page the click landed); and the Plan — the canonical grouped grid of",
-        "everything not finished. Color means state, never priority. Every panel is",
-        "fail-closed: a failed bd query renders UNMEASURED, never empty-but-healthy.",
+        "in three zones. The Overview header says the week in one sentence (shipped,",
+        "in flight, left to do) above the flow strip (waiting → ready → in progress →",
+        "in review → done 7d), and reports a shared cause once: a bd older than 1.2 or",
+        "a gh that fails every PR lookup. Doing holds In flight (every claim with its",
+        "stage — claimed, PR open with draft, CI and review state, merged — and the",
+        "newest comment or run remark) beside Needs you (merged PRs to reconcile,",
+        "reviews to merge, dams grouped by what they hold, hand-paused work, stale",
+        "claims, epic closeouts). To do holds Next up (one leverage-ranked pick with",
+        "its unlock chain, runner-up, and Inspect / Start actions), Epics (one ladder",
+        "per open epic: a stage meter, then the children in dependency order, done",
+        "first), and the Backlog (everything else open, grouped by priority). Done",
+        "holds Shipped: closes this week against last, created this week against",
+        "last, and every close in the fortnight by day with its PR and the first",
+        "sentence of its close reason. Clicking any bead opens the inspector in the",
+        "canvas drawer: facts, dependency links by edge type, description,",
+        "acceptance criteria, and a history timeline (created, claimed, plan, PR,",
+        "comments, closed). Every panel is fail-closed: a failed bd query renders",
+        "UNMEASURED, never empty-but-healthy.",
         "Panels measure linked PRs read-only on a 5-minute cadence using an",
-        "authenticated gh CLI. Failed lookups show UNMEASURED, not a clean slate.",
-        "There is no automatic merge webhook. The confirmed Reconcile merged PRs",
-        "action rechecks and closes eligible beads in the selected project with",
-        "reason Merged via <canonical PR URL>; refresh alone never closes anything.",
-        "Mutations recompose immediately; beads_board_refresh does so on demand.",
+        "authenticated gh CLI. There is no automatic merge webhook. The confirmed",
+        "Reconcile merged PRs action rechecks and closes eligible beads in the",
+        "selected project with reason Merged via <canonical PR URL>; refresh alone",
+        "never closes anything. Mutations recompose immediately;",
+        "beads_board_refresh does so on demand.",
         "",
         "## Tools",
         "",
@@ -503,42 +491,38 @@ const rib: Rib = {
         makePanelComposer((m) => composeAttention(m, { selectedId: selectedBeadId })),
       );
       register(
-        PLAN_KEY,
-        makePanelComposer((m) => composePlan(m, { selectedId: selectedBeadId })),
+        LADDERS_KEY,
+        makePanelComposer((m) => composeLadders(m, { selectedId: selectedBeadId })),
       );
       register(
-        PORTFOLIO_KEY,
-        makePanelComposer((m) => composePortfolio(m, { selectedId: selectedBeadId })),
+        BACKLOG_KEY,
+        makePanelComposer((m) => composeBacklog(m, { selectedId: selectedBeadId })),
       );
       register(
-        MOMENTUM_KEY,
-        makePanelComposer((m) => composeMomentum(m, { selectedId: selectedBeadId })),
+        SHIPPED_KEY,
+        makePanelComposer((m) => composeShipped(m, { selectedId: selectedBeadId })),
       );
       register(INSPECT_KEY, async () => {
         const project = scopedProject();
         if (!project || !bdClient) return composeInspect(undefined, []);
+        if (!selectedBeadId) return composeInspect(undefined, []);
         const m = await getMeasurement(project);
-        // With nothing chosen, rest on the board's own recommendation rather
-        // than an empty panel. `selectedBeadId` stays untouched — it means
-        // "the operator picked this", which is what the selection rings on the
-        // other panels report, and `select-project` clearing it drops straight
-        // through to the new project's pick with no extra bookkeeping.
-        const preselected = !selectedBeadId;
-        const id = selectedBeadId ?? fallbackSelectedId(m);
-        if (!id) return composeInspect(undefined, []);
+        if (bdBelowFloor(m)) return composeInspectNeedsBd(m);
+        const id = selectedBeadId;
         const issue = await fetchIssue(bdClient, project.rootPath, id);
+        const comments =
+          issue.ok && issue.data.comment_count
+            ? await readComments(bdClient, project.rootPath, id)
+            : undefined;
         // The board's current pick rides along: when the inspected bead is
-        // blocked, "Start X instead" must name the same bead the
-        // recommendation panel does.
+        // blocked, "Start X instead" must name the same bead Next up does.
         const rec = m.ready.ok ? recommendNext(m.ready.data).pick : undefined;
-        // An epic's completion row, when the measurement has one: the
-        // inspector turns it into a closeout review instead of a claim button.
         const epicRow = m.epics.ok ? m.epics.data.find((r) => r.epic.id === id) : undefined;
         return composeInspect(issue, m.blocked.ok ? m.blocked.data : [], rec, {
           epicRow,
-          preselected,
           prInfo: m.prInfo,
           projectId: project.id,
+          ...(comments ? { comments } : {}),
         });
       });
 
@@ -596,18 +580,9 @@ const rib: Rib = {
         // just clicked, not the previous frame. Selection is cheap — the
         // measurement cache holds, only bd show runs.
         await snapshots?.recompose(INSPECT_KEY).catch(() => undefined);
-        recomposeKeys([
-          PLAN_KEY,
-          RECOMMEND_KEY,
-          WIP_KEY,
-          ATTENTION_KEY,
-          PORTFOLIO_KEY,
-          MOMENTUM_KEY,
-        ]);
-        // Open the inspector in the canvas drawer: a click deep in the Plan
-        // would otherwise update a panel far off-screen — visible feedback
-        // must not depend on scroll position. The Selected-bead panel keeps
-        // the same frame for when the drawer closes.
+        recomposeKeys(ALL_KEYS.filter((key) => key !== INSPECT_KEY));
+        // The inspector lives only in the canvas drawer, so a click anywhere
+        // on the page shows its detail in view.
         return {
           ok: true as const,
           data: {

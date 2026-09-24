@@ -17,34 +17,42 @@ without a `.beads` tracker gets an honest empty state that lists the projects
 that have one. The scoped board is composed in-process from `bd` output on a
 5-minute cadence:
 
-- KPI pulse — startable / in-progress / waiting on deps / closed this week.
-  Every tile counts a population the rib measured; a failed query renders `?`
-  in an alarm tone rather than borrowing bd's own summary number, which counts
-  a different population under the same word.
-- The ready queue, priority order, epics excluded, work-in-flight subtracted,
-  ranked by `dependent_count` — finishing a high-leverage bead frees the most
-  downstream work, and that outranks raw priority
-- In-progress cards (work already claimed is the most interesting state)
-- Merged PRs awaiting bead closure in Needs attention, linked to the recorded
-  PR with a confirmed **Reconcile merged PRs** action for the selected project
-- The blocked set as the **union** of dependency-blocked (`bd blocked`) and
-  status-blocked (`bd list --status blocked`) — either query alone
-  undercounts, and a manually blocked row says "paused by hand" instead of an
-  empty waits-on
-- Epic completion meters, and an epic whose children have all closed raises a
-  **closeout review** — never an offer to close
-- A recent-closes momentum strip, and stale claims surfaced in Needs attention
-  when nonzero (with an `UNMEASURED` alarm when the query fails, so an absent
-  section can never mean "probably fine")
+three zones in the order a status conversation runs.
 
-**Two channels, deliberately separate.** Lifecycle (open / in progress /
-deferred) is one value carried by the dot and a word; dependency blocking is a
-*condition* that overlays any lifecycle and lives only in the trailing
-**decision rail** alongside the other exceptional signals — `waiting on N`,
-`N downstream`, `bug`, `closeout review`. A bead can be in progress *and*
-waiting, which is why the same bead no longer renders green in one panel and
-red in another. The rail is empty on most beads, and that is the point: a
-signal present on 7% of the backlog must not cost every row a reserved column.
+- **Overview.** One sentence with the week's totals (shipped, in flight, left
+  to do) above the flow strip (waiting → ready → in progress → in review →
+  done 7d). A shared cause reports here once: a `bd` older than 1.2, or a `gh`
+  that fails every PR lookup. Panels that depend on it point at the header
+  instead of alarming separately.
+- **Doing.** *In flight* lists every claim with how far along it is (claimed
+  N ago, PR open with draft, CI and review state, merged and waiting on the
+  close) and its newest comment or run remark. *Needs you* holds merged PRs to
+  reconcile (with a confirmed **Reconcile merged PRs** action), reviews to
+  merge, dams (blockers grouped by what they hold), hand-paused work, stale
+  claims and epic closeouts.
+- **To do.** *Next up* is one pick, ranked by `dependent_count` before
+  priority, with its unlock chain and runner-up. *Epics* draws one ladder per
+  open epic: a stage meter, then the children in the order the edges allow.
+  *Backlog* is everything else open, grouped by priority.
+- **Done.** *Shipped* compares closes and creates this week against last, then
+  lists every close in the fortnight by day with its PR and the first sentence
+  of its close reason.
+
+Clicking any bead opens the inspector in the canvas drawer: facts, dependency
+links by edge type (an epic edge is membership, never "waits on"),
+description, acceptance criteria, and a history of created, claimed, plan, PR,
+comments and closed. A stop the tracker did not record says so.
+
+**One shape per bead.** A bead is a card when it has evidence to show (lane
+dot, title, a meta line led by the id as `bd` prints it, one signal pill, and
+the evidence line) and a row in dense lists (lane dot, title, id and signal on
+the right). The dot is the lane: to do, in flight, done. Waiting, staleness,
+merge drift and P0/P1 are signals, and most beads carry none.
+
+The blocked set is the **union** of dependency-blocked (`bd blocked`) and
+status-blocked (`bd list --status blocked`); either query alone undercounts.
+An epic whose children have all closed raises a **closeout review**, never an
+offer to close.
 
 **Two leverage metrics, never one contested word.** `N downstream` is the
 declared `dependent_count` and does the ranking; `releases N now` is measured
@@ -123,8 +131,11 @@ keelson rib add /path/to/keelson-rib-beads   # or a git URL / npm name
 keelson discovers installed `@keelson/rib-*` packages at boot. Scope
 activation to just this rib with `KEELSON_RIBS=beads` while testing.
 
-Requires the `bd` CLI on PATH (`brew install beads` /
-[steveyegge/beads](https://github.com/steveyegge/beads)).
+Requires the `bd` CLI 1.2 or later on PATH (`brew install beads` /
+[steveyegge/beads](https://github.com/steveyegge/beads)). The board reads
+`bd version` on every sweep; an older `bd` shows as one line in the header.
+Homebrew also carries a separate, older `bd` formula; if both are installed,
+`brew unlink bd && brew link beads` puts the current one on PATH.
 
 ## Design notes
 
