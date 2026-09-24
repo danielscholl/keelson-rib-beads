@@ -10,6 +10,7 @@ import type {
   Rib,
   RibAction,
   RibContext,
+  RibRunEvent,
   RibViewDescriptor,
   SnapshotManager,
 } from "@keelson/shared";
@@ -52,6 +53,7 @@ let seedTimer: ReturnType<typeof setTimeout> | undefined;
 let bdClient: BdClient | undefined;
 let getAllProjects: (() => readonly { id: string; name: string; rootPath: string }[]) | undefined;
 let listBeadsProjects: (() => BeadsProject[]) | undefined;
+const cleanupInFlight = new Map<string, Promise<void>>();
 
 // The surface is projectScoped: the host posts `select-project` with the
 // chosen project id; the panels render THAT backlog. `selectedBeadId` drives
@@ -74,6 +76,117 @@ let measureCache: { scopeId: string; at: number; promise: Promise<ProjectMeasure
 
 const selectProjectPayload = z.object({ scopeId: z.string().min(1).optional() });
 const beadPayload = z.object({ id: z.string().min(1) });
+const runDetailPayload = z.object({
+  data: z.object({
+    runId: z.string(),
+    workflowName: z.string(),
+    status: z.string(),
+    completedAt: z.string().nullable(),
+    projectId: z.string().nullable(),
+    workingDir: z.string().nullable(),
+    nodes: z.array(
+      z.object({
+        nodeId: z.string(),
+        status: z.string(),
+        outputText: z.string().nullable(),
+        startedAt: z.string().nullable(),
+      }),
+    ),
+  }),
+});
+const claimOutput = z.object({ status: z.string(), id: z.string().optional() });
+const cleanupIssue = z.object({
+  id: z.string(),
+  status: z.string(),
+  notes: z.string().nullable().optional(),
+});
+
+function prFromOutput(output: string, nodeId: string): string | undefined {
+  const url = /https?:\/\/[^\s"'<>]+\/pull\/\d+/.exec(output)?.[0];
+  if (url) return url;
+  const number =
+    /\b(?:PR|pull request)\s*(?:number|#|:|=)\s*#?(\d+)\b/i.exec(output)?.[1] ??
+    /\bpr[_-]?number\s*["']?\s*[:=]\s*["']?(\d+)\b/i.exec(output)?.[1] ??
+    (nodeId === "create-pr" ? /"number"\s*:\s*"?(\d+)"?/.exec(output)?.[1] : undefined);
+  return number ? `#${number}` : undefined;
+}
+
+async function cleanupEndedRun(event: RibRunEvent, ctx: RibContext): Promise<void> {
+  const exec = ctx.getExec();
+  const result = await exec.runJSON<unknown>(
+    "keelson",
+    ["workflow", "status", event.runId, "--json"],
+    { timeoutMs: 30_000 },
+  );
+  if (!result.ok) throw new Error(`beads-work ${event.runId}: run detail failed: ${result.error}`);
+  const parsed = runDetailPayload.safeParse(result.data);
+  if (!parsed.success) throw new Error(`beads-work ${event.runId}: invalid workflow run detail`);
+  const run = parsed.data.data;
+  if (
+    run.runId !== event.runId ||
+    run.workflowName !== event.workflowName ||
+    run.status !== event.status ||
+    (event.completedAt && run.completedAt !== event.completedAt)
+  ) {
+    return;
+  }
+  const writeback = run.nodes.find((node) => node.nodeId === "beads-writeback");
+  if (writeback?.startedAt || writeback?.status === "succeeded" || writeback?.status === "failed") {
+    return;
+  }
+
+  const claim = run.nodes.find((node) => node.nodeId === "claim");
+  if (!claim) throw new Error(`beads-work ${event.runId}: claim node missing from run detail`);
+  if (!claim.startedAt) return;
+  const explicitId = event.inputs.bead?.trim();
+  let beadId = explicitId;
+  if (!beadId && claim.outputText) {
+    const output = claimOutput.safeParse(JSON.parse(claim.outputText));
+    if (!output.success) throw new Error(`beads-work ${event.runId}: invalid claim output`);
+    if (output.data.status === "empty") return;
+    beadId = output.data.id;
+  }
+  if (!beadId) throw new Error(`beads-work ${event.runId}: claimed bead ID not recorded`);
+
+  const cwd =
+    (run.projectId &&
+      ctx.getProjects?.().find((project) => project.id === run.projectId)?.rootPath) ||
+    run.workingDir;
+  if (!cwd) throw new Error(`beads-work ${event.runId}: run project directory not recorded`);
+  const bd = bdClient;
+  if (!bd) throw new Error(`beads-work ${event.runId}: bd client not registered`);
+  const shown = await bd.readJSON<unknown>(cwd, ["show", beadId]);
+  if (!shown.ok) throw new Error(`beads-work ${event.runId}: bd show ${beadId}: ${shown.error}`);
+  const issue = cleanupIssue.safeParse(Array.isArray(shown.data) ? shown.data[0] : shown.data);
+  if (!issue.success || issue.data.id !== beadId) {
+    throw new Error(`beads-work ${event.runId}: invalid bd show result for ${beadId}`);
+  }
+  if (issue.data.status !== "in_progress") return;
+
+  const createPrIndex = run.nodes.findIndex((node) => node.nodeId === "create-pr");
+  if (createPrIndex < 0) throw new Error(`beads-work ${event.runId}: create-pr node missing`);
+  const pr = run.nodes
+    .slice(createPrIndex)
+    .flatMap((node) => (node.outputText ? [prFromOutput(node.outputText, node.nodeId)] : []))
+    .find((value) => value !== undefined);
+  const createPr = run.nodes[createPrIndex];
+  const prUnknown = !pr && Boolean(createPr?.startedAt);
+  const disposition = prUnknown
+    ? "PR state unknown; claim retained"
+    : pr
+      ? "claim retained"
+      : "claim released";
+  const marker = `run ${event.runId}; ${event.status}; ended ${event.completedAt ?? "unknown"}`;
+  const note = `bead-work run: PR ${pr ?? (prUnknown ? "unknown" : "none")} — ${event.status} — ${marker}; ${disposition}`;
+  if (issue.data.notes?.split("\n").some((line) => line.includes(marker))) return;
+  const args = ["update", beadId];
+  if (!pr && !prUnknown) args.push("--status", "open", "--assignee", "");
+  args.push("--append-notes", note);
+  const updated = await bd.mutate(cwd, args);
+  if (!updated.ok)
+    throw new Error(`beads-work ${event.runId}: bd update ${beadId}: ${updated.error}`);
+  refreshAll();
+}
 
 function scopedProject(): BeadsProject | undefined {
   if (!scopeId) return undefined;
@@ -377,6 +490,22 @@ const rib: Rib = {
     return makeBeadsToolsBound();
   },
 
+  onRunEvent: async (event: RibRunEvent, ctx: RibContext) => {
+    if (event.workflowName !== "beads-work" || !["cancelled", "failed"].includes(event.status)) {
+      return;
+    }
+    const key = `${event.runId}:${event.status}:${event.completedAt ?? ""}`;
+    const pending = cleanupInFlight.get(key);
+    if (pending) return pending;
+    const task = cleanupEndedRun(event, ctx);
+    cleanupInFlight.set(key, task);
+    try {
+      await task;
+    } finally {
+      if (cleanupInFlight.get(key) === task) cleanupInFlight.delete(key);
+    }
+  },
+
   // Board actions: the host's project chip posts `select-project`; the panels
   // post `select-bead` (inspector) and `claim-bead` (bd update --claim).
   onAction: async (action: RibAction) => {
@@ -462,6 +591,7 @@ const rib: Rib = {
     bdClient = undefined;
     getAllProjects = undefined;
     listBeadsProjects = undefined;
+    cleanupInFlight.clear();
   },
 };
 
