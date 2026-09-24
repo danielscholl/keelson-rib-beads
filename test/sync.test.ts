@@ -155,6 +155,62 @@ describe("confirmed merged PR reconciliation", () => {
     expect(t.writes).toEqual([]);
   });
 
+  test("preview also skips a status changed after the backlog query", async () => {
+    const t = tracker([row("a")], { a: link(1) }, { 1: "MERGED" });
+    let shows = 0;
+    t.setOnShow(() => {
+      if (++shows === 2) t.issues.get("a")!.status = "blocked";
+    });
+    expect((await syncMergedPRs(t.bd, t.gh, project, { confirm: false })).results).toEqual([
+      { id: "a", status: "skipped", reason: "Status changed to blocked" },
+    ]);
+    expect(t.writes).toEqual([]);
+  });
+
+  test("confirmation rereads GitHub rather than trusting an earlier preview", async () => {
+    const states = { 1: "MERGED" };
+    const t = tracker([row("a")], { a: link(1) }, states);
+    expect((await syncMergedPRs(t.bd, t.gh, project, { confirm: false })).results).toEqual([
+      { id: "a", status: "would_close", prUrl: `${url}1`, mergedAt },
+    ]);
+    states[1] = "OPEN";
+    expect((await syncMergedPRs(t.bd, t.gh, project, { confirm: true })).results).toEqual([
+      { id: "a", status: "skipped", reason: "PR is OPEN, not merged" },
+    ]);
+    expect(t.writes).toEqual([]);
+  });
+
+  test("only an epic's own merged PR qualifies; remaining blockers still hold dependents", async () => {
+    const t = tracker(
+      [
+        row("a", "open"),
+        row("b", "open"),
+        row("waiting", "open", { blocked_by: ["a", "b"] }),
+        row("epic", "open", { issue_type: "epic" }),
+        row("blocked", "blocked"),
+        row("deferred", "deferred"),
+      ],
+      { a: link(1), b: link(2), epic: "no run link", blocked: link(3), deferred: link(4) },
+      { 1: "MERGED", 2: "OPEN", 3: "MERGED", 4: "MERGED" },
+    );
+    const report = await syncMergedPRs(t.bd, t.gh, project, { confirm: true });
+    expect(report.results).toContainEqual({
+      id: "b",
+      status: "skipped",
+      reason: "PR is OPEN, not merged",
+    });
+    expect(report.results).toContainEqual({
+      id: "epic",
+      status: "skipped",
+      reason: "No recorded PR",
+    });
+    expect(t.writes).toEqual([["close", "a", "--reason", `Merged via ${url}1`]]);
+    const ready = await t.bd.readJSON<BdIssue[]>("/repo", ["ready"]);
+    expect(ready.ok && ready.data.map((issue) => issue.id)).not.toContain("waiting");
+    expect(t.issues.get("blocked")?.status).toBe("blocked");
+    expect(t.issues.get("deferred")?.status).toBe("deferred");
+  });
+
   test("reports partial write failures and exit-zero without actual closure", async () => {
     const t = tracker(
       [row("a"), row("b")],

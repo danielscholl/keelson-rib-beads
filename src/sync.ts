@@ -72,11 +72,8 @@ export async function syncMergedPRs(
       continue;
     }
     const { url, mergedAt } = pr.data;
-    if (!options.confirm) {
-      results.push({ id: bead.id, status: "would_close", prUrl: url, mergedAt });
-      continue;
-    }
-
+    // A preview should describe what the confirmed path would do now, not
+    // what a stale backlog row suggested before the per-bead read.
     const current = await fetchIssue(bd, cwd, bead.id);
     if (!current.ok) {
       results.push({ id: bead.id, status: "error", reason: current.error });
@@ -94,6 +91,10 @@ export async function syncMergedPRs(
     const currentLink = currentUrl ? canonicalPrUrl(currentUrl) : undefined;
     if (!currentLink?.ok || currentLink.data !== url) {
       results.push({ id: bead.id, status: "skipped", reason: "Recorded PR changed" });
+      continue;
+    }
+    if (!options.confirm) {
+      results.push({ id: bead.id, status: "would_close", prUrl: url, mergedAt });
       continue;
     }
     const close = await bd.mutate(cwd, ["close", bead.id, "--reason", `Merged via ${url}`]);

@@ -81,6 +81,7 @@ describe("GitHub PR evidence", () => {
       body: "",
     },
     { url, state: "MERGED", mergedAt: "2026-09-22T01:02:03Z", body: "**Bead:** `cos-hjf.10`" },
+    { url, state: "MERGED", mergedAt: "2026-09-22T01:02:03Z", body: "**Bead:** " },
     {
       url,
       state: "MERGED",

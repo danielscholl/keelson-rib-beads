@@ -45,7 +45,7 @@ export function canonicalPrUrl(value: string): Measured<string> {
 
 function beadLineError(body: string, beadId: string): string | undefined {
   const lines = [
-    ...body.matchAll(/^\s*(?:[-*]\s*)?(?:\*\*)?Bead\s*(?:\*\*)?\s*:\s*(?:\*\*)?(.+)$/gim),
+    ...body.matchAll(/^\s*(?:[-*]\s*)?(?:\*\*)?Bead\s*(?:\*\*)?\s*:\s*(?:\*\*)?(.*)$/gim),
   ];
   if (lines.length === 0) return undefined;
   const ids = lines.map((match) =>

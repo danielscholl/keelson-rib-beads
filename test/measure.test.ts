@@ -49,7 +49,7 @@ describe("measure helpers", () => {
   });
 });
 
-describe("parseRunNote", () => {
+describe("run notes and project PR measurement", () => {
   // The live convention as bead-work writes it (seen verbatim on tl-9ap).
   const live =
     "bead-work run: PR https://github.com/acme/demo/pull/64 — success — draft PR reviewed and CI green; bead stays claimed until merge";
