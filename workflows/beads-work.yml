@@ -2506,8 +2506,8 @@ nodes:
       if [ "$RUN_STATUS" = "failed" ]; then
         # Release the claim so the queue does not deadlock. NEVER `bd close` —
         # the bead closes when the PR merges, not when this workflow ends.
-        bd update "$BEAD" --status open
-        echo "BEADS_WRITEBACK: claim released (status=open)"
+        bd update "$BEAD" --status open --assignee ""
+        echo "BEADS_WRITEBACK: claim released (status=open, no assignee)"
       else
         echo "BEADS_WRITEBACK: claim retained (in_progress until merge)"
       fi
