@@ -178,6 +178,28 @@ describe("beads-work exceptional cleanup", () => {
     expect(updates[0]).not.toContain("--status");
   });
 
+  test("a failed create-pr with a missing start timestamp still has unknown PR state", async () => {
+    const { event, issue, nodes, ctx } = fixture();
+    nodes[2] = {
+      nodeId: "create-pr",
+      status: "failed",
+      outputText: null,
+      startedAt: null,
+    };
+    await rib.onRunEvent?.(event, ctx);
+    expect(issue.status).toBe("in_progress");
+    expect(issue.notes).toContain("PR state unknown");
+  });
+
+  test("cancellation still releases a claim if writeback started but was interrupted", async () => {
+    const { event, nodes, issue, updates, ctx } = fixture();
+    nodes[3]!.status = "failed";
+    nodes[3]!.startedAt = event.startedAt;
+    await rib.onRunEvent?.(event, ctx);
+    expect(issue).toMatchObject({ status: "open", assignee: "" });
+    expect(updates).toHaveLength(1);
+  });
+
   test("failed before writeback releases; failed after writeback does nothing", async () => {
     const { event, run, nodes, issue, updates, calls, ctx } = fixture();
     event.status = "failed";

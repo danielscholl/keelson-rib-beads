@@ -131,13 +131,16 @@ async function cleanupEndedRun(event: RibRunEvent, ctx: RibContext): Promise<voi
     return;
   }
   const writeback = run.nodes.find((node) => node.nodeId === "beads-writeback");
-  if (writeback?.startedAt || writeback?.status === "succeeded" || writeback?.status === "failed") {
+  if (
+    event.status === "failed" &&
+    (writeback?.startedAt || writeback?.status === "succeeded" || writeback?.status === "failed")
+  ) {
     return;
   }
 
   const claim = run.nodes.find((node) => node.nodeId === "claim");
   if (!claim) throw new Error(`beads-work ${event.runId}: claim node missing from run detail`);
-  if (!claim.startedAt) return;
+  if (!claim.startedAt && claim.status !== "succeeded" && claim.status !== "failed") return;
   const explicitId = event.inputs.bead?.trim();
   let beadId = explicitId;
   if (!beadId && claim.outputText) {
@@ -170,7 +173,11 @@ async function cleanupEndedRun(event: RibRunEvent, ctx: RibContext): Promise<voi
     .flatMap((node) => (node.outputText ? [prFromOutput(node.outputText, node.nodeId)] : []))
     .find((value) => value !== undefined);
   const createPr = run.nodes[createPrIndex];
-  const prUnknown = !pr && Boolean(createPr?.startedAt);
+  const prUnknown =
+    !pr &&
+    (Boolean(createPr?.startedAt) ||
+      createPr?.status === "succeeded" ||
+      createPr?.status === "failed");
   const disposition = prUnknown
     ? "PR state unknown; claim retained"
     : pr
