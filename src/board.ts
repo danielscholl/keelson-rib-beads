@@ -302,7 +302,8 @@ export function unlockChain(
 // Close is a merge-time human act, so between "in progress" and "closed"
 // sits a stage bd cannot name: implemented, PR open, waiting on a human to
 // merge. The evidence is the bead-work note convention, nothing else — a
-// bead with a parsed run note is "in review"; without one it is working.
+// bead with a linked PR is "in review"; unknown and number-only PR notes
+// remain in progress until there is a navigable PR.
 
 // One bead's run note, if its envelope measured. Card-level reads use this;
 // aggregates must go through stageSplit, which refuses partial answers.
@@ -343,7 +344,8 @@ function reconcileAction(projectId: string) {
 }
 
 // Run outcome is historical; only a verified live merge can change this word.
-export function stageChip(_info: BeadRunInfo, pr?: PrInfo): string {
+export function stageChip(info: BeadRunInfo, pr?: PrInfo): string {
+  if (!info.prUrl) return "in progress";
   return pr && isMergedPR(pr) ? "merged — close pending" : "in review";
 }
 
@@ -361,7 +363,7 @@ export function stageSplit(
     const entry = m.runInfo.data[i.id];
     if (!entry) return unmeasured(`no run-note envelope for ${i.id}`);
     if (!entry.ok) return unmeasured(`run note for ${i.id}: ${entry.error}`);
-    (entry.data ? inReview : working).push(i);
+    (entry.data?.prUrl ? inReview : working).push(i);
   }
   return { ok: true, data: { inReview, working } };
 }
@@ -810,9 +812,15 @@ export function composeWip(m: ProjectMeasurement, ctx: PanelContext): Board {
           action: { type: "select-bead", payload: { id: i.id } },
           fields: [
             { value: meta.join(" · ") },
-            ...(info && info.prUrl !== "none" && !prError
-              ? [{ label: "PR", value: prLabel(info.prUrl), href: info.prUrl }]
-              : []),
+            ...(info?.prUrl
+              ? prError
+                ? []
+                : [{ label: "PR", value: prLabel(info.prUrl), href: info.prUrl }]
+              : info?.prState === "number-only"
+                ? [{ label: "PR", value: `#${info.prNumber} (URL unknown)` }]
+                : info?.prState === "unknown"
+                  ? [{ label: "PR", value: "unknown" }]
+                  : []),
             ...(runLine ? [{ value: `run: ${runLine}`.slice(0, 140) }] : []),
             ...(runError
               ? [
@@ -917,13 +925,13 @@ export function composeAttention(m: ProjectMeasurement, ctx: PanelContext): Boar
         .filter((i) => !mergedPR(m.prInfo, i.id))
         .map((i) => {
           const info = runInfoOf(m, i.id);
-          const unknown = Boolean(info && info.prUrl !== "none" && prFailure(m, i.id));
+          const unknown = Boolean(info?.prUrl && prFailure(m, i.id));
           const stage = unknown ? "merge state unknown" : info ? stageChip(info) : "in review";
           return {
             glyph: unknown ? ("warn" as const) : ("info" as const),
             chip: { label: i.id, tone: "neutral" as const },
             text: i.title,
-            ...(info && info.prUrl !== "none" && !unknown ? { href: info.prUrl } : {}),
+            ...(info?.prUrl && !unknown ? { href: info.prUrl } : {}),
             trailing: [stage, daysAgo(i.updated_at, now)].join(" · "),
           };
         }),

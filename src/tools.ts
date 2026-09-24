@@ -276,7 +276,7 @@ export function makeBeadsTools(deps: ToolDeps): ToolDefinition[] {
     {
       name: "beads_update",
       description:
-        "Update a bead (`bd update`): claim it (atomic assignee+in_progress), change status/priority/assignee, or append a note. Release a claim by setting status back to 'open'.",
+        "Update a bead (`bd update`): claim it (atomic assignee+in_progress), change status/priority/assignee, or append a note. An empty assignee clears assignment; release a claim with status 'open' and assignee ''.",
       inputSchema: z.object({
         project: projectArg,
         id: z.string(),
@@ -307,7 +307,7 @@ export function makeBeadsTools(deps: ToolDeps): ToolDefinition[] {
         if (claim) args.push("--claim");
         if (status) args.push("--status", status);
         if (priority !== undefined) args.push("--priority", String(priority));
-        if (assignee) args.push("--assignee", assignee);
+        if (assignee !== undefined) args.push("--assignee", assignee);
         if (appendNotes) args.push("--append-notes", appendNotes);
         if (args.length === 2) {
           emitText(

@@ -128,7 +128,7 @@ describe("run notes and project PR measurement", () => {
       expect(Object.keys(m.runInfo.data)).toHaveLength(14);
       expect(m.runInfo.data["tl-13"]).toEqual({
         ok: true,
-        data: { prUrl: "none", outcome: "failed" },
+        data: { prState: "none", outcome: "failed" },
       });
       expect(m.prInfo.data["tl-13"]).toEqual({ ok: true, data: undefined });
       expect(m.prInfo.data["tl-12"]?.ok).toBe(true);
@@ -148,7 +148,7 @@ describe("run notes and project PR measurement", () => {
         backlog,
         {
           "tl-gh": `bead-work run: PR ${url.replace(/42$/, "43")} — success`,
-          "tl-malformed": "bead-work run: PR not-a-url — success",
+          "tl-malformed": "bead-work run: PR https://example.com/not-a-pr — success",
         },
         ["tl-bad"],
       );
@@ -208,5 +208,32 @@ describe("run notes and project PR measurement", () => {
     expect(parseRunNote("MEASURED 2026-08-08: unrelated audit note.")).toBeUndefined();
     // A typo'd marker is a missed join, deliberately — not a guessed one.
     expect(parseRunNote("beadwork run: PR https://x.dev/p/3")).toBeUndefined();
+  });
+
+  test("keeps unknown and number-only PR notes distinct from linked PRs", () => {
+    expect(parseRunNote("bead-work run: PR unknown — failed — state uncertain")).toEqual({
+      prState: "unknown",
+      outcome: "failed",
+      note: "state uncertain",
+    });
+    expect(parseRunNote("bead-work run: PR #42 — cancelled — claim retained")).toEqual({
+      prState: "number-only",
+      prNumber: "42",
+      outcome: "cancelled",
+      note: "claim retained",
+    });
+    expect(parseRunNote("bead-work run: PR none — failed")).toEqual({
+      prState: "none",
+      outcome: "failed",
+    });
+    expect(parseRunNote("bead-work run: PR garbage — failed")).toBeUndefined();
+  });
+
+  test("the last note controls review status even if an older note had a URL", () => {
+    expect(
+      parseRunNote(
+        "bead-work run: PR https://github.com/acme/demo/pull/9 — success\nbead-work run: PR unknown — failed",
+      ),
+    ).toEqual({ prState: "unknown", outcome: "failed" });
   });
 });

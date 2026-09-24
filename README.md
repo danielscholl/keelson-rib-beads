@@ -85,8 +85,9 @@ and one that does the work:
   chains grouped by blocker, priority drift, epics eligible to close; every
   finding carries the exact `bd` command that would fix it.
 - `beads-work` — takes one bead from the ready queue to a reviewed draft PR:
-  claims it (or the bead id you pass), investigates or plans, pauses for
-  approval, implements in an isolated worktree, runs the project's own checks
+  claims it (or the bead id you pass, refused while any of its `blocks`
+  dependencies is still open), investigates or plans, pauses for approval,
+  implements in an isolated worktree, runs the project's own checks
   (discovered from its manifests), opens a draft PR, runs a three-lens review
   loop with an independent triage judge, waits on CI, and writes the outcome
   back to the bead as a `bead-work run:` note the board reads. The approver's
@@ -98,9 +99,16 @@ and one that does the work:
   audited against the plan and marked UNPLANNED in the PR body and report
   when the plan never named it. The writeback only touches a bead that still
   carries the run's claim; one a human closed or deferred mid-run is left
-  as found. It never closes a bead; a failed run releases the claim, even if
-  a PR was recorded. After merge, run reconciliation or manually use
-  `beads_close`. Judgment nodes pin `gpt-6-astra`,
+  as found. It never closes a bead; a failed run releases the claim to `open`
+  with no assignee, even if a PR was recorded. If a run is cancelled or fails
+  before writeback, the rib releases a still-in-progress bead to `open` with
+  no assignee only when the successful claim recorded its assignee, that
+  assignee still holds the bead, `create-pr` never started, and no PR is
+  recorded. Older runs without a recorded assignee are left untouched. A
+  recorded PR keeps the claim; if PR creation started but no identifier was
+  recorded, the claim stays in place with a note that the PR state is
+  unknown. After merge, run reconciliation or manually use `beads_close`.
+  Judgment nodes pin `gpt-6-astra`,
   edit nodes `gpt-5.6-sol`, review lenses `gpt-5.6-terra` on the Copilot
   provider; elsewhere they resolve through the `deep` tier. Needs `gh`, `jq`,
   and a GitHub remote. Pass `review_bot=false` to skip requesting the Copilot
