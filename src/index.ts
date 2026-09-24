@@ -78,20 +78,22 @@ const selectProjectPayload = z.object({ scopeId: z.string().min(1).optional() })
 const beadPayload = z.object({ id: z.string().min(1) });
 const runDetailPayload = z.object({
   data: z.object({
-    runId: z.string(),
-    workflowName: z.string(),
-    status: z.string(),
-    completedAt: z.string().nullable(),
-    projectId: z.string().nullable(),
-    workingDir: z.string().nullable(),
-    nodes: z.array(
-      z.object({
-        nodeId: z.string(),
-        status: z.string(),
-        outputText: z.string().nullable(),
-        startedAt: z.string().nullable(),
-      }),
-    ),
+    run: z.object({
+      runId: z.string(),
+      workflowName: z.string(),
+      status: z.string(),
+      completedAt: z.string().nullable(),
+      projectId: z.string().nullable(),
+      workingDir: z.string().nullable(),
+      nodes: z.array(
+        z.object({
+          nodeId: z.string(),
+          status: z.string(),
+          outputText: z.string().nullable(),
+          startedAt: z.string().nullable(),
+        }),
+      ),
+    }),
   }),
 });
 const claimOutput = z.object({ status: z.string(), id: z.string().optional() });
@@ -121,7 +123,7 @@ async function cleanupEndedRun(event: RibRunEvent, ctx: RibContext): Promise<voi
   if (!result.ok) throw new Error(`beads-work ${event.runId}: run detail failed: ${result.error}`);
   const parsed = runDetailPayload.safeParse(result.data);
   if (!parsed.success) throw new Error(`beads-work ${event.runId}: invalid workflow run detail`);
-  const run = parsed.data.data;
+  const run = parsed.data.data.run;
   if (
     run.runId !== event.runId ||
     run.workflowName !== event.workflowName ||

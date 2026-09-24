@@ -50,7 +50,7 @@ function fixture() {
   const exec: RibExec = {
     async runJSON<T>(cmd: string, args: string[], opts?: RibExecOptions) {
       calls.push({ cmd, args, cwd: opts?.cwd });
-      if (cmd === "keelson") return { ok: true, data: { data: run } as T };
+      if (cmd === "keelson") return { ok: true, data: { ok: true, data: { run } } as T };
       if (cmd !== "bd") throw new Error(`Unexpected command: ${cmd}`);
       return { ok: true, data: [{ ...issue }] as T };
     },
