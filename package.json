@@ -1,6 +1,6 @@
 {
   "name": "@keelson/rib-beads",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Keelson rib for beads (bd) backlog intelligence: live backlog boards, bd bridged as chat tools, and workflows that drive work from the ready queue.",
   "license": "Apache-2.0",
   "author": "Daniel Scholl",
