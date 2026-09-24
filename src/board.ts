@@ -30,6 +30,7 @@ import type { BdEpicRow, BdIssue, BdLinked, BeadRunInfo, Measured } from "./bd";
 import { unmeasured } from "./bd";
 import type { ProjectMeasurement } from "./measure";
 import { byPriorityThenAge, FLOW_WINDOW_DAYS, RECENT_CLOSE_DAYS, STALE_DAYS } from "./measure";
+import { isMergedPR, type PrInfo } from "./pr";
 
 const ATTENTION_CAP = 8;
 const DAMS_CAP = 5;
@@ -153,6 +154,7 @@ export interface RailContext {
   downstream?: number;
   handPaused?: boolean;
   closeout?: boolean;
+  mergePending?: boolean;
 }
 
 export function decisionRail(i: BdIssue, c: RailContext = {}): string[] {
@@ -165,6 +167,7 @@ export function decisionRail(i: BdIssue, c: RailContext = {}): string[] {
   else if (c.handPaused) rail.push("paused by hand");
   if ((c.downstream ?? 0) > 0) rail.push(`${c.downstream} downstream`);
   if (c.closeout) rail.push("closeout review");
+  if (c.mergePending) rail.push("merged PR · close pending");
   return rail;
 }
 
@@ -309,11 +312,39 @@ export function runInfoOf(m: ProjectMeasurement, id: string): BeadRunInfo | unde
   return entry?.ok ? entry.data : undefined;
 }
 
-// The stage word a run note earns. A merged-ish outcome still counts as
-// review — the bead stays claimed until a human closes it — but the chip
-// says the merge happened so the close-out ask is visible.
-export function stageChip(info: BeadRunInfo): string {
-  return /merg/i.test(info.outcome ?? "") ? "merged — close pending" : "in review";
+function mergedPR(
+  prInfo: ProjectMeasurement["prInfo"] | undefined,
+  id: string,
+): (PrInfo & { state: "MERGED"; mergedAt: string }) | undefined {
+  if (!prInfo?.ok) return undefined;
+  const entry = prInfo.data[id];
+  return entry?.ok && entry.data && isMergedPR(entry.data) ? entry.data : undefined;
+}
+
+function prFailure(m: ProjectMeasurement, id: string): string | undefined {
+  if (!m.prInfo.ok) return m.prInfo.error;
+  const entry = m.prInfo.data[id];
+  return !entry ? `no PR envelope for ${id}` : entry.ok ? undefined : entry.error;
+}
+
+function reconcileAction(projectId: string) {
+  return {
+    type: "sync-merged-beads" as const,
+    label: "Reconcile merged PRs",
+    tone: "brand" as const,
+    payload: { projectId },
+    confirm: {
+      subject: "Merged PRs",
+      title: "Close beads with verified merged PRs?",
+      body: "Rechecks the selected project and closes eligible beads with reason Merged via <canonical PR URL>. Unmerged, changed, and paused beads stay open.",
+      confirmLabel: "Reconcile",
+    },
+  };
+}
+
+// Run outcome is historical; only a verified live merge can change this word.
+export function stageChip(_info: BeadRunInfo, pr?: PrInfo): string {
+  return pr && isMergedPR(pr) ? "merged — close pending" : "in review";
 }
 
 // The in-progress set split by review stage. Ok only when the set AND every
@@ -611,9 +642,10 @@ export function composeRecommend(m: ProjectMeasurement, ctx: PanelContext): Boar
     downstream > 0 || releasesNow > 0
       ? `${downstream} downstream · releases ${releasesNow} now`
       : "nothing waits on it — picked on priority";
+  const mergedPick = mergedPR(m.prInfo, pick.id);
   const fields: { label?: string; value?: string }[] = [
     {
-      value: `ready · ${personOf(pick) ?? "unclaimed"} · P${pick.priority} · ${leverage}`,
+      value: `${mergedPick ? "merged PR · close pending (still ready in bd)" : "ready"} · ${personOf(pick) ?? "unclaimed"} · P${pick.priority} · ${leverage}`,
     },
   ];
   // The chain itself, hop by hop — one arrow per level, names inside a level
@@ -660,18 +692,20 @@ export function composeRecommend(m: ProjectMeasurement, ctx: PanelContext): Boar
               label: "Inspect",
               payload: { id: pick.id },
             },
-            {
-              type: "claim-bead",
-              label: "Start this bead",
-              tone: "brand",
-              payload: { id: pick.id },
-              confirm: {
-                subject: pick.id,
-                title: "Claim this bead?",
-                body: `Runs bd update ${pick.id} --claim: assigns it to you and sets it in progress.`,
-                confirmLabel: "Claim it",
-              },
-            },
+            mergedPick
+              ? reconcileAction(m.project.id)
+              : {
+                  type: "claim-bead",
+                  label: "Start this bead",
+                  tone: "brand",
+                  payload: { id: pick.id },
+                  confirm: {
+                    subject: pick.id,
+                    title: "Claim this bead?",
+                    body: `Runs bd update ${pick.id} --claim: assigns it to you and sets it in progress.`,
+                    confirmLabel: "Claim it",
+                  },
+                },
           ],
           footnote: runnerUp
             ? `runner-up: ${runnerUp.id} — ${clampTitle(runnerUp.title)}`
@@ -741,12 +775,13 @@ export function composeWip(m: ProjectMeasurement, ctx: PanelContext): Board {
               ? undefined
               : entry.error
             : "no run-note envelope for this bead";
+        const prError = prFailure(m, i.id);
         const meta = [
           `P${i.priority}`,
           // The derived stage replaces the flat "in progress" word: a run
           // note means implemented-and-waiting-on-a-human, which is the state
           // close-on-merge otherwise hides.
-          info ? stageChip(info) : "in progress",
+          info ? stageChip(info, mergedPR(m.prInfo, i.id)) : "in progress",
           daysAgo(i.updated_at, now),
           ...(info ? ["bead-work run"] : []),
           // An unassigned bead beside assigned siblings is worth marking; an
@@ -762,6 +797,7 @@ export function composeWip(m: ProjectMeasurement, ctx: PanelContext): Board {
         const rail = decisionRail(i, {
           waitingOn: blockers.get(i.id),
           downstream: declaredDownstream(i, index),
+          mergePending: Boolean(mergedPR(m.prInfo, i.id)),
         });
         const runLine = info ? [info.outcome, info.note].filter(Boolean).join(" — ") : "";
         return {
@@ -774,12 +810,22 @@ export function composeWip(m: ProjectMeasurement, ctx: PanelContext): Board {
           action: { type: "select-bead", payload: { id: i.id } },
           fields: [
             { value: meta.join(" · ") },
-            ...(info ? [{ label: "PR", value: prLabel(info.prUrl), href: info.prUrl }] : []),
+            ...(info && info.prUrl !== "none" && !prError
+              ? [{ label: "PR", value: prLabel(info.prUrl), href: info.prUrl }]
+              : []),
             ...(runLine ? [{ value: `run: ${runLine}`.slice(0, 140) }] : []),
             ...(runError
               ? [
                   {
                     value: `UNMEASURED — run note: ${runError}`.slice(0, 120),
+                    tone: "error" as const,
+                  },
+                ]
+              : []),
+            ...(prError
+              ? [
+                  {
+                    value: `UNMEASURED — PR: ${prError}`.slice(0, 120),
                     tone: "error" as const,
                   },
                 ]
@@ -798,9 +844,8 @@ export function composeWip(m: ProjectMeasurement, ctx: PanelContext): Board {
 // blocked listing this replaces printed the same dam once per held bead —
 // eleven mentions, zero aggregation — so the grouping IS the redesign.
 export function composeAttention(m: ProjectMeasurement, ctx: PanelContext): Board {
-  if (!m.blocked.ok) return failedBoard("the blocked union", m.blocked.error);
   const now = new Date(m.asOf);
-  const blocked = m.blocked.data;
+  const blocked = m.blocked.ok ? m.blocked.data : [];
   const index = backlogIndex(m);
   const readyIds = new Set(m.ready.ok ? m.ready.data.map((i) => i.id) : []);
   const sections: BoardSection[] = [];
@@ -819,25 +864,69 @@ export function composeAttention(m: ProjectMeasurement, ctx: PanelContext): Boar
     ],
   });
 
+  // Merge drift is independent of the blocked query and of note outcome prose.
+  if (!m.prInfo.ok) {
+    sections.push(alarmRow("PR merge state", m.prInfo.error));
+  } else {
+    const drift = m.backlog.ok
+      ? m.backlog.data.flatMap((i) => {
+          const pr = mergedPR(m.prInfo, i.id);
+          return pr && (i.status === "open" || i.status === "in_progress") ? [{ i, pr }] : [];
+        })
+      : [];
+    if (drift.length > 0) {
+      sections.push({
+        kind: "cards",
+        title: "Merged PRs — close pending",
+        items: drift.map(
+          ({ i, pr }): CardItem => ({
+            title: clampTitle(i.title, BAND_TITLE_BUDGET),
+            pill: { label: i.id, tone: "neutral" },
+            dot: "warn",
+            fields: [
+              { label: "PR", value: prLabel(pr.url), href: pr.url },
+              { value: `merged ${pr.mergedAt} · bead still ${i.status}` },
+            ],
+            actions: [
+              { type: "select-bead", label: "Inspect", payload: { id: i.id } },
+              reconcileAction(m.project.id),
+            ],
+          }),
+        ),
+      });
+    }
+    if (!m.backlog.ok) sections.push(alarmRow("merge drift backlog", m.backlog.error));
+    const failures = Object.entries(m.prInfo.data)
+      .filter(([, entry]) => !entry.ok)
+      .map(([id, entry]) => `${id}: ${entry.ok ? "" : entry.error}`);
+    if (failures.length)
+      sections.push(alarmRow("PR merge state for some beads", failures.join("\n")));
+  }
+  if (!m.blocked.ok) sections.push(alarmRow("the blocked union", m.blocked.error));
+
   // (a) Review to merge — the human act only a human can do. The whole row
   // links to the PR: merging happens there, not in the inspector.
   const split = stageSplit(m);
   if (!split.ok) {
     sections.push(alarmRow("review-stage work", split.error));
-  } else if (split.data.inReview.length > 0) {
+  } else if (split.data.inReview.some((i) => !mergedPR(m.prInfo, i.id))) {
     sections.push({
       kind: "rows",
       title: "Review to merge",
-      items: split.data.inReview.map((i) => {
-        const info = runInfoOf(m, i.id);
-        return {
-          glyph: "info" as const,
-          chip: { label: i.id, tone: "neutral" as const },
-          text: i.title,
-          ...(info ? { href: info.prUrl } : {}),
-          trailing: [info ? stageChip(info) : "in review", daysAgo(i.updated_at, now)].join(" · "),
-        };
-      }),
+      items: split.data.inReview
+        .filter((i) => !mergedPR(m.prInfo, i.id))
+        .map((i) => {
+          const info = runInfoOf(m, i.id);
+          return {
+            glyph: "info" as const,
+            chip: { label: i.id, tone: "neutral" as const },
+            text: i.title,
+            ...(info && info.prUrl !== "none" && !prFailure(m, i.id) ? { href: info.prUrl } : {}),
+            trailing: [info ? stageChip(info) : "in review", daysAgo(i.updated_at, now)].join(
+              " · ",
+            ),
+          };
+        }),
     });
   } else if (split.data.working.length > 0) {
     // The predictable location states its emptiness: while claims are still
@@ -1059,6 +1148,7 @@ export function composePlan(m: ProjectMeasurement, ctx: PanelContext): Board {
       downstream: declaredDownstream(i, index),
       handPaused: i.status === "blocked" && (blockers.get(i.id)?.length ?? 0) === 0,
       closeout: epicProgress.get(i.id)?.eligible_for_close,
+      mergePending: Boolean(mergedPR(m.prInfo, i.id)),
     });
   const card = (i: BdIssue, child = false): CardItem => {
     const dot = lifecycleTone(lifecycleOf(i), readyIds.has(i.id));
@@ -1212,6 +1302,8 @@ export interface InspectOptions {
   // The bead arrived from the board's recommendation rather than a click, so
   // the panel says so instead of impersonating a selection.
   preselected?: boolean;
+  prInfo?: ProjectMeasurement["prInfo"];
+  projectId?: string;
 }
 
 export function composeInspect(
@@ -1236,6 +1328,9 @@ export function composeInspect(
   }
   if (!issue.ok) return failedBoard("the selected bead", issue.error);
   const i = issue.data;
+  const merged =
+    i.status === "open" || i.status === "in_progress" ? mergedPR(opts.prInfo, i.id) : undefined;
+  const mergedAlternative = recommended && mergedPR(opts.prInfo, recommended.id);
   const linked = (list: readonly BdLinked[] | null | undefined): string[] =>
     (list ?? []).map((l) => {
       const id = l.id ?? l.depends_on_id ?? l.issue_id ?? "?";
@@ -1281,7 +1376,9 @@ export function composeInspect(
         {
           glyph: "accent",
           chip: { label: "the board's pick", tone: "accent" },
-          text: "Nothing selected yet — this is what the board recommends starting. Click any card to inspect that bead instead.",
+          text: merged
+            ? "Nothing selected yet — this is the board's pick, but its PR has merged. Reconcile it instead of starting it again."
+            : "Nothing selected yet — this is what the board recommends starting. Click any card to inspect that bead instead.",
         },
       ],
     });
@@ -1301,6 +1398,20 @@ export function composeInspect(
       ],
     });
   }
+  if (merged) {
+    left.push({
+      kind: "rows",
+      items: [
+        {
+          glyph: "warn",
+          chip: { label: "merged PR · close pending", tone: "warn" },
+          text: `PR ${merged.url} merged ${merged.mergedAt}; the bead remains ${i.status}. Reconcile after reviewing the recorded link.`,
+          href: merged.url,
+        },
+      ],
+    });
+    if (opts.projectId) left.push({ kind: "actions", items: [reconcileAction(opts.projectId)] });
+  }
   // An epic is structure, never a work item — so the inspector must not offer
   // to start one. Without this an open epic renders the same "Start this bead"
   // claim button as any task, which is the same contract breach the ready
@@ -1314,13 +1425,13 @@ export function composeInspect(
           glyph: p?.eligible_for_close ? "warn" : "neutral",
           chip: { label: "epic", tone: "neutral" },
           text: p?.eligible_for_close
-            ? `All ${p.total_children} children are closed. Review this epic against its own acceptance criteria — closing is a merge-time act with a written reason, and the board will not do it for you.`
+            ? `All ${p.total_children} children are closed. Review this epic against its own acceptance criteria before manual close${merged ? " or reconciling its own linked PR" : ""}.`
             : "An epic is structure, not work — start one of its children instead.",
           ...(p ? { trailing: `${p.closed_children}/${p.total_children} done` } : {}),
         },
       ],
     });
-  } else if (i.status !== "closed" && i.status !== "in_progress") {
+  } else if (!merged && i.status !== "closed" && i.status !== "in_progress") {
     const claim = (id: string, label: string, disabled?: { reason: string }) => ({
       type: "claim-bead",
       label,
@@ -1349,7 +1460,11 @@ export function composeInspect(
                 : "paused by hand",
             }),
             ...(recommended && recommended.id !== i.id
-              ? [claim(recommended.id, `Start ${recommended.id} instead`)]
+              ? mergedAlternative
+                ? opts.projectId
+                  ? [reconcileAction(opts.projectId)]
+                  : []
+                : [claim(recommended.id, `Start ${recommended.id} instead`)]
               : []),
           ]
         : [claim(i.id, "Start this bead")],

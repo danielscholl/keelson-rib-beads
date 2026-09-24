@@ -392,6 +392,8 @@ const rib: Rib = {
         return composeInspect(issue, m.blocked.ok ? m.blocked.data : [], rec, {
           epicRow,
           preselected,
+          prInfo: m.prInfo,
+          projectId: project.id,
         });
       });
 
