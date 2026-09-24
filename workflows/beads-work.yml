@@ -1096,7 +1096,7 @@ nodes:
       5. Check existing PRs: `gh pr list --head "$(git branch --show-current)"`.
          If one exists, capture its number and skip creation.
       6. Otherwise: `gh pr create --draft --base "$(cat $ARTIFACTS_DIR/.default-branch)" --title "<conventional title>" --body-file <path>`.
-         Author the body yourself from the branch diff (`git diff "$(cat $ARTIFACTS_DIR/.base-ref)"...HEAD --stat`
+         Author the body yourself from the branch diff (`git diff "$(cat $ARTIFACTS_DIR/.base-ref 2>/dev/null || cat $ARTIFACTS_DIR/.default-branch)"...HEAD --stat`
          and the hunks that carry the intent) — write it to a file under
          `$ARTIFACTS_DIR` and pass it with `--body-file`, never a bare `$(...)`
          substitution. It must NOT contain a "Generated with Claude Code" footer
@@ -1564,7 +1564,7 @@ nodes:
       $apply-fixes.output
 
       For each must-fix issue, inspect the current code
-      (`git diff "$(cat $ARTIFACTS_DIR/.base-ref)"...HEAD` for the relevant
+      (`git diff "$(cat $ARTIFACTS_DIR/.base-ref 2>/dev/null || cat $ARTIFACTS_DIR/.default-branch)"...HEAD` for the relevant
       files) and confirm it is genuinely resolved and the fix introduced no new
       CRITICAL/HIGH defect. If any issue is still open, or a fix added a new defect,
       fix it now: read, edit, run the narrowest covering check, then
@@ -1599,7 +1599,7 @@ nodes:
         ## Previous iteration of this loop (empty on the first pass)
         $LOOP_PREV_OUTPUT
 
-        Inspect the CURRENT code — `git diff "$(cat $ARTIFACTS_DIR/.base-ref)"...HEAD`
+        Inspect the CURRENT code — `git diff "$(cat $ARTIFACTS_DIR/.base-ref 2>/dev/null || cat $ARTIFACTS_DIR/.default-branch)"...HEAD`
         and the files it touches. For every retained CRITICAL/HIGH finding,
         confirm it is genuinely resolved, and check that the fixes themselves did
         not introduce a new CRITICAL/HIGH defect or leave the repo's own checks
@@ -1960,7 +1960,7 @@ nodes:
       - Otherwise CI failed. For EACH failed check, read its failing logs
         (`forge run view <run-id> --log-failed`, or open the URLs in the CI output)
         and this PR's diff
-        (`git diff "$(cat $ARTIFACTS_DIR/.base-ref)"...HEAD`). Classify each:
+        (`git diff "$(cat $ARTIFACTS_DIR/.base-ref 2>/dev/null || cat $ARTIFACTS_DIR/.default-branch)"...HEAD`). Classify each:
         - ACTIONABLE: caused by code THIS PR changed, or a direct consequence of
           it. Add it to `actionable` with the `file` and the `fix`.
         - UNRELATED: a pre-existing failure, an infra/flake (timeouts, network),
