@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/danielscholl/keelson-rib-beads/compare/v0.2.0...v0.3.0) (2026-10-01)
+
+
+### Added
+
+* **beads:** require a repro on every review finding ([#17](https://github.com/danielscholl/keelson-rib-beads/issues/17)) ([0cc89b1](https://github.com/danielscholl/keelson-rib-beads/commit/0cc89b1c016d423cd4d389db290d3e260abd522c))
+
 ## [0.2.0](https://github.com/danielscholl/keelson-rib-beads/compare/v0.1.0...v0.2.0) (2026-09-24)
 
 
