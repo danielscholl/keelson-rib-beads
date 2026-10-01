@@ -182,6 +182,28 @@ bun run check
 bun dev/link.ts        # symlink into a local keelson checkout (KEELSON_DIR)
 ```
 
+### Evaluating the correctness reviewer
+
+`evals/review/` grades the `review-correctness` lens of `beads-work` against
+twenty seeded diffs over a small fixture service: fifteen carry one
+merge-blocking bug each, five are clean. A bug case passes when a CRITICAL or
+HIGH finding points at the seeded lines; a clean case passes when no CRITICAL or
+HIGH finding reaches the confidence the triage node keeps.
+
+```bash
+bun evals/review/setup.ts /tmp/review-eval            # fixture repo, workflow, case file
+cd /tmp/review-eval/repo
+keelson eval run ../beads-review-lens.eval.yaml --out ../results/before.json
+```
+
+The workflow `setup.ts` writes copies the lens node from
+`workflows/beads-work.yml`, so the eval grades the prompt that ships. Rebuild
+after editing the lens, or pass `--effort <level>` to build a copy with a
+different effort pin, run again with `--out ../results/after.json`, and let
+`keelson eval compare before.json after.json` decide. Each case is a real model
+turn. A running Keelson server does not know the fixture's workflow; point the
+CLI away from it (`KEELSON_SERVER_URL=http://127.0.0.1:9`) to run in-process.
+
 ## License
 
 Apache-2.0
