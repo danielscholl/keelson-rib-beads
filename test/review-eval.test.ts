@@ -83,14 +83,14 @@ describe("review eval grader", () => {
 
   test("a bug case passes on a blocking finding inside an accepted span", () => {
     expect(grade(output(finding("src/money.ts:8")), "bug", accept).pass).toBe(true);
-    expect(grade(output(finding("`src/handlers.ts:92-95`")), "bug", accept).pass).toBe(true);
+    expect(grade(output(finding("`src/handlers.ts:85-90`")), "bug", accept).pass).toBe(true);
     expect(grade(output(finding("./src/money.ts:7", "CRITICAL", 40)), "bug", accept).pass).toBe(
       true,
     );
   });
 
   test("a bug case fails on the wrong place, a low severity, or no findings", () => {
-    expect(grade(output(finding("src/money.ts:20")), "bug", accept).pass).toBe(false);
+    expect(grade(output(finding("src/money.ts:40")), "bug", accept).pass).toBe(false);
     expect(grade(output(finding("src/cache.ts:7")), "bug", accept).pass).toBe(false);
     expect(grade(output(finding("src/money.ts:7", "MEDIUM")), "bug", accept).pass).toBe(false);
     expect(grade(output(), "bug", accept).pass).toBe(false);

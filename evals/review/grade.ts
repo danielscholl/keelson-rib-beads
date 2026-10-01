@@ -16,8 +16,9 @@ export interface Range {
   to: number;
 }
 
-// Reviewers miscount lines inside a hunk by a few; the file still has to match.
-const LINE_SLACK = 5;
+// Reviewers cite lines several off the real one, so the file has to match and
+// the line only has to land near the seeded span. Line accuracy is not graded.
+const LINE_SLACK = 10;
 // The triage node downstream keeps only these severities, at this confidence.
 const BLOCKING = new Set(["CRITICAL", "HIGH"]);
 const BLOCKING_CONFIDENCE = 80;

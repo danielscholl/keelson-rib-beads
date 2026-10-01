@@ -260,30 +260,30 @@ export const CASES: ReviewCase[] = [
     accept: [{ file: "src/money.ts", needle: "Math.round((total * w) / sum)" }],
   },
   {
-    id: "cache-ttl-units",
+    id: "session-ttl-units",
     split: "train",
     kind: "bug",
-    subject: "feat: configure the summary cache TTL in seconds",
+    subject: "feat: configure the session lifetime in seconds",
     edits: [
       {
         file: "src/config.ts",
-        find: "  cacheTtlMs: number;",
-        replace: "  cacheTtlSeconds: number;",
+        find: "  sessionTtlMs: number;",
+        replace: "  sessionTtlSeconds: number;",
       },
       {
         file: "src/config.ts",
-        find: "    cacheTtlMs: int(env.CACHE_TTL_MS, 5000),",
-        replace: "    cacheTtlSeconds: int(env.CACHE_TTL_SECONDS, 5),",
+        find: "    sessionTtlMs: int(env.SESSION_TTL_MS, 30 * 60 * 1000),",
+        replace: "    sessionTtlSeconds: int(env.SESSION_TTL_SECONDS, 30 * 60),",
       },
       {
         file: "src/app.ts",
-        find: "new TtlCache<Summary>(config.cacheTtlMs)",
-        replace: "new TtlCache<Summary>(config.cacheTtlSeconds)",
+        find: "new Sessions(config.sessionTtlMs)",
+        replace: "new Sessions(config.sessionTtlSeconds)",
       },
     ],
     accept: [
-      { file: "src/app.ts", needle: "new TtlCache<Summary>(config.cacheTtlSeconds)" },
-      { file: "src/config.ts", needle: "cacheTtlSeconds: int(" },
+      { file: "src/app.ts", needle: "new Sessions(config.sessionTtlSeconds)" },
+      { file: "src/config.ts", needle: "sessionTtlSeconds: int(" },
     ],
   },
   {
