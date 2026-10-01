@@ -1,7 +1,9 @@
 // Builds the review-lens eval into a scratch directory:
 //
-//   bun evals/review/setup.ts <dir> [--effort <level>]
-//   cd <dir>/repo && keelson eval run ../beads-review-lens.eval.yaml --out ../results/baseline.json
+//   bun evals/review/setup.ts <dir> [--effort <level>] [--model <class or id>]
+//   cd <dir>/repo
+//   export KEELSON_WORKFLOWS_DIR=$PWD/.keelson/workflows KEELSON_SERVER_URL=http://127.0.0.1:9
+//   keelson eval run ../beads-review-lens.eval.yaml --out ../results/baseline.json
 //
 // <dir>/repo is a git repository with the fixture on `main` and one branch per
 // case; its .keelson/workflows/ holds a workflow whose lens node is copied
@@ -19,6 +21,8 @@ export const WORKFLOW_NAME = "beads-review-lens";
 
 export interface SetupOptions {
   effort?: string;
+  // A model class or id for the lens, replacing its per-provider pins.
+  model?: string;
 }
 
 function git(repo: string, ...args: string[]): string {
@@ -95,6 +99,7 @@ export function buildWorkflow(opts: SetupOptions = {}): Record<string, unknown> 
         ...lens,
         depends_on: ["capture-diff"],
         ...(opts.effort !== undefined ? { effort: opts.effort } : {}),
+        ...(opts.model !== undefined ? { model: opts.model, model_by_provider: undefined } : {}),
       },
     ],
   };
@@ -161,16 +166,22 @@ export function setup(dir: string, opts: SetupOptions = {}): { repo: string; cas
 
 if (import.meta.main) {
   const args = process.argv.slice(2);
-  const effortAt = args.indexOf("--effort");
-  const effort = effortAt >= 0 ? args[effortAt + 1] : undefined;
-  const dir = args.find((arg, i) => !arg.startsWith("--") && (effortAt < 0 || i !== effortAt + 1));
-  if (!dir || (effortAt >= 0 && !effort)) {
-    console.error("usage: bun evals/review/setup.ts <dir> [--effort <level>]");
+  const flags: Record<string, string> = {};
+  let dir: string | undefined;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i] as string;
+    if (arg === "--effort" || arg === "--model") flags[arg.slice(2)] = args[++i] ?? "";
+    else dir = arg;
+  }
+  if (!dir || Object.values(flags).some((value) => value === "")) {
+    console.error(
+      "usage: bun evals/review/setup.ts <dir> [--effort <level>] [--model <class or id>]",
+    );
     process.exit(2);
   }
-  const out = setup(dir, effort !== undefined ? { effort } : {});
+  const out = setup(dir, flags);
   console.log(`fixture: ${out.repo}\ncases:   ${out.caseFile}`);
   console.log(
-    `run:     cd ${out.repo} && keelson eval run ../${WORKFLOW_NAME}.eval.yaml --out ../results/<label>.json`,
+    `run:     cd ${out.repo} && KEELSON_WORKFLOWS_DIR=${out.repo}/.keelson/workflows KEELSON_SERVER_URL=http://127.0.0.1:9 keelson eval run ../${WORKFLOW_NAME}.eval.yaml --out ../results/<label>.json`,
   );
 }
