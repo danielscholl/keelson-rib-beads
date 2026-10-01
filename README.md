@@ -116,6 +116,10 @@ and one that does the work:
   recorded PR keeps the claim; if PR creation started but no identifier was
   recorded, the claim stays in place with a note that the PR state is
   unknown. After merge, run reconciliation or manually use `beads_close`.
+  Every review finding carries a `repro` (the command or input that shows
+  the problem, which the triage judge traces before anything else), and the
+  prompts use keelson's shared directives (`$DIRECTIVES.verify`, `review`,
+  `confirm`), so this workflow needs keelson 0.113.0 or later.
   Judgment nodes pin `gpt-6-astra`,
   edit nodes `gpt-5.6-sol`, review lenses `gpt-5.6-terra` on the Copilot
   provider; elsewhere they resolve through the `deep` tier. Needs `gh`, `jq`,

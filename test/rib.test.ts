@@ -335,3 +335,54 @@ describe("beads-work CI fixer gating", () => {
     expect(finalize?.depends_on).toEqual(["scrub-trailers-final"]);
   });
 });
+
+describe("beads-work review findings carry a repro", () => {
+  type ListContract = { items?: { required?: string[] } };
+  type Contract = { properties?: Record<string, ListContract> };
+  type Node = {
+    id: string;
+    prompt?: string;
+    output_format?: Contract;
+    output_schema?: Contract;
+  };
+
+  async function loadNodes(): Promise<Map<string, Node>> {
+    const yaml = await Bun.file(new URL("../workflows/beads-work.yml", import.meta.url)).text();
+    const workflow = Bun.YAML.parse(yaml) as { nodes: Node[] };
+    return new Map(workflow.nodes.map((n) => [n.id, n]));
+  }
+
+  function itemRequired(contract: Contract | undefined, list: string): string[] {
+    const required = contract?.properties?.[list]?.items?.required;
+    if (!required) throw new Error(`${list} items declare no required list`);
+    return required;
+  }
+
+  test("each review lens requires repro beside fix in both contracts", async () => {
+    const nodes = await loadNodes();
+    for (const [id, remedy] of [
+      ["review-correctness", "fix"],
+      ["review-conventions", "fix"],
+      ["review-coverage", "test"],
+    ] as const) {
+      const node = nodes.get(id);
+      const format = itemRequired(node?.output_format, "findings");
+      const schema = itemRequired(node?.output_schema, "findings");
+      expect(format).toEqual(schema);
+      expect(format.indexOf("repro")).toBe(format.indexOf(remedy) + 1);
+      expect(node?.prompt).toContain("`repro`");
+      expect(node?.prompt).toContain("$DIRECTIVES.review");
+    }
+  });
+
+  test("the judges carry repro into what the fixers receive", async () => {
+    const nodes = await loadNodes();
+    const mustFix = itemRequired(nodes.get("triage")?.output_format, "must_fix");
+    expect(mustFix.indexOf("repro")).toBe(mustFix.indexOf("fix") + 1);
+    const actionable = itemRequired(nodes.get("triage-ci")?.output_format, "actionable");
+    expect(actionable.indexOf("repro")).toBe(actionable.indexOf("fix") + 1);
+    for (const id of ["triage", "triage-ci", "apply-fixes", "fix-ci", "re-review", "report"]) {
+      expect(nodes.get(id)?.prompt).toContain("repro");
+    }
+  });
+});
