@@ -82,7 +82,8 @@ let dataDir: string | undefined;
 const cleanupInFlight = new Map<string, Promise<void>>();
 
 // The rib owns its scope: the tracker strip posts `select-project` with a
-// beads project id, the choice persists across restarts, and with none saved
+// beads project id, the choice persists across restarts and is shared by every
+// viewer (actions carry no viewer identity), and with none saved
 // the first tracker by name is shown. `selectedBeadId` drives the inspector
 // and resets on scope change.
 let scopeId: string | undefined;
@@ -590,6 +591,8 @@ const rib: Rib = {
         "",
         "A tracker strip on top lists every registered project with a .beads",
         "tracker and its counts; a click switches the board and the choice persists.",
+        "The choice is the server's: every open Beads board shows the same tracker,",
+        "so a click in one tab switches the others.",
         "A first sweep fills a progress meter; a project seen before paints from its",
         "last sweep and refreshes in place. The Overview's flow strip (waiting → ready →",
         "in progress → in review → done 7d) carries the totals, leaves out empty lanes,",
