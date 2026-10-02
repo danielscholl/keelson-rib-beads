@@ -12,8 +12,8 @@ the data.
 ## What it contributes
 
 **A surface.** The *Beads* nav tab opens on a tracker strip: one tile per
-registered project that carries a `.beads` tracker, each with its in flight,
-open and closed counts. A click switches the board, and the choice is
+registered project that carries a `.beads` tracker, each with its ready,
+in flight, open and closed counts. A click switches the board, and the choice is
 remembered across restarts. The strip is the rib's own, so picking a backlog
 never moves Chat's active project, and projects without a tracker never
 appear. The selected board is composed in-process from `bd` output on a

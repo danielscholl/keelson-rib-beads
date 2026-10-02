@@ -1893,10 +1893,16 @@ function tileCounts(summary: Measured<BdSummary> | undefined): NonNullable<CardI
   if (!summary) return [{ value: "counting…" }];
   if (!summary.ok) return [{ value: "UNMEASURED", tone: "error" }];
   const s = summary.data;
+  // One field per count, so a narrow tile wraps between phrases. Ready leads
+  // because it is the count an operator acts on.
   return [
     {
-      value: `${s.in_progress_issues} in flight · ${s.open_issues} open · ${s.closed_issues} closed`,
+      value: `${s.ready_issues} ready`,
+      ...(s.ready_issues > 0 ? { tone: "accent" as const } : {}),
     },
+    { value: `${s.in_progress_issues} in flight` },
+    { value: `${s.open_issues} open` },
+    { value: `${s.closed_issues} closed` },
   ];
 }
 
