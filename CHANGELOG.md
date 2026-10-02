@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.7.1](https://github.com/danielscholl/keelson-rib-beads/compare/v0.7.0...v0.7.1) (2026-10-02)
+
+
+### Fixed
+
+* **ci:** trust only Dependabot's own runs when pushing a regenerated lockfile ([#45](https://github.com/danielscholl/keelson-rib-beads/issues/45)) ([e6d34bb](https://github.com/danielscholl/keelson-rib-beads/commit/e6d34bba17916b9e5a211a19b019b7eaae420c48))
+
+
+### Miscellaneous
+
+* **beads:** release 0.7.1 ([#43](https://github.com/danielscholl/keelson-rib-beads/issues/43)) ([7578a55](https://github.com/danielscholl/keelson-rib-beads/commit/7578a55c04b7b9572800bde2ec1d6e6aae0a0e87))
+
 ## [0.7.0](https://github.com/danielscholl/keelson-rib-beads/compare/v0.6.0...v0.7.0) (2026-10-02)
 
 
