@@ -61,11 +61,13 @@ Below the Overview come three zones in the order the operator acts.
 
 Clicking any bead opens the inspector in a drawer docked to the right, so
 the board stays in view and the next click swaps the bead in place (keelson
-0.115.0 or later): facts, dependency
-links by edge type (an epic edge is membership, never "waits on"),
-description, acceptance criteria one per row, and a history of created,
-claimed, plan, PR, comments and closed. A linked bead opens in the same
-drawer, so a chain can be walked. A stop the tracker did not record says so.
+0.115.0 or later). It leads with the bead's title over one line of facts
+(id, status, priority, owner, type), then dependency links by edge type (an
+epic edge is membership, never "waits on"), description, acceptance criteria
+one per row, and a history of created, claimed, plan, PR, comments and
+closed. A blocked bead offers only the pick to start instead. A linked bead
+opens in the same drawer, so a chain can be walked. A stop the tracker did
+not record says so.
 
 **One shape per bead.** A bead is a card when it has evidence to show (lane
 dot, title, a meta line led by the id as `bd` prints it, one signal pill, and
