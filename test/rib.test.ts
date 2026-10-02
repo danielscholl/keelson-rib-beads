@@ -314,7 +314,7 @@ describe("project switch", () => {
         if (!JSON.stringify(frames.get(PULSE_KEY)).includes("Measuring")) break;
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
-      expect(JSON.stringify(frames.get(PULSE_KEY))).toContain("in flight");
+      expect(JSON.stringify(frames.get(PULSE_KEY))).toContain("Done 7d");
       expect(JSON.stringify(frames.get(WIP_KEY))).not.toContain("Measuring");
     } finally {
       release();

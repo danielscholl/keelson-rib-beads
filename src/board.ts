@@ -8,9 +8,9 @@
 
 // The Beads surface reads in the order the operator acts: the tracker strip,
 // the Overview, Now (In flight, Next up, Your calls), then the epic wave map
-// (map.ts), then Backlog and Shipped. A header sentence says the totals once in words above the flow
-// strip, and reports a shared cause (an old bd, a failing gh) once instead of
-// letting every panel alarm on its own.
+// (map.ts), then Backlog and Shipped. The Overview's flow strip says the
+// totals once, and reports a shared cause (an old bd, a failing gh) once
+// instead of letting every panel alarm on its own.
 //
 // Every bead renders in one shape. A card when there is evidence to show:
 // lane dot, full title, a meta line that leads with the id as bd prints it,
@@ -514,6 +514,12 @@ function stamp(iso: string | undefined): string {
   return `${MONTHS[d.getUTCMonth()] ?? "?"} ${d.getUTCDate()} ${hh}:${mm}Z`;
 }
 
+// The host's own wall clock: keelson runs on the operator's machine, so its
+// zone is the reader's.
+export function localClock(iso: string): string {
+  return new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+}
+
 function clock(iso: string | undefined): string {
   return stamp(iso).split(" ").pop() ?? "";
 }
@@ -642,8 +648,8 @@ function staleDaysOf(m: ProjectMeasurement, i: BdIssue, now: Date): number | und
   return Math.max(STALE_DAYS, Math.floor((now.getTime() - new Date(at).getTime()) / 86_400_000));
 }
 
-// ── Header: one sentence with the week's totals, the flow strip, and the
-// preflight, so one cause reads as one line.
+// ── Header: the flow strip with the week's totals, and the preflight, so
+// one cause reads as one line.
 export function composePulse(m: ProjectMeasurement, refreshing?: SweepProgress): Board {
   const floor = bdBelowFloor(m);
   const split = stageSplit(m);
@@ -671,10 +677,9 @@ export function composePulse(m: ProjectMeasurement, refreshing?: SweepProgress):
       tone: STAGE_TONE.done,
     },
   ];
-  const count = (x: Measured<unknown[]>): string => (x.ok ? String(x.data.length) : "?");
-  // The sentence reads the same populations the strip draws, in the order
-  // the operator acts on them.
-  const sentence = `${count(m.inProgress)} in flight · ${count(m.ready)} ready to start · ${waiting ?? "?"} waiting · ${count(m.recentlyClosed)} shipped this week`;
+  // An empty lane draws nothing and only crowds the legend; an unmeasured
+  // one (n: null) always stays so its hatch shows.
+  const lanes = segments.some((s) => s.n !== 0) ? segments.filter((s) => s.n !== 0) : segments;
 
   const preflight: RowItem[] = [];
   if (floor && m.bd.ok && m.bd.data) {
@@ -745,11 +750,11 @@ export function composePulse(m: ProjectMeasurement, refreshing?: SweepProgress):
     gh.label,
     refreshing
       ? `refreshing · ${refreshing.done} of ${refreshing.total}`
-      : `measured ${m.asOf.slice(11, 16)}Z`,
+      : `measured ${localClock(m.asOf)}`,
   ].filter(Boolean);
   return board(
     [
-      { kind: "segments", title: sentence, items: segments },
+      { kind: "segments", items: lanes },
       ...(preflight.length ? [{ kind: "rows" as const, items: preflight }] : []),
       ...(drift.length
         ? [
