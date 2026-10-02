@@ -9,25 +9,30 @@ import {
   composeBacklog,
   composeInspect,
   composeInspectNeedsBd,
-  composeLadders,
   composeNoTrackerPulse,
   composePulse,
   composeRecommend,
+  composeSelected,
   composeShipped,
   composeWip,
+  criteriaItems,
   damGroups,
   declaredDownstream,
   epicGate,
+  epicNodes,
+  epicViews,
   firstSentence,
   flightStage,
-  ladderOrder,
   lifecycleOf,
   lifecycleTone,
+  parentIdOf,
   prLabel,
   recommendNext,
   shippedPR,
+  shortId,
   shortPerson,
   signalOf,
+  stageBar,
   stageChip,
   stageSplit,
   unlockChain,
@@ -277,9 +282,9 @@ describe("header", () => {
     expect(() => validBoard(pulse)).not.toThrow();
     const strip = pulse.sections[0];
     if (strip?.kind !== "segments") throw new Error("no strip");
-    // 1 closed this week, 1 claimed, and tl-f.1 (deferred) plus the epic are
-    // not counted as left to do.
-    expect(strip.title).toBe("This week: 1 shipped · 1 in flight · 1 left to do");
+    // The sentence reads the strip's own populations: 1 claimed, 2 ready,
+    // 3 blocked and unclaimed, 1 closed this week.
+    expect(strip.title).toBe("1 in flight · 2 ready to start · 3 waiting · 1 shipped this week");
     expect(pulse.header?.chip).toBe("bd 1.2.2 · measured 12:00Z");
     expect(pulse.header?.status?.tone).toBe("ok");
   });
@@ -307,7 +312,7 @@ describe("header", () => {
     expect(flat).toContain("bd 1.0.4 is on PATH and the board needs 1.2+");
     expect(flat).not.toContain("Hatched segments");
     expect(pulse.header?.status?.tone).toBe("error");
-    for (const view of [composeAttention(m, {}), composeLadders(m, {}), composeWip(m, {})]) {
+    for (const view of [composeAttention(m, {}), composeWip(m, {})]) {
       expect(() => validBoard(view)).not.toThrow();
       const rows = JSON.stringify(view);
       expect(rows).toContain("needs bd 1.2+. See the header.");
@@ -421,6 +426,14 @@ describe("In flight", () => {
     expect(card?.reason).toEqual({ label: "dan · 1h ago", text: "Starfield done." });
   });
 
+  test("a claim under a minute old reads without a doubled ago", () => {
+    const now = new Date("2026-08-09T12:00:20Z");
+    const fresh = { id: "tl-a", title: "x", status: "in_progress", priority: 2 };
+    expect(
+      flightStage({ ...fresh, started_at: "2026-08-09T12:00:00Z" }, undefined, undefined, now),
+    ).toBe("claimed just now");
+  });
+
   test("a claim older than started_at says its time was not recorded", () => {
     const m = fullMeasurement();
     const cards = composeWip(m, {}).sections[0];
@@ -490,14 +503,16 @@ describe("In flight", () => {
 });
 
 describe("Needs you", () => {
-  test("dams stay rows with comparable meters and open the inspector", () => {
-    const att = composeAttention(fullMeasurement(), {});
+  test("a dam is sequencing, not an action, so it never lists here", () => {
+    const m = fullMeasurement();
+    m.blocked = ok([
+      { id: "tl-d", title: "Dep blocked", status: "open", priority: 1, blocked_by: ["tl-b"] },
+    ]);
+    m.epics = ok([]);
+    const att = composeAttention(m, {});
     expect(() => validBoard(att)).not.toThrow();
-    const dams = att.sections.find((s) => s.kind === "rows" && s.title?.startsWith("Dams"));
-    if (dams?.kind !== "rows") throw new Error("no dams");
-    expect(dams.items[0]?.trailing).toBe("tl-b · holds 1 · 2 transitive · startable");
-    expect(dams.items[0]?.bar).toEqual({ value: 1, total: 1 });
-    expect(dams.items[0]?.action?.type).toBe("select-bead");
+    expect(JSON.stringify(att)).not.toContain("Dams");
+    expect(JSON.stringify(att)).toContain("Nothing needs you");
   });
 
   test("hand-paused work, stale claims and closeouts are bead cards with one signal", () => {
@@ -542,8 +557,19 @@ describe("Needs you", () => {
     const m = fullMeasurement();
     m.blocked = ok([]);
     m.epics = ok([]);
-    const flat = JSON.stringify(composeAttention(m, {}));
-    expect(flat).toContain("Nothing needs you");
+    const att = composeAttention(m, {});
+    expect(() => validBoard(att)).not.toThrow();
+    expect(JSON.stringify(att)).toContain("Nothing needs you");
+    // The empty state names the checks that ran, each with its zero.
+    const checks = att.sections[1];
+    if (checks?.kind !== "rows") throw new Error("no checks");
+    expect(checks.items.map((r) => [r.text, r.trailing])).toEqual([
+      ["Merged PRs to reconcile", "0"],
+      ["Reviews to merge", "0"],
+      ["Paused by hand", "0"],
+      ["Stale claims", "0"],
+      ["Epic closeouts", "0"],
+    ]);
   });
 });
 
@@ -575,64 +601,86 @@ describe("Epics", () => {
     return m;
   }
 
-  test("the ladder lists done, in flight, the pick, then what waits", () => {
-    const view = composeLadders(epicBoard(), {});
-    expect(() => validBoard(view)).not.toThrow();
-    const [head, rungs] = view.sections;
-    if (head?.kind !== "cards" || rungs?.kind !== "rows") throw new Error("wrong shapes");
-    expect(head.items[0]?.fields?.[0]?.value).toBe("cx · 2 of 5 done · 1 in flight");
-    expect(rungs.items.map((r) => r.trailing)).toEqual([
-      "cx.1 · done",
-      "cx.2 · done",
-      "cx.3 · in flight",
-      "cx.4 · ready · next up",
-      "cx.5 · waits on cx.4",
+  test("the view sorts members into waves and lanes, the pick marked", () => {
+    const [view] = epicViews(epicBoard());
+    if (!view) throw new Error("no epic view");
+    expect(view.done.map((c) => c.id)).toEqual(["cx.1", "cx.2"]);
+    expect(view.nodes.map((n) => [n.member.id, n.wave, n.lane])).toEqual([
+      ["cx.3", 0, "working"],
+      ["cx.4", 0, "ready"],
+      ["cx.5", 1, "waiting"],
     ]);
-    expect(rungs.items.map((r) => r.glyph)).toEqual(["ok", "ok", "info", "accent", "accent"]);
+    expect(view.nodes.find((n) => n.member.id === "cx.4")?.pick).toBe(true);
+    expect(view.nodes.find((n) => n.member.id === "cx.5")?.deps).toEqual(["cx.4"]);
+    expect(view.counts).toEqual({ review: 0, working: 1, ready: 1, waiting: 1 });
   });
 
-  test("a long run of done children folds into one row", () => {
-    const m = epicBoard();
-    const members = Array.from({ length: 6 }, (_, i) => ({
-      id: `cx.${i + 10}`,
-      title: `Done ${i}`,
-      status: "closed",
-    }));
-    m.epicChildren = ok({ cx: members });
-    const rungs = composeLadders(m, {}).sections[1];
-    if (rungs?.kind !== "rows") throw new Error("no rungs");
-    expect(rungs.items).toHaveLength(1);
-    expect(rungs.items[0]?.text).toBe("6 done");
-  });
-
-  test("ladderOrder puts deeper waits later", () => {
-    const members = [
-      { id: "c", title: "c", status: "open" },
-      { id: "b", title: "b", status: "open" },
-      { id: "a", title: "a", status: "open" },
-    ];
-    const edges = new Map<string, readonly string[]>([
-      ["c", ["b"]],
+  test("a wave is one more than the deepest open blocker; a cycle terminates", () => {
+    const members = ["a", "b", "c", "d"].map((id) => ({ id, title: id, status: "open" }));
+    const lanes = { readyIds: new Set(["a"]), reviewIds: new Set<string>() };
+    const chain = new Map<string, readonly string[]>([
+      ["c", ["b", "a"]],
+      ["b", ["a"]],
+      ["d", ["outside-1"]],
+    ]);
+    const nodes = epicNodes("e", members, chain, lanes);
+    expect(nodes.map((n) => [n.member.id, n.wave])).toEqual([
+      ["a", 0],
+      ["b", 1],
+      ["d", 1],
+      ["c", 2],
+    ]);
+    // An outside blocker has no column to sit in, so the bead names it.
+    expect(nodes.find((n) => n.member.id === "d")?.external).toEqual(["outside-1"]);
+    const cycle = new Map<string, readonly string[]>([
+      ["a", ["b"]],
       ["b", ["a"]],
     ]);
-    expect(ladderOrder(members, edges).map((c) => c.id)).toEqual(["a", "b", "c"]);
+    expect(() => epicNodes("e", members.slice(0, 2), cycle, lanes)).not.toThrow();
   });
 
-  test("no open epics hides the panel; unmeasured epics alarm", () => {
+  test("a closed blocker and the epic edge never hold a member back", () => {
+    const members = [
+      { id: "e.1", title: "one", status: "closed" },
+      { id: "e.2", title: "two", status: "open" },
+      { id: "e.3", title: "three", status: "blocked" },
+    ];
+    const edges = new Map<string, readonly string[]>([["e.2", ["e", "e.1"]]]);
+    const nodes = epicNodes("e", members, edges, {
+      readyIds: new Set(["e.2"]),
+      reviewIds: new Set<string>(),
+    });
+    expect(nodes.map((n) => [n.member.id, n.wave, n.lane, n.handPaused])).toEqual([
+      ["e.2", 0, "ready", false],
+      ["e.3", 0, "waiting", true],
+    ]);
+  });
+
+  test("the Selected panel carries the map's pick with a trusted Inspect action", () => {
+    const m = epicBoard();
+    const resting = composeSelected(m, undefined);
+    expect(() => validBoard(resting)).not.toThrow();
+    expect(JSON.stringify(resting)).toContain("Select a bead in the map");
+    const picked = composeSelected(m, "cx.1");
+    expect(() => validBoard(picked)).not.toThrow();
+    const cards = picked.sections[0];
+    if (cards?.kind !== "cards") throw new Error("no card");
+    // A closed child is not in the backlog, so it reads from epic membership.
+    expect(cards.items[0]?.title).toBe("Scaffold");
+    expect(cards.items[0]?.fields?.[0]?.value).toBe("cx.1 · closed");
+    expect(cards.items[0]?.actions?.[0]).toEqual({
+      type: "select-bead",
+      label: "Inspect",
+      payload: { id: "cx.1" },
+    });
+    m.epics = ok([]);
+    expect(composeSelected(m, "cx.1").sections).toHaveLength(0);
+  });
+
+  test("no open epic yields no views", () => {
     const m = fullMeasurement();
     m.epics = ok([]);
-    expect(composeLadders(m, {}).sections).toHaveLength(0);
-    m.epics = { ok: false, error: "exit 1" };
-    expect(JSON.stringify(composeLadders(m, {}))).toContain("UNMEASURED");
-  });
-
-  test("unmeasured membership keeps the meters and says why the rungs are missing", () => {
-    const m = epicBoard();
-    m.epicChildren = { ok: false, error: "bd show cx: exit 1" };
-    const view = composeLadders(m, {});
-    expect(() => validBoard(view)).not.toThrow();
-    expect(JSON.stringify(view)).toContain("Epic membership could not be measured");
-    expect(view.sections.some((s) => s.kind === "cards")).toBe(true);
+    expect(epicViews(m)).toEqual([]);
   });
 });
 
@@ -749,12 +797,18 @@ describe("Shipped", () => {
     ).toBe("https://github.com/acme/demo/pull/7");
   });
 
-  test("a quiet fortnight still shows pace; failed closes alarm", () => {
+  test("a quiet fortnight is one line with the week's creates; failed closes alarm", () => {
     const m = fullMeasurement();
     m.closedFortnight = ok([]);
-    const quiet = JSON.stringify(composeShipped(m, {}));
-    expect(quiet).toContain("Nothing closed in the last 14 days");
-    expect(quiet).toContain("Shipped this week");
+    const view = composeShipped(m, {});
+    expect(() => validBoard(view)).not.toThrow();
+    expect(view.sections).toHaveLength(1);
+    expect(JSON.stringify(view)).toContain(
+      "Nothing closed in the last 14 days. 0 created this week.",
+    );
+    m.backlog = { ok: false, error: "bd list: exit 1" };
+    expect(JSON.stringify(composeShipped(m, {}))).toContain("Created this week is unmeasured");
+    m.backlog = fullMeasurement().backlog;
     m.closedFortnight = { ok: false, error: "bd list: exit 1" };
     expect(JSON.stringify(composeShipped(m, {}))).toContain("UNMEASURED");
   });
@@ -1066,14 +1120,14 @@ describe("the flow strip", () => {
     // Fixture: 3 blocked (none claimed), 2 ready, 1 in progress with no run
     // note, 0 in review, 1 closed this week. Disjoint by construction — the
     // claimed-and-blocked overlap folds into In progress for the strip only.
-    // Tones are the ordinal ramp: the stages are one progression, and the
-    // SPA renders a proportional strip whose fills darken along the flow.
+    // One tone per lane, the same tones the bead dots and the epic map use,
+    // so a segment can be told apart without reading the legend.
     expect(stripOf(pulse)).toEqual([
-      { label: "Waiting", n: 3, tone: "ramp-1" },
-      { label: "Ready", n: 2, tone: "ramp-2" },
-      { label: "In progress", n: 1, tone: "ramp-3" },
-      { label: "In review", n: 0, tone: "ramp-4" },
-      { label: "Done 7d", n: 1, tone: "ramp-5" },
+      { label: "Waiting", n: 3, tone: "neutral" },
+      { label: "Ready", n: 2, tone: "accent" },
+      { label: "In progress", n: 1, tone: "info" },
+      { label: "In review", n: 0, tone: "brand" },
+      { label: "Done 7d", n: 1, tone: "ok" },
     ]);
   });
 
@@ -1157,7 +1211,7 @@ describe("dams", () => {
       ["tl-x", row({ id: "tl-x" })],
       ["tl-gone", row({ id: "tl-gone", status: "closed" })],
     ]);
-    const dams = damGroups(blocked, index, new Set());
+    const dams = damGroups(blocked, index);
     expect(dams.map((d) => d.blockerId)).toEqual(["tl-x"]);
   });
 
@@ -1193,10 +1247,106 @@ describe("dams", () => {
       ["lever", row({ id: "lever", dependent_count: 9 })],
       ["plain", row({ id: "plain" })],
     ]);
-    const dams = damGroups(blocked, index, new Set(["lever"]));
+    const dams = damGroups(blocked, index);
     expect(dams.map((d) => d.blockerId)).toEqual(["big", "lever", "plain"]);
     expect(dams[0]?.held.map((b) => b.id)).toEqual(["b1", "b2"]);
-    expect(dams[1]?.startable).toBe(true);
-    expect(dams[2]?.startable).toBe(false);
+  });
+});
+
+describe("ids and stages said once", () => {
+  test("a sibling prints short beside a bead that shows the shared prefix", () => {
+    expect(shortId("keelson-d2u.6", "keelson-d2u")).toBe(".6");
+    expect(shortId("other-9", "keelson-d2u")).toBe("other-9");
+    expect(shortId("keelson-d2u.6", undefined)).toBe("keelson-d2u.6");
+    // A dot inside a prefix is not a parent boundary.
+    expect(parentIdOf("my.app-12")).toBeUndefined();
+    expect(parentIdOf("keelson-d2u.6")).toBe("keelson-d2u");
+    const m = fullMeasurement();
+    m.ready = ok([
+      { id: "ep.5", title: "Pick", status: "open", priority: 1, dependent_count: 2 },
+      { id: "ep.4", title: "Runner", status: "open", priority: 2 },
+    ]);
+    m.blocked = ok([
+      { id: "ep.6", title: "Waits", status: "open", priority: 2, blocked_by: ["ep.5"] },
+      { id: "far-1", title: "Elsewhere", status: "open", priority: 2, blocked_by: ["ep.6"] },
+    ]);
+    const card = composeRecommend(m, {}).sections[0];
+    if (card?.kind !== "cards") throw new Error("no pick");
+    // The meta line keeps the id as bd prints it; only its siblings shorten.
+    expect(card.items[0]?.fields?.[0]?.value).toContain("ep.5");
+    expect(card.items[0]?.fields?.find((f) => f.label === "unlocks")?.value).toBe(".6 → far-1");
+    expect(card.items[0]?.footnote).toBe("runner-up: .4 · Runner");
+  });
+
+  test("a claim carries a three-stop stage meter and what closing it releases", () => {
+    const pr = { url: "https://github.com/acme/demo/pull/7", state: "OPEN" as const };
+    expect(stageBar(undefined, undefined).trailing).toBe("1 of 3");
+    const open = stageBar({ prUrl: pr.url } as never, pr as never);
+    expect(open.trailing).toBe("2 of 3");
+    if (!("segments" in open)) throw new Error("no segments");
+    expect(open.segments.map((s) => [s.label, s.tone])).toEqual([
+      ["claimed", "info"],
+      ["PR open", "info"],
+      ["merged, not yet", "neutral"],
+    ]);
+    const m = fullMeasurement();
+    m.blocked = ok([
+      { id: "tl-z", title: "After", status: "open", priority: 2, blocked_by: ["tl-a"] },
+    ]);
+    const wip = composeWip(m, {});
+    expect(() => validBoard(wip)).not.toThrow();
+    const cards = wip.sections.find((s) => s.kind === "cards");
+    if (cards?.kind !== "cards") throw new Error("no cards");
+    expect(cards.items[0]?.bar).toEqual(stageBar(undefined, undefined));
+    expect(cards.items[0]?.fields?.find((f) => f.label === "releases")?.value).toBe("tl-z");
+  });
+
+  test("acceptance criteria list one row per criterion", () => {
+    const texts = (raw: string) => criteriaItems(raw).map((c) => c.text);
+    expect(texts("1. First thing. 2. Second thing. 3. Third.")).toEqual([
+      "First thing.",
+      "Second thing.",
+      "Third.",
+    ]);
+    // Only the next number in sequence starts an item, so numbers inside a
+    // sentence stay in it.
+    expect(texts("1. Returns at most 10. Otherwise errors 2. Ship by 2025. Then announce")).toEqual(
+      ["Returns at most 10. Otherwise errors", "Ship by 2025. Then announce"],
+    );
+    expect(texts("1. Requires bd 1. 2 or newer")).toEqual(["Requires bd 1. 2 or newer"]);
+    expect(criteriaItems("- [ ] Alpha\n- [x] Beta\n\n* Gamma")).toEqual([
+      { text: "Alpha", checked: false },
+      { text: "Beta", checked: true },
+      { text: "Gamma", checked: false },
+    ]);
+    // Prose that merely mentions a number stays whole.
+    expect(texts("It handles step 2. Then it stops.")).toEqual([
+      "It handles step 2. Then it stops.",
+    ]);
+    expect(criteriaItems("")).toEqual([]);
+  });
+
+  test("the inspector's linked beads open in the same drawer", () => {
+    const view = composeInspect(
+      ok({
+        id: "ep.6",
+        title: "Waits",
+        status: "open",
+        priority: 2,
+        acceptance_criteria: "1. One. 2. Two.",
+        dependencies: [{ id: "ep.5", title: "Pick", status: "open", dependency_type: "blocks" }],
+        dependents: [{ id: "ep.9", title: "Later", status: "open", dependency_type: "blocks" }],
+      }),
+      [],
+    );
+    expect(() => validBoard(view)).not.toThrow();
+    const flat = JSON.stringify(view);
+    expect(flat).toContain(
+      '"text":"ep.5 · Pick","action":{"type":"select-bead","payload":{"id":"ep.5"}}',
+    );
+    expect(flat).toContain(
+      '"text":"ep.9 · Later","action":{"type":"select-bead","payload":{"id":"ep.9"}}',
+    );
+    expect(flat).toContain('{"icon":"☐","text":"One."}');
   });
 });

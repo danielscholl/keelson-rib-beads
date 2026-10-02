@@ -16,16 +16,20 @@ import type {
 } from "@keelson/shared";
 import { z } from "zod";
 import { BdClient, type BeadsProject, discoverBeadsProjects } from "./bd";
+import { BEAD_ID_PATTERN } from "./bead-id";
 import {
   composeAttention,
   composeBacklog,
   composeInspect,
   composeInspectNeedsBd,
-  composeLadders,
+  composeMeasuringPanel,
+  composeMeasuringPulse,
   composeNoTrackerPulse,
   composePulse,
   composeRecommend,
+  composeSelected,
   composeShipped,
+  composeSweepFailed,
   composeWip,
   EMPTY_PANEL,
   recommendNext,
@@ -35,13 +39,15 @@ import {
   ATTENTION_KEY,
   BACKLOG_KEY,
   BEADS_SURFACE_ID,
+  EPIC_MAP_KEY,
   INSPECT_KEY,
-  LADDERS_KEY,
   PULSE_KEY,
   RECOMMEND_KEY,
+  SELECTED_KEY,
   SHIPPED_KEY,
   WIP_KEY,
 } from "./keys";
+import { composeEpicMap, epicMapFailed } from "./map";
 import {
   bdBelowFloor,
   fetchIssue,
@@ -70,6 +76,12 @@ const cleanupInFlight = new Map<string, Promise<void>>();
 // the inspector; both reset on scope change.
 let scopeId: string | undefined;
 let selectedBeadId: string | undefined;
+// The bead last picked inside the wave map frame; the Selected panel shows it.
+let mapSelectedId: string | undefined;
+// The project whose sweep last settled. Until a newly picked project's first
+// sweep settles, its panels say so rather than keep the previous project's
+// frames under the new name.
+let settledScope: string | undefined;
 
 const REFRESH_MS = 300_000;
 // Boot-time compose can race project loading; one early re-seed repaints the
@@ -84,6 +96,7 @@ const MEASURE_TTL_MS = REFRESH_MS;
 
 let measureCache: { scopeId: string; at: number; promise: Promise<ProjectMeasurement> } | undefined;
 
+const FRAME_BEAD_ID = new RegExp(`^${BEAD_ID_PATTERN}$`);
 const selectProjectPayload = z.object({ scopeId: z.string().min(1).optional() });
 const beadPayload = z.object({ id: z.string().min(1) });
 const runDetailPayload = z.object({
@@ -274,20 +287,42 @@ function syncErrors(report: SyncReport): string | undefined {
 // a scope without a tracker renders the resting state on the pulse panel and
 // hides the rest (the zero-section signal).
 function makePanelComposer(
+  key: string,
   compose: (m: ProjectMeasurement) => unknown,
-  restingOnPulse = false,
+  measuring: (projectName: string) => unknown,
+  resting: () => unknown = () => EMPTY_PANEL,
+  failed: (error: string) => unknown = composeSweepFailed,
 ): () => Promise<unknown> {
   return async () => {
     const project = scopedProject();
-    if (!project) {
-      if (!restingOnPulse) return EMPTY_PANEL;
-      const name = scopeId
-        ? (getAllProjects?.().find((p) => p.id === scopeId)?.name ?? "the selected project")
-        : "the current scope";
-      return composeNoTrackerPulse(name, listBeadsProjects?.() ?? []);
+    if (!project) return resting();
+    const sweep = getMeasurement(project);
+    if (settledScope !== project.id) {
+      // Settled either way, so a first sweep that throws recomposes into the
+      // alarm below instead of looping on the placeholder.
+      const settle = () => {
+        if (scopeId !== project.id) return;
+        settledScope = project.id;
+        recomposeKeys([key]);
+      };
+      sweep.then(settle, settle);
+      return measuring(project.name);
     }
-    return compose(await getMeasurement(project));
+    // The host keeps the last frame when a composer throws, which would
+    // leave a placeholder or another project's panels standing.
+    try {
+      return compose(await sweep);
+    } catch (err) {
+      return failed(err instanceof Error ? err.message : String(err));
+    }
   };
+}
+
+function restingPulse(): unknown {
+  const name = scopeId
+    ? (getAllProjects?.().find((p) => p.id === scopeId)?.name ?? "the selected project")
+    : "the current scope";
+  return composeNoTrackerPulse(name, listBeadsProjects?.() ?? []);
 }
 
 const rib: Rib = {
@@ -297,17 +332,17 @@ const rib: Rib = {
   views: ALL_KEYS.map(
     (key): RibViewDescriptor => ({
       key,
-      canvasKind: "view",
+      canvasKind: key === EPIC_MAP_KEY ? "html" : "view",
       title: `Beads — ${key.split(":").pop()}`,
     }),
   ),
 
-  // Three zones in the order a status conversation runs: what is moving,
-  // what is left, what landed. A column entry may be a stack, so Next up and
-  // the epic ladders share one column and a project without epics leaves no
-  // empty column behind. The inspector has no region; selection opens it in
-  // the canvas drawer. The rib drives refresh in-process, so regions declare
-  // no cadence.
+  // Three zones in the order the operator acts: what is running, what to
+  // start and what needs a decision; the epic map at full width, hidden when
+  // no epic is open; then what is loose and what landed. Freshness shows once,
+  // on the header. The inspector has no region; selection opens it in the
+  // canvas drawer. The rib drives refresh in-process, so regions declare no
+  // cadence.
   surfaces: [
     {
       id: BEADS_SURFACE_ID,
@@ -324,57 +359,45 @@ const rib: Rib = {
         },
         rows: [
           {
-            zoneTitle: "Doing",
+            zoneTitle: "Now",
             columns: [
-              {
-                key: WIP_KEY,
-                title: "In flight",
-                glyph: { char: "◐", tone: "info" },
-                live: true,
-              },
-              {
-                key: ATTENTION_KEY,
-                title: "Needs you",
-                glyph: { char: "●", tone: "warn" },
-                live: true,
-              },
+              { key: WIP_KEY, title: "In flight", glyph: { char: "◐", tone: "info" } },
+              { key: RECOMMEND_KEY, title: "Next up", glyph: { char: "→", tone: "accent" } },
+              { key: ATTENTION_KEY, title: "Needs you", glyph: { char: "●", tone: "warn" } },
             ],
           },
           {
-            zoneTitle: "To do",
+            zoneTitle: "Epics",
             columns: [
               [
                 {
-                  key: RECOMMEND_KEY,
-                  title: "Next up",
-                  glyph: { char: "→", tone: "accent" },
-                  live: true,
+                  key: SELECTED_KEY,
+                  title: "Selected",
+                  glyph: { char: "◎", tone: "accent" },
+                  hideWhenEmpty: true,
                 },
                 {
-                  key: LADDERS_KEY,
-                  title: "Epics",
+                  key: EPIC_MAP_KEY,
+                  title: "Wave map",
                   glyph: { char: "▰", tone: "accent" },
-                  live: true,
                   hideWhenEmpty: true,
                 },
               ],
+            ],
+          },
+          {
+            zoneTitle: "Backlog and shipped",
+            columns: [
               {
                 key: BACKLOG_KEY,
                 title: "Backlog",
                 glyph: { char: "○", tone: "accent" },
-                live: true,
                 collapsible: true,
               },
-            ],
-          },
-          {
-            zoneTitle: "Done",
-            columns: [
               {
                 key: SHIPPED_KEY,
                 title: "Shipped",
                 glyph: { char: "✓", tone: "ok" },
-                live: true,
                 collapsible: true,
               },
             ],
@@ -400,21 +423,25 @@ const rib: Rib = {
         "## The surface",
         "",
         "Project-scoped (the host's project picker chooses the backlog) and arranged",
-        "in three zones. The Overview header says the week in one sentence (shipped,",
-        "in flight, left to do) above the flow strip (waiting → ready → in progress →",
-        "in review → done 7d), and reports a shared cause once: a bd older than 1.2 or",
-        "a gh that fails every PR lookup. Doing holds In flight (every claim with its",
-        "stage — claimed, PR open with draft, CI and review state, merged — and the",
-        "newest comment or run remark) beside Needs you (merged PRs to reconcile,",
-        "reviews to merge, dams grouped by what they hold, hand-paused work, stale",
-        "claims, epic closeouts). To do holds Next up (one leverage-ranked pick with",
-        "its unlock chain, runner-up, and Inspect / Start actions), Epics (one ladder",
-        "per open epic: a stage meter, then the children in dependency order, done",
-        "first), and the Backlog (everything else open, grouped by priority). Done",
-        "holds Shipped: closes this week against last, created this week against",
-        "last, and every close in the fortnight by day with its PR and the first",
-        "sentence of its close reason. Clicking any bead opens the inspector in the",
-        "canvas drawer: facts, dependency links by edge type, description,",
+        "in three zones. The Overview header says the totals in one sentence (in",
+        "flight, ready to start, waiting, shipped this week) above the flow strip",
+        "(waiting → ready → in progress → in review → done 7d), and reports a shared",
+        "cause once: a bd older than 1.2 or a gh that fails every PR lookup. Now holds",
+        "In flight (every claim with a stage meter — claimed, PR open, merged — its",
+        "live stage, what closing it releases, and the newest comment or run remark),",
+        "Next up (one leverage-ranked pick with its unlock chain, runner-up, and",
+        "Inspect / Start actions) and Needs you (actions only: merged PRs to",
+        "reconcile, reviews to merge, hand-paused work, stale claims, epic",
+        "closeouts). Epics holds the wave map: each open epic's children in columns,",
+        "a column being one more than the deepest column among a bead's open",
+        "blockers, with lines to its blockers and a holds N tag on a bead that holds",
+        "two or more. Selecting a bead in the map shows it in Selected, whose Inspect",
+        "opens the inspector. Backlog and shipped holds the Backlog (open beads on no",
+        "epic, grouped by priority) and Shipped: closes this week against last,",
+        "created this week against last, and every close in the fortnight by day",
+        "with its PR and the first sentence of its close reason. Clicking any bead",
+        "on a structured panel opens the inspector in the canvas drawer: facts,",
+        "dependency links by edge type (each opens that bead), description,",
         "acceptance criteria, and a history timeline (created, claimed, plan, PR,",
         "comments, closed). Every panel is fail-closed: a failed bd query renders",
         "UNMEASURED, never empty-but-healthy.",
@@ -477,30 +504,45 @@ const rib: Rib = {
       const sm = snapshots;
       const register = (key: string, compose: () => Promise<unknown>) =>
         unregisters.push(sm.register(key, compose));
-      register(PULSE_KEY, makePanelComposer(composePulse, true));
       register(
-        RECOMMEND_KEY,
-        makePanelComposer((m) => composeRecommend(m, { selectedId: selectedBeadId })),
+        PULSE_KEY,
+        makePanelComposer(PULSE_KEY, composePulse, composeMeasuringPulse, restingPulse),
       );
+      const panel = (
+        key: string,
+        compose: (m: ProjectMeasurement, ctx: { selectedId?: string }) => unknown,
+      ) =>
+        register(
+          key,
+          makePanelComposer(
+            key,
+            (m) => compose(m, { selectedId: selectedBeadId }),
+            composeMeasuringPanel,
+          ),
+        );
+      panel(RECOMMEND_KEY, composeRecommend);
+      panel(WIP_KEY, composeWip);
+      panel(ATTENTION_KEY, composeAttention);
+      panel(BACKLOG_KEY, composeBacklog);
+      panel(SHIPPED_KEY, composeShipped);
       register(
-        WIP_KEY,
-        makePanelComposer((m) => composeWip(m, { selectedId: selectedBeadId })),
+        SELECTED_KEY,
+        makePanelComposer(
+          SELECTED_KEY,
+          (m) => composeSelected(m, mapSelectedId),
+          () => EMPTY_PANEL,
+        ),
       );
+      // An empty fragment hides the region, at rest and while measuring.
       register(
-        ATTENTION_KEY,
-        makePanelComposer((m) => composeAttention(m, { selectedId: selectedBeadId })),
-      );
-      register(
-        LADDERS_KEY,
-        makePanelComposer((m) => composeLadders(m, { selectedId: selectedBeadId })),
-      );
-      register(
-        BACKLOG_KEY,
-        makePanelComposer((m) => composeBacklog(m, { selectedId: selectedBeadId })),
-      );
-      register(
-        SHIPPED_KEY,
-        makePanelComposer((m) => composeShipped(m, { selectedId: selectedBeadId })),
+        EPIC_MAP_KEY,
+        makePanelComposer(
+          EPIC_MAP_KEY,
+          composeEpicMap,
+          () => "",
+          () => "",
+          epicMapFailed,
+        ),
       );
       register(INSPECT_KEY, async () => {
         const project = scopedProject();
@@ -555,6 +597,11 @@ const rib: Rib = {
   // Board actions: the host's project chip posts `select-project`; the panels
   // post `select-bead` (inspector) and `claim-bead` (bd update --claim).
   onAction: async (action: RibAction) => {
+    // The epic map is a sandboxed frame that renders tracker text, so a
+    // frame-relayed action may select a bead and nothing else.
+    if (action.origin === "canvas-html" && action.type !== "select-bead") {
+      return { ok: false as const, error: `beads does not accept '${action.type}' from a frame` };
+    }
     switch (action.type) {
       case "select-project": {
         const parsed = selectProjectPayload.safeParse(action.payload ?? {});
@@ -566,6 +613,8 @@ const rib: Rib = {
         }
         scopeId = parsed.data.scopeId;
         selectedBeadId = undefined;
+        mapSelectedId = undefined;
+        settledScope = undefined;
         refreshAll();
         return { ok: true as const };
       }
@@ -574,13 +623,28 @@ const rib: Rib = {
         if (!parsed.success) {
           return { ok: false as const, error: "select-bead payload must be { id: string }" };
         }
+        const fromMap = action.origin === "canvas-html";
+        if (fromMap && !FRAME_BEAD_ID.test(parsed.data.id)) {
+          return { ok: false as const, error: "select-bead from a frame needs a bead id" };
+        }
         selectedBeadId = parsed.data.id;
+        if (fromMap || mapSelectedId !== parsed.data.id) {
+          mapSelectedId = fromMap ? parsed.data.id : undefined;
+        }
         // Compose the inspector BEFORE answering: the open-canvas directive
         // below opens that snapshot in the drawer, and it must show the bead
         // just clicked, not the previous frame. Selection is cheap — the
         // measurement cache holds, only bd show runs.
         await snapshots?.recompose(INSPECT_KEY).catch(() => undefined);
         recomposeKeys(ALL_KEYS.filter((key) => key !== INSPECT_KEY));
+        // The host drops an open-canvas reply to a frame, so a map click
+        // answers with where the bead went instead.
+        if (fromMap) {
+          return {
+            ok: true as const,
+            data: { message: `${parsed.data.id} selected. Inspect opens it.` },
+          };
+        }
         // The inspector lives only in the canvas drawer, so a click anywhere
         // on the page shows its detail in view.
         return {
@@ -649,6 +713,8 @@ const rib: Rib = {
     // starts clean rather than trusting stale scope.
     scopeId = undefined;
     selectedBeadId = undefined;
+    mapSelectedId = undefined;
+    settledScope = undefined;
     measureCache = undefined;
     bdClient = undefined;
     ghClient = undefined;

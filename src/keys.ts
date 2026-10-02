@@ -9,12 +9,13 @@
 // The rib's static snapshot keys — one source of truth for the surface
 // layout, the view declarations, and the recompose calls the tools make.
 // One key per panel so each updates independently. The inspector has no
-// region; it opens in the canvas drawer.
+// region; it opens in the canvas drawer. The epic map is the one `html` key.
 export const PULSE_KEY = "rib:beads:pulse";
 export const WIP_KEY = "rib:beads:wip";
 export const ATTENTION_KEY = "rib:beads:attention";
 export const RECOMMEND_KEY = "rib:beads:recommend";
-export const LADDERS_KEY = "rib:beads:ladders";
+export const EPIC_MAP_KEY = "rib:beads:epic-map";
+export const SELECTED_KEY = "rib:beads:selected";
 export const BACKLOG_KEY = "rib:beads:backlog";
 export const SHIPPED_KEY = "rib:beads:shipped";
 export const INSPECT_KEY = "rib:beads:inspect";
@@ -24,7 +25,8 @@ export const ALL_KEYS = [
   WIP_KEY,
   ATTENTION_KEY,
   RECOMMEND_KEY,
-  LADDERS_KEY,
+  EPIC_MAP_KEY,
+  SELECTED_KEY,
   BACKLOG_KEY,
   SHIPPED_KEY,
   INSPECT_KEY,
@@ -33,10 +35,12 @@ export const ALL_KEYS = [
 export const BEADS_SURFACE_ID = "beads";
 
 // Retired keys, not registered anymore: the v0.1 mega-board, the
-// finished-this-week strip, and the Plan, Portfolio and Momentum panels the
-// Backlog, Epics and Shipped panels replaced.
+// finished-this-week strip, the Plan, Portfolio and Momentum panels the
+// Backlog, Epics and Shipped panels replaced, and the epic ladders the wave
+// map replaced.
 export const BOARD_KEY = "rib:beads:board";
 export const CLOSED_KEY = "rib:beads:closed";
 export const PLAN_KEY = "rib:beads:plan";
 export const PORTFOLIO_KEY = "rib:beads:portfolio";
 export const MOMENTUM_KEY = "rib:beads:momentum";
+export const LADDERS_KEY = "rib:beads:ladders";

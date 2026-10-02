@@ -6,11 +6,11 @@
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 
-// The Beads surface answers three questions in the order a status
-// conversation runs: Doing (In flight, Needs you), To do (Next up, Epics,
-// Backlog), Done (Shipped). A header sentence says the totals once in words
-// above the flow strip, and reports a shared cause (an old bd, a failing gh)
-// once instead of letting every panel alarm on its own.
+// The Beads surface reads in the order the operator acts: Now (In flight,
+// Next up, Needs you), then the epic wave map (map.ts), then Backlog and
+// Shipped. A header sentence says the totals once in words above the flow
+// strip, and reports a shared cause (an old bd, a failing gh) once instead of
+// letting every panel alarm on its own.
 //
 // Every bead renders in one shape. A card when there is evidence to show:
 // lane dot, full title, a meta line that leads with the id as bd prints it,
@@ -28,10 +28,8 @@ import { bdBelowFloor, byPriorityThenAge, parseRunNote, STALE_DAYS } from "./mea
 import { isMergedPR, type PrInfo } from "./pr";
 
 const ATTENTION_CAP = 8;
-const DAMS_CAP = 5;
 const SHIPPED_CAP = 12;
 const BACKLOG_CAP = 80;
-const LADDER_DONE_LISTED = 4;
 const PARA_CAP = 24;
 const TITLE_BUDGET = 140;
 
@@ -105,6 +103,28 @@ export function lifecycleTone(l: Lifecycle): CanvasTone {
   if (l === "closed") return "ok";
   if (l === "deferred") return "neutral";
   return "accent";
+}
+
+// One tone per flow stage, shared by the header strip and the stage meters,
+// so a colour means the same lane on every structured panel.
+export const STAGE_TONE = {
+  waiting: "neutral",
+  ready: "accent",
+  working: "info",
+  review: "brand",
+  done: "ok",
+} as const satisfies Record<string, CanvasTone>;
+
+// A sibling prints as `.5` beside a bead that already shows the shared
+// prefix; anything outside that prefix keeps the id as bd prints it.
+export function shortId(id: string, parent: string | undefined): string {
+  return parent && id.startsWith(`${parent}.`) ? id.slice(parent.length) : id;
+}
+
+// Only a numeric suffix marks a child (`epic.5`); a dot inside a prefix
+// (`my.app-12`) is part of the id.
+export function parentIdOf(id: string): string | undefined {
+  return /^(.+)\.\d+$/.exec(id)?.[1];
 }
 
 // `bd blocked` rows carry no `dependent_count` (verified live), while `bd
@@ -256,9 +276,9 @@ export function prLabel(url: string): string {
 
 // ── Dams ─────────────────────────────────────────────────────────────────
 //
-// The blocked union names each bead's blockers, which meant the same dam
-// printed once per held bead and never once as itself. This groups the union
-// the other way: by blocker, ranked by what finishing it would release.
+// The blocked union names each bead's blockers. This groups it the other
+// way: by blocker, with what finishing it would release. The epic map tags a
+// bead with its dam.
 export interface Dam {
   blockerId: string;
   // The backlog row when the blocker is open work; absent when the union
@@ -269,14 +289,9 @@ export interface Dam {
   held: BdIssue[];
   // The full BFS release count (unlockLevels) — what clears as hops clear.
   transitive: number;
-  startable: boolean;
 }
 
-export function damGroups(
-  blocked: BdIssue[],
-  index: ReadonlyMap<string, BdIssue>,
-  readyIds: ReadonlySet<string>,
-): Dam[] {
+export function damGroups(blocked: BdIssue[], index: ReadonlyMap<string, BdIssue>): Dam[] {
   const held = new Map<string, BdIssue[]>();
   for (const b of blocked) {
     for (const dep of b.blocked_by ?? []) {
@@ -297,10 +312,9 @@ export function damGroups(
     blocker: index.get(blockerId),
     held: heldList,
     transitive: unlockLevels(blockerId, blocked).flat().length,
-    startable: readyIds.has(blockerId),
   }));
-  // Held count is the on-screen rank; leverage and priority break ties with
-  // the same keys every other panel shows.
+  // Ranked by held count; leverage and priority break ties with the same
+  // keys every panel shows.
   dams.sort((a, b) => {
     if (a.held.length !== b.held.length) return b.held.length - a.held.length;
     const da = a.blocker?.dependent_count ?? 0;
@@ -474,6 +488,7 @@ export function flightStage(
   if (info?.prState === "number-only") return `PR #${info.prNumber} · link unknown`;
   if (info?.prState === "unknown") return "PR state unknown";
   const since = ago(i.started_at, now);
+  if (since === "just now") return "claimed just now";
   return since ? `claimed ${since} ago` : "claimed · time not recorded";
 }
 
@@ -576,33 +591,31 @@ export function composePulse(m: ProjectMeasurement): Board {
   // The strip is a distribution, so its populations must be disjoint: a
   // claimed bead that is also blocked counts once, under in progress.
   const wipIds = new Set(m.inProgress.ok ? m.inProgress.data.map((i) => i.id) : []);
+  const waiting =
+    m.blocked.ok && m.inProgress.ok ? m.blocked.data.filter((b) => !wipIds.has(b.id)).length : null;
   const segments: Extract<BoardSection, { kind: "segments" }>["items"] = [
+    { label: "Waiting", n: waiting, tone: STAGE_TONE.waiting },
+    { label: "Ready", n: m.ready.ok ? m.ready.data.length : null, tone: STAGE_TONE.ready },
     {
-      label: "Waiting",
-      n:
-        m.blocked.ok && m.inProgress.ok
-          ? m.blocked.data.filter((b) => !wipIds.has(b.id)).length
-          : null,
-      tone: "ramp-1",
+      label: "In progress",
+      n: split.ok ? split.data.working.length : null,
+      tone: STAGE_TONE.working,
     },
-    { label: "Ready", n: m.ready.ok ? m.ready.data.length : null, tone: "ramp-2" },
-    { label: "In progress", n: split.ok ? split.data.working.length : null, tone: "ramp-3" },
-    { label: "In review", n: split.ok ? split.data.inReview.length : null, tone: "ramp-4" },
+    {
+      label: "In review",
+      n: split.ok ? split.data.inReview.length : null,
+      tone: STAGE_TONE.review,
+    },
     {
       label: "Done 7d",
       n: m.recentlyClosed.ok ? m.recentlyClosed.data.length : null,
-      tone: "ramp-5",
+      tone: STAGE_TONE.done,
     },
   ];
   const count = (x: Measured<unknown[]>): string => (x.ok ? String(x.data.length) : "?");
-  const left = m.backlog.ok
-    ? String(
-        m.backlog.data.filter(
-          (i) => i.issue_type !== "epic" && i.status !== "in_progress" && i.status !== "deferred",
-        ).length,
-      )
-    : "?";
-  const sentence = `This week: ${count(m.recentlyClosed)} shipped · ${count(m.inProgress)} in flight · ${left} left to do`;
+  // The sentence reads the same populations the strip draws, in the order
+  // the operator acts on them.
+  const sentence = `${count(m.inProgress)} in flight · ${count(m.ready)} ready to start · ${waiting ?? "?"} waiting · ${count(m.recentlyClosed)} shipped this week`;
 
   const preflight: RowItem[] = [];
   if (floor && m.bd.ok && m.bd.data) {
@@ -701,17 +714,18 @@ export function composeRecommend(m: ProjectMeasurement, ctx: PanelContext): Boar
   const fields: NonNullable<CardItem["fields"]> = [];
   // The chain, hop by hop, so the leverage claim is auditable. Past a
   // handful the first hop stays verbatim and deeper levels compress.
+  const short = (id: string) => shortId(id, parentIdOf(pick.id));
   if (levels.length > 0) {
     const CHAIN_ID_CAP = 8;
     const total = levels.reduce((a, lvl) => a + lvl.length, 0);
     if (total <= CHAIN_ID_CAP) {
-      const hops = levels.map((lvl) => lvl.map((b) => b.id).join(", "));
+      const hops = levels.map((lvl) => lvl.map((b) => short(b.id)).join(", "));
       fields.push({ label: "unlocks", value: hops.join(" → ") });
     } else {
       const first = levels[0] ?? [];
       const firstShown = first.slice(0, CHAIN_ID_CAP);
       const firstText =
-        firstShown.map((b) => b.id).join(", ") +
+        firstShown.map((b) => short(b.id)).join(", ") +
         (first.length > firstShown.length ? ` +${first.length - firstShown.length} more` : "");
       const deeper = total - first.length;
       const deeperLevels = levels.length - 1;
@@ -751,7 +765,7 @@ export function composeRecommend(m: ProjectMeasurement, ctx: PanelContext): Boar
                 },
           ],
           footnote: runnerUp
-            ? `runner-up: ${runnerUp.id} · ${clampTitle(runnerUp.title, 80)}`
+            ? `runner-up: ${short(runnerUp.id)} · ${clampTitle(runnerUp.title, 80)}`
             : "runner-up: none, the ready queue holds nothing else",
         }),
       ],
@@ -769,9 +783,8 @@ export function composeWip(m: ProjectMeasurement, ctx: PanelContext): Board {
     return board([quiet("Nothing is claimed. Next up has the pick.")]);
   }
   const floor = bdBelowFloor(m);
-  const blockers = new Map<string, string[]>(
-    (m.blocked.ok ? m.blocked.data : []).map((b) => [b.id, b.blocked_by ?? []]),
-  );
+  const blocked = m.blocked.ok ? m.blocked.data : [];
+  const blockers = new Map<string, string[]>(blocked.map((b) => [b.id, b.blocked_by ?? []]));
   const people = assigneeView(m.inProgress.data);
   const runCount = m.inProgress.data.filter((i) => runInfoOf(m, i.id) !== undefined).length;
   const otherCount = m.inProgress.data.length - runCount;
@@ -804,7 +817,8 @@ export function composeWip(m: ProjectMeasurement, ctx: PanelContext): Board {
       : info?.note
         ? { label: `run ${info.outcome ?? "note"}`, text: firstSentence(info.note) }
         : undefined;
-    return beadCard(i, {
+    const releases = unlockLevels(i.id, blocked)[0] ?? [];
+    const card = beadCard(i, {
       meta: [
         people.perItem
           ? (person ?? (people.markUnassigned ? "unassigned" : undefined))
@@ -821,6 +835,14 @@ export function composeWip(m: ProjectMeasurement, ctx: PanelContext): Board {
       ...(evidence ? { evidence } : {}),
       fields: [
         ...(info?.prUrl ? [prField(info.prUrl)] : []),
+        ...(releases.length
+          ? [
+              {
+                label: "releases",
+                value: releases.map((b) => shortId(b.id, parentIdOf(i.id))).join(", "),
+              },
+            ]
+          : []),
         ...(runError
           ? [{ value: `UNMEASURED run note: ${runError}`.slice(0, 120), tone: "error" as const }]
           : []),
@@ -830,6 +852,8 @@ export function composeWip(m: ProjectMeasurement, ctx: PanelContext): Board {
       ],
       selectedId: ctx.selectedId,
     });
+    // The meter reads the run note, so an unread note draws no meter.
+    return entry?.ok ? { ...card, bar: stageBar(info, pr) } : card;
   });
   return board([
     ...(floor
@@ -839,6 +863,26 @@ export function composeWip(m: ProjectMeasurement, ctx: PanelContext): Board {
   ]);
 }
 
+// A claim's three recorded stops as a meter: claimed, PR open, merged. A stop
+// not reached stays neutral and says so in its label.
+export function stageBar(
+  info: BeadRunInfo | undefined,
+  pr: PrInfo | undefined,
+): NonNullable<CardItem["bar"]> {
+  const reached = [true, Boolean(info?.prUrl), Boolean(pr && isMergedPR(pr))];
+  const names = ["claimed", "PR open", "merged"];
+  const last = reached.lastIndexOf(true);
+  return {
+    label: "stage",
+    trailing: `${last + 1} of ${names.length}`,
+    segments: names.map((name, at) => ({
+      label: at <= last ? name : `${name}, not yet`,
+      n: 1,
+      tone: at <= last ? (at === 2 ? STAGE_TONE.done : STAGE_TONE.working) : STAGE_TONE.waiting,
+    })),
+  };
+}
+
 function livePR(m: ProjectMeasurement, id: string): PrInfo | undefined {
   if (!m.prInfo.ok) return undefined;
   const entry = m.prInfo.data[id];
@@ -846,14 +890,13 @@ function livePR(m: ProjectMeasurement, id: string): PrInfo | undefined {
 }
 
 // ── Needs you: the operator's queue, most actionable first — merged PRs
-// waiting on a close, reviews to merge, dams, hand-paused work, stale
-// claims, and epic closeouts.
+// waiting on a close, reviews to merge, hand-paused work, stale claims, and
+// epic closeouts. Only actions: a dam is ordinary sequencing, so it rides the
+// epic map as a tag on the bead that holds the work.
 export function composeAttention(m: ProjectMeasurement, ctx: PanelContext): Board {
   const now = new Date(m.asOf);
   const floor = bdBelowFloor(m);
   const blocked = m.blocked.ok ? m.blocked.data : [];
-  const index = backlogIndex(m);
-  const readyIds = new Set(m.ready.ok ? m.ready.data.map((i) => i.id) : []);
   const sections: BoardSection[] = [];
   const failures: { what: string; error: string }[] = [];
   // Every input this panel folds in alarms on failure, since a section that
@@ -925,30 +968,6 @@ export function composeAttention(m: ProjectMeasurement, ctx: PanelContext): Boar
         }),
       });
     }
-  }
-
-  // Dams, ranked by held count. One row per dam with a meter against the
-  // largest dam shown, so fill lengths compare across rows.
-  const dams = damGroups(blocked, index, readyIds);
-  if (dams.length > 0) {
-    const maxHeld = Math.max(1, dams[0]?.held.length ?? 1);
-    sections.push({
-      kind: "rows",
-      title: dams.length > DAMS_CAP ? `Dams, top ${DAMS_CAP} of ${dams.length}` : "Dams",
-      items: dams.slice(0, DAMS_CAP).map((d) => ({
-        glyph: d.blocker ? lifecycleTone(lifecycleOf(d.blocker)) : ("neutral" as const),
-        text: d.blocker ? clampTitle(d.blocker.title, 96) : d.blockerId,
-        bar: { value: d.held.length, total: maxHeld },
-        trailing: [
-          d.blockerId,
-          `holds ${d.held.length}`,
-          ...(d.transitive > d.held.length ? [`${d.transitive} transitive`] : []),
-          ...(d.startable ? ["startable"] : []),
-        ].join(" · "),
-        action: { type: "select-bead" as const, payload: { id: d.blockerId } },
-        selected: ctx.selectedId === d.blockerId,
-      })),
-    });
   }
 
   // Paused by hand: status-blocked with no dependency edge.
@@ -1027,186 +1046,239 @@ export function composeAttention(m: ProjectMeasurement, ctx: PanelContext): Boar
       : []
     : failures.map((f) => alarmRow(f.what, f.error, m));
   if (sections.length === 0 && alarms.length === 0) {
+    // Every check ran and found nothing, so the panel says which checks.
     return board([
-      quiet(
-        blocked.length === 0
-          ? "Nothing needs you. No merges to reconcile, reviews, dams, stale claims or closeouts."
-          : `Nothing needs you. ${plural(blocked.length, "blocked bead")} wait only on structure and sit in the backlog.`,
-        "ok",
-      ),
+      quiet("Nothing needs you.", "ok"),
+      {
+        kind: "rows",
+        items: [
+          "Merged PRs to reconcile",
+          "Reviews to merge",
+          "Paused by hand",
+          "Stale claims",
+          "Epic closeouts",
+        ].map((text) => ({ text, trailing: "0" })),
+      },
     ]);
   }
   return board([...(alarms.length ? [{ kind: "rows" as const, items: alarms }] : []), ...sections]);
 }
 
-// ── Epics: one ladder per open epic. The head card carries the stage meter;
-// the rungs beneath list the children in the order the edges allow: done,
-// in flight, ready (the pick first), then waiting by chain depth.
-export function ladderOrder(
+// ── Epics: what the wave map (map.ts) draws for each open epic. A member's
+// wave is one more than the deepest wave among its open blockers, so a
+// column says how many steps a bead is from startable.
+export type EpicLane = "working" | "review" | "ready" | "waiting" | "hold";
+
+export interface EpicNode {
+  member: EpicMember;
+  lane: EpicLane;
+  wave: number;
+  // Open blockers that are members of the same epic: the edges the map draws.
+  deps: string[];
+  // Open blockers from outside the epic, named on the bead since no edge can
+  // reach them.
+  external: string[];
+  handPaused: boolean;
+  pick: boolean;
+  dam?: Dam;
+}
+
+export interface EpicView {
+  row: BdEpicRow;
+  nodes: EpicNode[];
+  done: EpicMember[];
+  gate?: EpicGate;
+  counts?: { review: number; working: number; ready: number; waiting: number };
+}
+
+const LANE_RANK: Record<EpicLane, number> = {
+  working: 0,
+  review: 1,
+  ready: 2,
+  waiting: 3,
+  hold: 4,
+};
+
+export function epicNodes(
+  epicId: string,
   members: readonly EpicMember[],
   blockedBy: ReadonlyMap<string, readonly string[]>,
-  pickId?: string,
-): EpicMember[] {
-  const inside = new Set(members.map((c) => c.id));
-  const openById = new Map(members.filter((c) => c.status !== "closed").map((c) => [c.id, c]));
-  const depthMemo = new Map<string, number>();
-  const depth = (id: string, trail: Set<string>): number => {
-    const memo = depthMemo.get(id);
-    if (memo !== undefined) return memo;
+  lanes: {
+    readyIds: ReadonlySet<string>;
+    reviewIds: ReadonlySet<string>;
+    pickId?: string;
+    dams?: ReadonlyMap<string, Dam>;
+  },
+): EpicNode[] {
+  const open = members.filter((c) => c.status !== "closed");
+  const openIds = new Set(open.map((c) => c.id));
+  const closedIds = new Set(members.filter((c) => c.status === "closed").map((c) => c.id));
+  const edges = new Map(
+    open.map((c) => {
+      const all = (blockedBy.get(c.id) ?? []).filter(
+        (d) => d !== epicId && d !== c.id && !closedIds.has(d),
+      );
+      return [
+        c.id,
+        { deps: all.filter((d) => openIds.has(d)), external: all.filter((d) => !openIds.has(d)) },
+      ];
+    }),
+  );
+  const memo = new Map<string, number>();
+  // `trail` closes the walk against cycles, which bd permits.
+  const wave = (id: string, trail: Set<string>): number => {
+    const known = memo.get(id);
+    if (known !== undefined) return known;
     if (trail.has(id)) return 0;
     trail.add(id);
-    const deps = (blockedBy.get(id) ?? []).filter((d) => inside.has(d) && openById.has(d));
-    const d = deps.length ? 1 + Math.max(...deps.map((x) => depth(x, trail))) : 0;
+    const e = edges.get(id);
+    const inside = e?.deps.length ? 1 + Math.max(...e.deps.map((d) => wave(d, trail))) : 0;
     trail.delete(id);
-    depthMemo.set(id, d);
-    return d;
+    const w = Math.max(inside, e?.external.length ? 1 : 0);
+    memo.set(id, w);
+    return w;
   };
-  const rank = (c: EpicMember): number => {
-    if (c.status === "closed") return 0;
-    if (c.status === "in_progress") return 1;
-    if (c.id === pickId) return 2;
-    if (c.status === "deferred") return 9;
-    return (blockedBy.get(c.id)?.length ?? 0) > 0 || c.status === "blocked" ? 4 : 3;
-  };
-  return [...members].sort((a, b) => {
-    const ra = rank(a);
-    const rb = rank(b);
-    if (ra !== rb) return ra - rb;
-    if (ra === 4) {
-      const da = depth(a.id, new Set());
-      const db = depth(b.id, new Set());
-      if (da !== db) return da - db;
-    }
-    const pa = a.priority ?? 2;
-    const pb = b.priority ?? 2;
+  const nodes = open.map((member): EpicNode => {
+    const e = edges.get(member.id) ?? { deps: [], external: [] };
+    const waits = e.deps.length + e.external.length > 0;
+    const handPaused = member.status === "blocked" && !waits;
+    const lane: EpicLane =
+      member.status === "in_progress"
+        ? lanes.reviewIds.has(member.id)
+          ? "review"
+          : "working"
+        : member.status === "deferred"
+          ? "hold"
+          : !waits && !handPaused && lanes.readyIds.has(member.id)
+            ? "ready"
+            : "waiting";
+    const dam = lanes.dams?.get(member.id);
+    return {
+      member,
+      lane,
+      wave: wave(member.id, new Set()),
+      deps: e.deps,
+      external: e.external,
+      handPaused,
+      pick: member.id === lanes.pickId,
+      ...(dam ? { dam } : {}),
+    };
+  });
+  return nodes.sort((a, b) => {
+    if (a.wave !== b.wave) return a.wave - b.wave;
+    if (a.lane !== b.lane) return LANE_RANK[a.lane] - LANE_RANK[b.lane];
+    if (a.pick !== b.pick) return a.pick ? -1 : 1;
+    const ha = a.dam?.held.length ?? 0;
+    const hb = b.dam?.held.length ?? 0;
+    if (ha !== hb) return hb - ha;
+    const pa = a.member.priority ?? 2;
+    const pb = b.member.priority ?? 2;
     if (pa !== pb) return pa - pb;
-    return a.id.localeCompare(b.id, undefined, { numeric: true });
+    return a.member.id.localeCompare(b.member.id, undefined, { numeric: true });
   });
 }
 
-export function composeLadders(m: ProjectMeasurement, ctx: PanelContext): Board {
-  if (!m.epics.ok) return failedBoard("epics", m.epics.error, m);
-  const open = m.epics.data.filter((r) => r.epic.status !== "closed");
-  if (open.length === 0) return HIDDEN;
+// Open epics, where the work is first, then what is nearly landed, parked
+// epics last. Callers check m.epics.ok first.
+export function epicViews(m: ProjectMeasurement): EpicView[] {
+  if (!m.epics.ok) return [];
+  const blocked = m.blocked.ok ? m.blocked.data : [];
   const wipIds = new Set(m.inProgress.ok ? m.inProgress.data.map((i) => i.id) : []);
   const blockedBy = new Map<string, readonly string[]>(
-    (m.blocked.ok ? m.blocked.data : []).map((b) => [b.id, b.blocked_by ?? []]),
+    blocked.map((b) => [b.id, b.blocked_by ?? []]),
   );
   const split = stageSplit(m);
   const stagesMeasured = m.epicChildren.ok && m.ready.ok && split.ok;
   const readyIds = new Set(m.ready.ok ? m.ready.data.map((i) => i.id) : []);
   const reviewIds = new Set(split.ok ? split.data.inReview.map((i) => i.id) : []);
-  const workingIds = new Set(split.ok ? split.data.working.map((i) => i.id) : []);
   const pickId = m.ready.ok ? recommendNext(m.ready.data).pick?.id : undefined;
-  const epics = open.map((r) => {
-    const members = m.epicChildren.ok ? (m.epicChildren.data[r.epic.id] ?? []) : [];
-    const childIds = members.map((c) => c.id);
-    const inFlight = childIds.filter((id) => wipIds.has(id)).length;
-    const gate =
-      m.blocked.ok && childIds.length > 0 ? epicGate(childIds, blockedBy, wipIds) : undefined;
-    const ratio = r.total_children > 0 ? r.closed_children / r.total_children : 0;
-    return { r, members, childIds, inFlight, gate, ratio };
+  const dams = new Map(damGroups(blocked, backlogIndex(m)).map((d) => [d.blockerId, d]));
+  const views = m.epics.data
+    .filter((r) => r.epic.status !== "closed")
+    .map((row) => {
+      const members = m.epicChildren.ok ? (m.epicChildren.data[row.epic.id] ?? []) : [];
+      const childIds = members.map((c) => c.id);
+      const nodes = epicNodes(row.epic.id, members, blockedBy, {
+        readyIds,
+        reviewIds,
+        pickId,
+        dams,
+      });
+      const inLane = (lane: EpicLane) => nodes.filter((n) => n.lane === lane).length;
+      const gate =
+        m.blocked.ok && childIds.length > 0 ? epicGate(childIds, blockedBy, wipIds) : undefined;
+      const view: EpicView = {
+        row,
+        nodes,
+        done: members.filter((c) => c.status === "closed"),
+        ...(gate ? { gate } : {}),
+        ...(stagesMeasured
+          ? {
+              counts: {
+                review: inLane("review"),
+                working: inLane("working"),
+                ready: inLane("ready"),
+                waiting: Math.max(
+                  0,
+                  row.total_children -
+                    row.closed_children -
+                    inLane("review") -
+                    inLane("working") -
+                    inLane("ready"),
+                ),
+              },
+            }
+          : {}),
+      };
+      return view;
+    });
+  const inFlight = (v: EpicView) => v.nodes.filter((n) => wipIds.has(n.member.id)).length;
+  const ratio = (v: EpicView) =>
+    v.row.total_children > 0 ? v.row.closed_children / v.row.total_children : 0;
+  return views.sort((a, b) => {
+    if (inFlight(a) !== inFlight(b)) return inFlight(b) - inFlight(a);
+    if (ratio(a) !== ratio(b)) return ratio(b) - ratio(a);
+    return byPriorityThenAge(a.row.epic, b.row.epic);
   });
-  // Where the work is first, then what is nearly landed, parked epics last.
-  epics.sort((a, b) => {
-    if (a.inFlight !== b.inFlight) return b.inFlight - a.inFlight;
-    if (a.ratio !== b.ratio) return b.ratio - a.ratio;
-    return byPriorityThenAge(a.r.epic, b.r.epic);
-  });
-  const sections: BoardSection[] = [];
-  if (!m.epicChildren.ok) {
-    sections.push({ kind: "rows", items: [alarmRow("epic membership", m.epicChildren.error, m)] });
+}
+
+// ── Selected: the bead last picked in the wave map, with the Inspect action.
+// The host does not act on an open-canvas reply to a frame-relayed action, so
+// the map can select but cannot open the drawer; this structured card can.
+export function composeSelected(m: ProjectMeasurement, selectedId: string | undefined): Board {
+  if (!m.epics.ok || !m.epics.data.some((r) => r.epic.status !== "closed")) return HIDDEN;
+  if (!selectedId) {
+    return board([quiet("Select a bead in the map to see it here and open the inspector.")]);
   }
-  for (const { r, members, childIds, inFlight, gate } of epics) {
-    const inSet = (ids: Set<string>) => childIds.filter((id) => ids.has(id)).length;
-    const bar =
-      r.total_children === 0
-        ? undefined
-        : stagesMeasured
-          ? (() => {
-              const review = inSet(reviewIds);
-              const working = inSet(workingIds);
-              const ready = inSet(readyIds);
-              const waiting = Math.max(
-                0,
-                r.total_children - r.closed_children - review - working - ready,
-              );
-              return {
-                segments: [
-                  { label: "done", n: r.closed_children, tone: "ramp-5" as const },
-                  { label: "in review", n: review, tone: "ramp-4" as const },
-                  { label: "in progress", n: working, tone: "ramp-3" as const },
-                  { label: "ready", n: ready, tone: "ramp-2" as const },
-                  { label: "waiting", n: waiting, tone: "ramp-1" as const },
-                ],
-              };
-            })()
-          : { value: r.closed_children, total: r.total_children };
-    sections.push({
+  const members = m.epicChildren.ok ? Object.values(m.epicChildren.data).flat() : [];
+  const known =
+    backlogIndex(m).get(selectedId) ??
+    members.find((c) => c.id === selectedId) ??
+    m.epics.data.find((r) => r.epic.id === selectedId)?.epic;
+  // An id this sweep does not carry shows by id alone, with no status claimed.
+  const issue = known ?? { id: selectedId, title: selectedId, status: "open" };
+  return board([
+    {
       kind: "cards",
       items: [
-        {
-          ...beadCard(r.epic, {
-            meta: [
-              `${r.closed_children} of ${r.total_children} done`,
-              inFlight > 0 && `${inFlight} in flight`,
-              gate &&
-                (gate.all
-                  ? `gated on ${gate.blockerId}`
-                  : `${gate.count} waiting on ${gate.blockerId}`),
-            ],
-            ...(r.eligible_for_close
-              ? { signal: { label: "closeout review", tone: "warn" as const } }
-              : {}),
-            selectedId: ctx.selectedId,
-          }),
-          ...(bar ? { bar } : {}),
-        },
+        beadCard(issue, {
+          meta: [known ? issue.status.replace("_", " ") : "not in this sweep"],
+          ...(known ? {} : { tone: "neutral" as const }),
+          selectedId,
+          actions: [{ type: "select-bead", label: "Inspect", payload: { id: selectedId } }],
+        }),
       ],
-    });
-    if (members.length === 0) continue;
-    const ordered = ladderOrder(members, blockedBy, pickId);
-    const done = ordered.filter((c) => c.status === "closed");
-    const rest = ordered.filter((c) => c.status !== "closed");
-    const rungs: RowItem[] = [];
-    if (done.length > LADDER_DONE_LISTED) {
-      rungs.push({
-        glyph: "ok",
-        text: `${done.length} done`,
-        trailing: `${done[0]?.id} … ${done.at(-1)?.id}`,
-        action: { type: "select-bead", payload: { id: r.epic.id } },
-      });
-    } else {
-      for (const c of done) rungs.push(beadRow(c, ["done"], ctx));
-    }
-    for (const c of rest) {
-      const waits = (blockedBy.get(c.id) ?? []).filter((d) => d !== r.epic.id);
-      const state =
-        c.status === "in_progress"
-          ? "in flight"
-          : c.status === "deferred"
-            ? "on hold"
-            : waits.length
-              ? `waits on ${waits.join(", ")}`
-              : c.status === "blocked"
-                ? "paused by hand"
-                : c.id === pickId
-                  ? "ready · next up"
-                  : "ready";
-      rungs.push(beadRow(c, [state], ctx));
-    }
-    sections.push({ kind: "rows", items: rungs });
-  }
-  return board(sections);
+    },
+  ]);
 }
 
 // ── Backlog: everything open that is neither in flight nor on an epic's
-// ladder, one row per bead, grouped by priority so the sort order is said
+// map, one row per bead, grouped by priority so the sort order is said
 // rather than implied.
 export function composeBacklog(m: ProjectMeasurement, ctx: PanelContext): Board {
   if (!m.backlog.ok) return failedBoard("the backlog", m.backlog.error, m);
   const openEpics = new Set(m.backlog.data.filter((i) => i.issue_type === "epic").map((i) => i.id));
-  // Ladder membership: parent-child edges when measured, else dotted ids, so
+  // Epic membership: parent-child edges when measured, else dotted ids, so
   // an unmeasured sweep degrades to a less grouped backlog, never a thinner one.
   const onLadder = new Set<string>();
   if (m.epicChildren.ok) {
@@ -1231,7 +1303,7 @@ export function composeBacklog(m: ProjectMeasurement, ctx: PanelContext): Board 
     )
     .sort(byPriorityThenAge);
   if (items.length === 0) {
-    return board([quiet("Nothing loose. Everything open is on an epic's ladder or in flight.")]);
+    return board([quiet("Nothing loose. Everything open is on an epic or in flight.")]);
   }
   const shown = items.slice(0, BACKLOG_CAP);
   const sections: BoardSection[] = [];
@@ -1318,11 +1390,18 @@ export function composeShipped(m: ProjectMeasurement, ctx: PanelContext = {}): B
   } else {
     stats.push({ label: "Created this week", value: null, sub: "backlog unmeasured" });
   }
-  const sections: BoardSection[] = [{ kind: "stats", items: stats }];
   if (closed.length === 0) {
-    sections.push(quiet("Nothing closed in the last 14 days."));
-    return board(sections);
+    // A quiet fortnight is one line: pace tiles would compare zero with zero.
+    const created = stats[1]?.value;
+    return board([
+      quiet(
+        typeof created === "number"
+          ? `Nothing closed in the last 14 days. ${created} created this week.`
+          : "Nothing closed in the last 14 days. Created this week is unmeasured.",
+      ),
+    ]);
   }
+  const sections: BoardSection[] = [{ kind: "stats", items: stats }];
   const shown = closed.slice(0, SHIPPED_CAP);
   let day: { title: string; items: CardItem[] } | undefined;
   for (const i of shown) {
@@ -1489,6 +1568,37 @@ export function beadTimeline(
     .map((s) => s.row);
 }
 
+// Acceptance criteria as one item per criterion. A numbered list written on
+// one line splits only where the next number in sequence starts, so a number
+// inside a sentence stays in it. A ticked checkbox keeps its tick.
+export function criteriaItems(text: string): { text: string; checked: boolean }[] {
+  const lines = text
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .flatMap((line) => {
+      if (!/^1[.)]\s/.test(line)) return [line];
+      const parts: string[] = [];
+      let rest = line;
+      for (let n = 2; ; n++) {
+        const at = rest.search(new RegExp(`\\s${n}[.)]\\s`));
+        if (at < 0) break;
+        parts.push(rest.slice(0, at));
+        rest = rest.slice(at).trimStart();
+      }
+      return [...parts, rest];
+    });
+  return lines
+    .map((line) => {
+      const body = line.replace(/^(?:[-*•]\s+)?/, "");
+      const box = /^\[([ xX])\]\s+/.exec(body);
+      return {
+        text: (box ? body.slice(box[0].length) : body).replace(/^\d+[.)]\s+/, "").trim(),
+        checked: Boolean(box && box[1] !== " "),
+      };
+    })
+    .filter((item) => item.text.length > 0);
+}
+
 export function composeInspect(
   issue: Measured<BdIssue> | undefined,
   blocked: BdIssue[],
@@ -1504,8 +1614,17 @@ export function composeInspect(
   const merged =
     i.status === "open" || i.status === "in_progress" ? mergedPR(opts.prInfo, i.id) : undefined;
   const mergedAlternative = recommended && mergedPR(opts.prInfo, recommended.id);
-  const linked = (list: readonly BdLinked[]): string[] =>
-    list.map((l) => (l.title ? `${linkedId(l)} · ${l.title}` : linkedId(l)));
+  const linked = (list: readonly BdLinked[]): { id: string; text: string }[] =>
+    list.map((l) => ({
+      id: linkedId(l),
+      text: l.title ? `${linkedId(l)} · ${l.title}` : linkedId(l),
+    }));
+  // A linked bead opens in this same drawer, so a chain can be walked.
+  const linkRow = (icon: string, l: { id: string; text: string }): RowItem => ({
+    icon,
+    text: l.text,
+    ...(l.id === "?" ? {} : { action: { type: "select-bead", payload: { id: l.id } } }),
+  });
   // Only blocking edges that still hold. A parent-child edge is membership,
   // and a closed blocker is satisfied; unknown status is kept, since absence
   // of proof that it is done is not proof.
@@ -1631,24 +1750,28 @@ export function composeInspect(
     left.push({
       kind: "rows",
       title: "Waits on",
-      items: (waitsOn.length ? waitsOn : blockedBy).map((text) => ({ icon: "●", text })),
+      items: (waitsOn.length ? waitsOn : blockedBy.map((id) => ({ id, text: id }))).map((l) =>
+        linkRow("●", l),
+      ),
     });
   }
   if (children.length) {
     left.push({
       kind: "rows",
       title: "Children",
-      items: children.map((c) => ({
-        icon: statusGlyph(c.status ?? "open"),
-        text: c.title ? `${linkedId(c)} · ${c.title}` : linkedId(c),
-      })),
+      items: children.map((c) =>
+        linkRow(statusGlyph(c.status ?? "open"), {
+          id: linkedId(c),
+          text: c.title ? `${linkedId(c)} · ${c.title}` : linkedId(c),
+        }),
+      ),
     });
   }
   if (unlocks.length) {
     left.push({
       kind: "rows",
       title: "Unlocks when done",
-      items: unlocks.map((text) => ({ icon: "↗", text })),
+      items: unlocks.map((l) => linkRow("↗", l)),
     });
   }
   const prose = (label: string, body: string | undefined) => {
@@ -1660,7 +1783,14 @@ export function composeInspect(
     right.push({ kind: "rows", title: label, items: paras.map((p) => ({ text: p })) });
   };
   prose("Description", i.description);
-  prose("Acceptance criteria", i.acceptance_criteria);
+  const criteria = criteriaItems(i.acceptance_criteria ?? "").slice(0, PARA_CAP);
+  if (criteria.length) {
+    right.push({
+      kind: "rows",
+      title: "Acceptance criteria",
+      items: criteria.map((c) => ({ icon: c.checked ? "☑" : "☐", text: c.text })),
+    });
+  }
   // The bead-work lines render in the timeline; anything else a person wrote
   // in notes stays as prose.
   prose(
@@ -1752,3 +1882,21 @@ export function composeNoTrackerPulse(
 }
 
 export const EMPTY_PANEL: Board = HIDDEN;
+
+// ── The first sweep of a newly picked project: the panels name the project
+// being measured instead of leaving the previous project's frames in place.
+export function composeMeasuringPulse(projectName: string): Board {
+  return board([quiet(`Measuring ${projectName}. The panels fill in when bd answers.`)], {
+    status: { label: projectName, tone: "neutral" },
+    chip: "first sweep running",
+  });
+}
+
+export function composeMeasuringPanel(projectName: string): Board {
+  return board([quiet(`Measuring ${projectName}.`)]);
+}
+
+// A sweep that threw (bd could not be run at all) alarms on every panel.
+export function composeSweepFailed(error: string): Board {
+  return failedBoard("this project", error);
+}
