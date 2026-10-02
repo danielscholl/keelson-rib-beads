@@ -48,13 +48,14 @@ Below the Overview come three zones in the order the operator acts.
   labelled `owner` or `human`, ranked by how much work waits on each, with
   what it unblocks. The panel hides when there are none.
 - **Epics.** *Wave map* draws each open epic as columns: a child's column is
-  one more than the deepest column among its open blockers, so the first
-  column holds what no open bead blocks and position says what waits on what. Lines join a
-  bead to its blockers; hovering a bead lights its chain. A bead that holds
-  two or more others carries a `holds N` tag, and a person's call carries
-  `your call`. Under an epic a child prints as
-  `.5`; the epic prints its id once. Clicking a bead in the map opens the
-  inspector.
+  one more than the deepest column among its open blockers, so wave 1
+  (unblocked) holds what no open bead blocks and position says what waits on
+  what. A wave with no bead draws no column. Lines join a bead to its
+  blockers; hovering a bead lights its chain, and a click keeps it lit until
+  Esc or a click on empty space. A bead that holds two or more others carries
+  a `holds N` tag, and a person's call carries `your call`. Under an epic a
+  child prints as `.5`; the epic prints its id once. Clicking a bead in the
+  map opens the inspector.
 - **Backlog and shipped.** *Backlog* is every open bead that is on no epic
   and not in flight, grouped by priority; it hides when there is none, and
   Shipped takes the full width. *Shipped* compares closes and creates this

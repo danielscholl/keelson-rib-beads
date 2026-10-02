@@ -68,9 +68,9 @@ body{margin:0;padding:4px 2px 8px;background:var(--bg);color:var(--fg);font:13px
 .scroll{overflow-x:auto;margin-top:12px}
 .waves{position:relative;display:grid;grid-auto-flow:column;grid-auto-columns:minmax(190px,1fr);gap:8px 48px;align-items:start}
 .waves svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}
-.waves path{fill:none;stroke:var(--muted);stroke-width:1.2;opacity:.55}
+.waves path{fill:none;stroke:var(--muted);stroke-width:1.1;opacity:.35}
 .waves path.hot{stroke:var(--accent);stroke-width:2;opacity:1}
-.waves.lit path:not(.hot){opacity:.12}
+.waves.lit path:not(.hot){opacity:.07}
 .wave{display:flex;flex-direction:column;gap:8px;position:relative;z-index:1;min-width:0}
 .wave h3{margin:0 0 2px;font:600 11px var(--sans);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
 .wave h3 span{font-weight:400;letter-spacing:0;text-transform:none}
@@ -172,14 +172,19 @@ const SCRIPT = `
     if(typeof ResizeObserver==="function")new ResizeObserver(draw).observe(map);
     else window.addEventListener("resize",draw);
   });
-  document.addEventListener("click",function(e){
-    var b=e.target&&e.target.closest?e.target.closest("[data-id]"):null;
-    if(!b)return;
-    sel=b.dataset.id;
+  function mark(id){
+    sel=id;
     document.querySelectorAll(".chip").forEach(function(c){c.classList.toggle("sel",c.dataset.id===sel);});
     document.querySelectorAll(".waves").forEach(function(m){m._rest();});
+  }
+  // Clearing is local: the rib honours only select-bead from a frame.
+  document.addEventListener("click",function(e){
+    var b=e.target&&e.target.closest?e.target.closest("[data-id]"):null;
+    if(!b){if(sel)mark(null);return;}
+    mark(b.dataset.id);
     if(window.keelson)window.keelson.action("select-bead",{id:sel});
   });
+  document.addEventListener("keydown",function(e){if(e.key==="Escape"&&sel)mark(null);});
 })();
 `;
 
@@ -264,15 +269,23 @@ function epicBlock(view: EpicView): string {
         )}${done.length > DONE_LISTED ? `<span>+${done.length - DONE_LISTED} more</span>` : ""}</div>`
     : "";
   const waveCount = nodes.reduce((max, n) => Math.max(max, n.wave + 1), 0);
-  const columns = Array.from({ length: waveCount }, (_, w) => {
-    const inWave = nodes.filter((n) => n.wave === w);
-    const title = w === 0 ? "No open blockers" : `Wave ${w + 1}`;
-    return `<div class="wave"><h3>${title} <span>· ${inWave.length}</span></h3>${inWave
-      .map((n) => chip(n, epicId))
-      .join("")}</div>`;
-  }).join("");
-  const map = waveCount
-    ? `<div class="scroll"><div class="waves" style="min-width:${waveCount * 190 + (waveCount - 1) * 48}px"><svg aria-hidden="true"></svg>${columns}</div></div>`
+  // A wave with no bead draws no column (an epic whose first wave all waits
+  // on another epic); the rest keep their numbers.
+  const waves = Array.from({ length: waveCount }, (_, w) => ({
+    w,
+    inWave: nodes.filter((n) => n.wave === w),
+  })).filter(({ inWave }) => inWave.length > 0);
+  const columns = waves
+    .map(({ w, inWave }) => {
+      const note = w === 0 ? " · unblocked" : "";
+      return `<div class="wave"><h3>Wave ${w + 1} <span>· ${inWave.length}${note}</span></h3>${inWave
+        .map((n) => chip(n, epicId))
+        .join("")}</div>`;
+    })
+    .join("");
+  const shown = waves.length;
+  const map = shown
+    ? `<div class="scroll"><div class="waves" style="min-width:${shown * 190 + (shown - 1) * 48}px"><svg aria-hidden="true"></svg>${columns}</div></div>`
     : "";
   return (
     `<section class="epic"><div class="head"><button type="button" data-id="${esc(epicId)}">${esc(clampTitle(row.epic.title))}</button>` +
