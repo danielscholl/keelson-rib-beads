@@ -1504,7 +1504,7 @@ nodes:
     context: fresh
     model: deep
     model_by_provider:
-      copilot: gpt-6-luna
+      copilot: claude-opus-5.5
     effort: medium
     allowed_tools: [Read, Glob, Grep]
     output_format:
