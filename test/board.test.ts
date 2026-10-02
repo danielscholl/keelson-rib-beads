@@ -405,11 +405,36 @@ describe("tracker strip", () => {
       type: "select-project",
       payload: { scopeId: "b" },
     });
-    expect(tiles.items.map((t) => t.fields?.[0]?.value)).toEqual([
-      "3 in flight · 18 open · 11 closed",
+    expect(tiles.items[0]?.fields).toEqual([
+      { value: "4 ready", tone: "accent" },
+      { value: "3 in flight" },
+      { value: "18 open" },
+      { value: "11 closed" },
+    ]);
+    expect(tiles.items.slice(1).map((t) => t.fields?.[0]?.value)).toEqual([
       "counting…",
       "UNMEASURED",
     ]);
+  });
+
+  test("a tracker with nothing ready keeps the count without the accent", () => {
+    const view = composeTrackers([
+      {
+        id: "a",
+        name: "alpha",
+        summary: ok({
+          total_issues: 2,
+          open_issues: 2,
+          ready_issues: 0,
+          blocked_issues: 2,
+          in_progress_issues: 0,
+          closed_issues: 0,
+        }),
+      },
+    ]);
+    const tiles = view.sections[0];
+    if (tiles?.kind !== "cards") throw new Error("no tiles");
+    expect(tiles.items[0]?.fields?.[0]).toEqual({ value: "0 ready" });
   });
 
   test("no tracker registered shows how to get one", () => {
