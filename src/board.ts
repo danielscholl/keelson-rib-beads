@@ -1242,36 +1242,6 @@ export function epicViews(m: ProjectMeasurement): EpicView[] {
   });
 }
 
-// ── Selected: the bead last picked in the wave map, with the Inspect action.
-// The host does not act on an open-canvas reply to a frame-relayed action, so
-// the map can select but cannot open the drawer; this structured card can.
-export function composeSelected(m: ProjectMeasurement, selectedId: string | undefined): Board {
-  if (!m.epics.ok || !m.epics.data.some((r) => r.epic.status !== "closed")) return HIDDEN;
-  if (!selectedId) {
-    return board([quiet("Select a bead in the map to see it here and open the inspector.")]);
-  }
-  const members = m.epicChildren.ok ? Object.values(m.epicChildren.data).flat() : [];
-  const known =
-    backlogIndex(m).get(selectedId) ??
-    members.find((c) => c.id === selectedId) ??
-    m.epics.data.find((r) => r.epic.id === selectedId)?.epic;
-  // An id this sweep does not carry shows by id alone, with no status claimed.
-  const issue = known ?? { id: selectedId, title: selectedId, status: "open" };
-  return board([
-    {
-      kind: "cards",
-      items: [
-        beadCard(issue, {
-          meta: [known ? issue.status.replace("_", " ") : "not in this sweep"],
-          ...(known ? {} : { tone: "neutral" as const }),
-          selectedId,
-          actions: [{ type: "select-bead", label: "Inspect", payload: { id: selectedId } }],
-        }),
-      ],
-    },
-  ]);
-}
-
 // ── Backlog: everything open that is neither in flight nor on an epic's
 // map, one row per bead, grouped by priority so the sort order is said
 // rather than implied.
