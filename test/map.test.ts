@@ -62,7 +62,7 @@ describe("epic wave map", () => {
   test("open children sit in wave columns; the epic id prints once and children print short", () => {
     const html = composeEpicMap(epicMeasurement());
     expect(html).toContain("cx · 2 of 5 done · 1 in flight · 1 ready · 1 waiting");
-    expect(html).toContain("No open blockers <span>· 2</span>");
+    expect(html).toContain("Wave 1 <span>· 2 · unblocked</span>");
     expect(html).toContain("Wave 2 <span>· 1</span>");
     expect(chipIds(html)).toEqual(["cx.3", "cx.4", "cx.5"]);
     // The edge the frame draws, and its text form for a stacked narrow frame.
@@ -70,6 +70,22 @@ describe("epic wave map", () => {
     expect(html).toContain("waits on .4");
     expect(html).toContain('<span class="tag next">next up</span>');
     expect(html).toContain("Done · 2");
+  });
+
+  test("a wave with no bead draws no column; the rest keep their numbers", () => {
+    const m = epicMeasurement();
+    m.inProgress = ok([]);
+    m.ready = ok([]);
+    m.blocked = ok([
+      { id: "cx.3", title: "Landing page", status: "open", priority: 2, blocked_by: ["far-1"] },
+      { id: "cx.4", title: "Detail view", status: "open", priority: 1, blocked_by: ["far-1"] },
+      { id: "cx.5", title: "Share <sheet>", status: "open", priority: 2, blocked_by: ["cx.4"] },
+    ]);
+    const html = composeEpicMap(m);
+    expect(html).not.toContain("Wave 1 ");
+    expect(html).toContain("Wave 2 <span>· 2</span>");
+    expect(html).toContain("Wave 3 <span>· 1</span>");
+    expect(html).toContain("min-width:428px");
   });
 
   test("tracker text is escaped everywhere it lands", () => {
