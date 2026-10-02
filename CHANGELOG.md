@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.7.0](https://github.com/danielscholl/keelson-rib-beads/compare/v0.6.0...v0.7.0) (2026-10-02)
+
+
+### Added
+
+* **beads:** caption the stage meter and name what holds a claim ([#34](https://github.com/danielscholl/keelson-rib-beads/issues/34)) ([f50930e](https://github.com/danielscholl/keelson-rib-beads/commit/f50930e80aee351c4d6e1f4ed36ef9e7e55fc9c3))
+* **beads:** lead each tracker tile with its ready count ([#38](https://github.com/danielscholl/keelson-rib-beads/issues/38)) ([8c43cd3](https://github.com/danielscholl/keelson-rib-beads/commit/8c43cd32c7e174e3e8841c8078f08798f835d2fc))
+* **beads:** lead the inspector with the bead title ([#33](https://github.com/danielscholl/keelson-rib-beads/issues/33)) ([0082a65](https://github.com/danielscholl/keelson-rib-beads/commit/0082a65095b094f4e6b497bbdca6358717fdf5d2))
+* **beads:** say the Overview totals once ([#35](https://github.com/danielscholl/keelson-rib-beads/issues/35)) ([9734785](https://github.com/danielscholl/keelson-rib-beads/commit/97347854db086950248bb05e11b272ab583a8a74))
+* **beads:** show P1 only where it stands out ([#37](https://github.com/danielscholl/keelson-rib-beads/issues/37)) ([31d9c56](https://github.com/danielscholl/keelson-rib-beads/commit/31d9c56f6ef2a59f5a1783346056553c3b656a4d))
+* **beads:** suggest claim to close when nothing is ready ([#30](https://github.com/danielscholl/keelson-rib-beads/issues/30)) ([c617d11](https://github.com/danielscholl/keelson-rib-beads/commit/c617d11b8d536461d009b9a9e930649dcb2c1ed5))
+* **beads:** wave map labels, empty waves, and clearing selection ([#36](https://github.com/danielscholl/keelson-rib-beads/issues/36)) ([b7eb01a](https://github.com/danielscholl/keelson-rib-beads/commit/b7eb01afec723b31acd749d0b7019872413c29cb))
+
+
+### Fixed
+
+* **beads:** keep the waits on label on one line at phone width ([#40](https://github.com/danielscholl/keelson-rib-beads/issues/40)) ([9d07409](https://github.com/danielscholl/keelson-rib-beads/commit/9d074097ae901d281993a3ef5a15166e90088ade))
+
+
+### Documentation
+
+* **beads:** say the tracker selection is shared by every viewer ([#39](https://github.com/danielscholl/keelson-rib-beads/issues/39)) ([ad93b52](https://github.com/danielscholl/keelson-rib-beads/commit/ad93b52f9b12c5519ee272582e9253681cadc6d8))
+
 ## [0.6.0](https://github.com/danielscholl/keelson-rib-beads/compare/v0.5.0...v0.6.0) (2026-10-02)
 
 
