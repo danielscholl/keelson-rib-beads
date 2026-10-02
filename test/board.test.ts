@@ -278,15 +278,13 @@ describe("bead grammar", () => {
 });
 
 describe("header", () => {
-  test("one sentence says the week, above the flow strip", () => {
+  test("the flow strip says the totals once, measured on the local clock", () => {
     const pulse = composePulse(fullMeasurement());
     expect(() => validBoard(pulse)).not.toThrow();
     const strip = pulse.sections[0];
     if (strip?.kind !== "segments") throw new Error("no strip");
-    // The sentence reads the strip's own populations: 1 claimed, 2 ready,
-    // 3 blocked and unclaimed, 1 closed this week.
-    expect(strip.title).toBe("1 in flight · 2 ready to start · 3 waiting · 1 shipped this week");
-    expect(pulse.header?.chip).toBe("bd 1.2.2 · measured 12:00Z");
+    expect(strip.title).toBeUndefined();
+    expect(pulse.header?.chip).toMatch(/^bd 1\.2\.2 · measured \d\d:\d\d$/);
     expect(pulse.header?.status?.tone).toBe("ok");
   });
 
@@ -1328,13 +1326,22 @@ describe("the flow strip", () => {
     // claimed-and-blocked overlap folds into In progress for the strip only.
     // One tone per lane, the same tones the bead dots and the epic map use,
     // so a segment can be told apart without reading the legend.
+    // An empty lane (In review here) is left out of the strip.
     expect(stripOf(pulse)).toEqual([
       { label: "Waiting", n: 3, tone: "neutral" },
       { label: "Ready", n: 2, tone: "accent" },
       { label: "In progress", n: 1, tone: "info" },
-      { label: "In review", n: 0, tone: "brand" },
       { label: "Done 7d", n: 1, tone: "ok" },
     ]);
+  });
+
+  test("an all-empty tracker keeps every lane", () => {
+    const m = fullMeasurement();
+    m.blocked = ok([]);
+    m.ready = ok([]);
+    setWip(m, []);
+    m.recentlyClosed = ok([]);
+    expect(stripOf(composePulse(m))?.map((s) => s.n)).toEqual([0, 0, 0, 0, 0]);
   });
 
   test("a claimed-and-blocked bead counts once, under in progress", () => {
@@ -1349,7 +1356,7 @@ describe("the flow strip", () => {
     const m = fullMeasurement();
     m.runInfo = ok({ "tl-a": ok({ prUrl: "https://github.com/acme/demo/pull/9" }) });
     const segments = stripOf(composePulse(m));
-    expect(segments?.find((s) => s.label === "In progress")?.n).toBe(0);
+    expect(segments?.find((s) => s.label === "In progress")).toBeUndefined();
     expect(segments?.find((s) => s.label === "In review")?.n).toBe(1);
   });
 

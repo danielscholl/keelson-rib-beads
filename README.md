@@ -26,10 +26,11 @@ appear. The selected board is composed in-process from `bd` output on a
 
 Below the Overview come three zones in the order the operator acts.
 
-- **Overview.** One sentence with the totals (in flight, ready to start,
-  waiting, shipped this week) above the flow strip (waiting → ready → in
-  progress → in review → done 7d), one colour per lane. A shared cause reports
-  here once: a `bd` older than 1.2, or a `gh` that fails every PR lookup.
+- **Overview.** The flow strip (waiting → ready → in progress → in review →
+  done 7d), one colour per lane, with its legend carrying the totals once. An
+  empty lane is left out, and the measured time is the local clock. A shared
+  cause reports here once: a `bd` older than 1.2, or a `gh` that fails every
+  PR lookup.
   Panels that depend on it point at the header instead of alarming separately.
   Merged PRs whose beads are still open show here as one line with a
   confirmed **Reconcile merged PRs** action, and stale claims and epics ready
