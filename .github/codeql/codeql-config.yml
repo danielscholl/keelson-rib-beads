@@ -1,0 +1,8 @@
+name: CodeQL config
+
+# Keep CodeQL on the shipped surface (src/, dev/). Tests are noise, and
+# evals/review/base is a fixture service seeded with deliberate bugs.
+paths-ignore:
+  - "**/*.test.ts"
+  - "test/**"
+  - "evals/**"

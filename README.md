@@ -228,6 +228,10 @@ bun run check
 bun dev/link.ts        # symlink into a local keelson checkout (KEELSON_DIR)
 ```
 
+[CONTRIBUTING.md](CONTRIBUTING.md) has the checks and conventions a pull
+request follows; report vulnerabilities as [SECURITY.md](SECURITY.md)
+describes.
+
 ### Evaluating the correctness reviewer
 
 `evals/review/` grades the `review-correctness` lens of `beads-work` against

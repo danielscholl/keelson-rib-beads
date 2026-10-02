@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/danielscholl/keelson-rib-beads/security/policy
+    about: Report security issues privately as SECURITY.md describes, not as a public issue.

@@ -12,6 +12,7 @@ on:
 
 permissions:
   contents: write
+  issues: write
   pull-requests: write
 
 concurrency:
@@ -54,10 +55,9 @@ jobs:
         run: |
           version="$(jq -r '.["."]' .release-please-manifest.json)"
           tag="v${version}"
-          # The manifest starts at the pre-release version, which is never tagged.
-          # Until the first release PR merges there is nothing to have dropped.
-          if [ -z "$(gh release list --repo "${{ github.repository }}" --limit 1)" ]; then
-            echo "ok: no releases yet; nothing to verify"
+          # 0.0.0 is the pre-release manifest and is never tagged.
+          if [ "${version}" = "0.0.0" ]; then
+            echo "ok: manifest still at 0.0.0; nothing released yet"
             exit 0
           fi
           # release-please creates the Release in the job above; retry to ride
