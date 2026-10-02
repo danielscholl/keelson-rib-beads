@@ -1632,7 +1632,9 @@ export function composeInspect(
   const linkRow = (icon: string, l: { id: string; text: string }): RowItem => ({
     icon,
     text: l.text,
-    ...(l.id === "?" ? {} : { action: { type: "select-bead", payload: { id: l.id } } }),
+    ...(l.id === "?"
+      ? {}
+      : { trailing: "›", action: { type: "select-bead", payload: { id: l.id } } }),
   });
   // Only blocking edges that still hold. A parent-child edge is membership,
   // and a closed blocker is satisfied; unknown status is kept, since absence
@@ -1652,28 +1654,42 @@ export function composeInspect(
     i.status === "blocked" ||
     (blockedEntry !== undefined && (blockedBy.length > 0 || waitsOn.length > 0));
   const blockerCount = blockedBy.length || waitsOn.length;
-  const meta: LeafSection = {
-    kind: "rows",
-    boxed: true,
+  // The bead leads in its board shape: the title as the heading, the id once
+  // in a meta line with the facts that fit on it.
+  const head: LeafSection = {
+    kind: "cards",
     items: [
-      { text: "status", trailing: `${statusGlyph(i.status)} ${i.status.replace("_", " ")}` },
-      { text: "priority", trailing: `P${i.priority}` },
-      { text: "owner", trailing: shortPerson(personOf(i)) ?? "unassigned" },
-      ...(i.issue_type ? [{ text: "type", trailing: i.issue_type }] : []),
-      ...(epicEdge
-        ? [
-            {
-              text: "epic",
-              trailing: epicEdge.title
-                ? `${linkedId(epicEdge)} · ${epicEdge.title}`
-                : linkedId(epicEdge),
-            },
-          ]
-        : []),
-      ...(i.labels?.length ? [{ text: "labels", trailing: i.labels.join(", ") }] : []),
+      {
+        title: i.title,
+        dot: lifecycleTone(lifecycleOf(i)),
+        fields: [
+          {
+            value: [
+              i.id,
+              `${statusGlyph(i.status)} ${i.status.replace("_", " ")}`,
+              `P${i.priority}`,
+              shortPerson(personOf(i)) ?? "unassigned",
+              i.issue_type,
+            ]
+              .filter(Boolean)
+              .join(" · "),
+          },
+          ...(epicEdge
+            ? [
+                {
+                  label: "epic",
+                  value: epicEdge.title
+                    ? `${linkedId(epicEdge)} · ${epicEdge.title}`
+                    : linkedId(epicEdge),
+                },
+              ]
+            : []),
+          ...(i.labels?.length ? [{ label: "labels", value: i.labels.join(", ") }] : []),
+        ],
+      },
     ],
   };
-  const left: LeafSection[] = [meta];
+  const left: LeafSection[] = [head];
   const right: LeafSection[] = [];
   if (isBlocked) {
     left.push({
@@ -1721,39 +1737,29 @@ export function composeInspect(
       ],
     });
   } else if (!merged && i.status !== "closed" && i.status !== "in_progress") {
-    const claim = (id: string, label: string, disabled?: { reason: string }) => ({
+    const claim = (id: string, label: string) => ({
       type: "claim-bead",
       label,
       tone: "brand" as const,
       payload: { id },
-      ...(disabled
-        ? { disabled: true, reason: disabled.reason }
-        : {
-            confirm: {
-              subject: id,
-              title: "Claim this bead?",
-              body: `Runs bd update ${id} --claim: assigns it to you and sets it in progress.`,
-              confirmLabel: "Claim it",
-            },
-          }),
+      confirm: {
+        subject: id,
+        title: "Claim this bead?",
+        body: `Runs bd update ${id} --claim: assigns it to you and sets it in progress.`,
+        confirmLabel: "Claim it",
+      },
     });
-    left.push({
-      kind: "actions",
-      items: isBlocked
-        ? [
-            claim(i.id, "Start this bead", {
-              reason: blockerCount ? `waits on ${plural(blockerCount, "bead")}` : "paused by hand",
-            }),
-            ...(recommended && recommended.id !== i.id
-              ? mergedAlternative
-                ? opts.projectId
-                  ? [reconcileAction(opts.projectId)]
-                  : []
-                : [claim(recommended.id, `Start ${recommended.id} instead`)]
-              : []),
-          ]
-        : [claim(i.id, "Start this bead")],
-    });
+    // A blocked bead offers only the alternative; the blocked row says why.
+    const items = isBlocked
+      ? recommended && recommended.id !== i.id
+        ? mergedAlternative
+          ? opts.projectId
+            ? [reconcileAction(opts.projectId)]
+            : []
+          : [claim(recommended.id, `Start ${recommended.id} instead`)]
+        : []
+      : [claim(i.id, "Start this bead")];
+    if (items.length) left.push({ kind: "actions", items });
   }
   if (waitsOn.length || blockedBy.length) {
     left.push({
@@ -1797,7 +1803,7 @@ export function composeInspect(
     right.push({
       kind: "rows",
       title: "Acceptance criteria",
-      items: criteria.map((c) => ({ icon: c.checked ? "☑" : "☐", text: c.text })),
+      items: criteria.map((c) => ({ icon: c.checked ? "✓" : "•", text: c.text })),
     });
   }
   // The bead-work lines render in the timeline; anything else a person wrote
@@ -1819,24 +1825,15 @@ export function composeInspect(
       ...(opts.comments && !opts.comments.ok ? [alarmRow("comments", opts.comments.error)] : []),
     ],
   });
-  return board(
-    [
-      {
-        kind: "columns",
-        columns: [
-          { weight: 1, sections: left },
-          { weight: 2, sections: right },
-        ],
-      },
-    ],
+  return board([
     {
-      status: {
-        label: `${i.id} · ${i.status.replace("_", " ")}`,
-        tone: lifecycleTone(lifecycleOf(i)),
-      },
-      chip: clampTitle(i.title, 80),
+      kind: "columns",
+      columns: [
+        { weight: 1, sections: left },
+        { weight: 2, sections: right },
+      ],
     },
-  );
+  ]);
 }
 
 // The inspector when bd is below the floor: `bd show --include-dependents`

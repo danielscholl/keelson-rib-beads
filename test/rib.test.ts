@@ -94,7 +94,7 @@ describe("rib contract shape", () => {
     expect((select as { data?: unknown }).data).toEqual({
       effect: "open-canvas",
       key: INSPECT_KEY,
-      title: "Bead tl-x",
+      title: "Bead",
       placement: "side",
     });
     const flag = await rib.onAction?.(

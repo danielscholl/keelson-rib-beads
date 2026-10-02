@@ -1015,7 +1015,7 @@ describe("inspector", () => {
     );
     expect(() => validBoard(view)).not.toThrow();
     const flat = JSON.stringify(view);
-    expect(flat).toContain('"text":"epic","trailing":"cx · Cosmos v1"');
+    expect(flat).toContain('{"label":"epic","value":"cx · Cosmos v1"}');
     const waits = JSON.stringify(
       (view.sections[0]?.kind === "columns" ? view.sections[0].columns[0]?.sections : [])?.find(
         (s) => s.title === "Waits on",
@@ -1077,8 +1077,21 @@ describe("inspector", () => {
     const blocked = composeInspect(ok(bead()), [{ ...bead(), blocked_by: ["cx.2"] }], pick);
     expect(() => validBoard(blocked)).not.toThrow();
     const flat = JSON.stringify(blocked);
-    expect(flat).toContain('"disabled":true');
+    expect(flat).not.toContain("Start this bead");
     expect(flat).toContain("Start tl-b instead");
+    const alone = JSON.stringify(composeInspect(ok(bead()), [{ ...bead(), blocked_by: ["cx.2"] }]));
+    expect(alone).not.toContain("claim-bead");
+  });
+
+  test("the bead leads with its title and prints its id once", () => {
+    const view = composeInspect(ok(bead({ labels: ["ui"] })), []);
+    expect(view.header).toBeUndefined();
+    const left = view.sections[0]?.kind === "columns" ? view.sections[0].columns[0] : undefined;
+    const head = left?.sections[0];
+    if (head?.kind !== "cards") throw new Error("no head card");
+    expect(head.items[0]?.title).toBe("Detail view");
+    expect(head.items[0]?.fields?.[0]?.value).toBe("cx.4 · ○ open · P2 · unassigned");
+    expect(head.items[0]?.fields?.[1]).toEqual({ label: "labels", value: "ui" });
   });
 
   test("an epic is never offered as work, and lists its children", () => {
@@ -1499,11 +1512,11 @@ describe("ids and stages said once", () => {
     expect(() => validBoard(view)).not.toThrow();
     const flat = JSON.stringify(view);
     expect(flat).toContain(
-      '"text":"ep.5 · Pick","action":{"type":"select-bead","payload":{"id":"ep.5"}}',
+      '"text":"ep.5 · Pick","trailing":"›","action":{"type":"select-bead","payload":{"id":"ep.5"}}',
     );
     expect(flat).toContain(
-      '"text":"ep.9 · Later","action":{"type":"select-bead","payload":{"id":"ep.9"}}',
+      '"text":"ep.9 · Later","trailing":"›","action":{"type":"select-bead","payload":{"id":"ep.9"}}',
     );
-    expect(flat).toContain('{"icon":"☐","text":"One."}');
+    expect(flat).toContain('{"icon":"•","text":"One."}');
   });
 });
