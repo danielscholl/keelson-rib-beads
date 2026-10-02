@@ -558,7 +558,19 @@ export function flightStage(
 }
 
 // The one signal a bead carries, most pressing first. Most beads carry none.
+// The priority most of a set shares, when one strictly leads. A pill for it
+// would sit on most of the set and say nothing.
+export function commonPriority(items: readonly { priority?: number }[]): number | undefined {
+  const counts = new Map<number, number>();
+  for (const i of items) counts.set(i.priority ?? 2, (counts.get(i.priority ?? 2) ?? 0) + 1);
+  const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  const [top, next] = ranked;
+  return top && (!next || top[1] > next[1]) ? top[0] : undefined;
+}
+
 export interface SignalContext {
+  // P1 is a signal only where it stands out; P0 always is.
+  commonPriority?: number;
   waitingOn?: readonly string[];
   handPaused?: boolean;
   staleDays?: number;
@@ -574,7 +586,7 @@ export function signalOf(i: BdIssue, c: SignalContext = {}): Pill | undefined {
   if (c.closeout) return { label: "closeout review", tone: "warn" };
   if (i.status === "deferred") return { label: "on hold", tone: "neutral" };
   if (i.priority === 0) return { label: "P0", tone: "error" };
-  if (i.priority === 1) return { label: "P1", tone: "warn" };
+  if (i.priority === 1 && c.commonPriority !== 1) return { label: "P1", tone: "warn" };
   return undefined;
 }
 
@@ -946,6 +958,7 @@ export function composeWip(m: ProjectMeasurement, ctx: PanelContext): Board {
     });
   };
   const people = assigneeView(m.inProgress.data);
+  const common = commonPriority(m.inProgress.data);
   const runCount = m.inProgress.data.filter((i) => runInfoOf(m, i.id) !== undefined).length;
   const otherCount = m.inProgress.data.length - runCount;
   const title =
@@ -995,6 +1008,7 @@ export function composeWip(m: ProjectMeasurement, ctx: PanelContext): Board {
         flightStage(i, info, pr, now),
       ],
       signal: signalOf(i, {
+        commonPriority: common,
         mergePending: Boolean(mergedPR(m.prInfo, i.id)),
         waitingOn: holds,
         staleDays: staleDaysOf(m, i, now),

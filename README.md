@@ -77,7 +77,8 @@ not record says so.
 dot, title, a meta line led by the id as `bd` prints it, one signal pill, and
 the evidence line) and a row in dense lists (lane dot, title, id and signal on
 the right). The dot is the lane: to do, in flight, done. Waiting, staleness,
-merge drift and P0/P1 are signals, and most beads carry none.
+merge drift and P0/P1 are signals, and most beads carry none. P0 always
+shows; P1 shows only where it isn't what most of the panel or epic shares.
 
 The blocked set is the **union** of dependency-blocked (`bd blocked`) and
 status-blocked (`bd list --status blocked`); either query alone undercounts.

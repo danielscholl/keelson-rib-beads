@@ -88,6 +88,21 @@ describe("epic wave map", () => {
     expect(html).toContain("min-width:428px");
   });
 
+  test("P1 tags drop when most of the epic is P1; P0 stays", () => {
+    const m = epicMeasurement();
+    expect(composeEpicMap(m)).toContain('<span class="tag p">P1</span>');
+    m.epicChildren = ok({
+      cx: [
+        { id: "cx.3", title: "Landing page", status: "in_progress", priority: 1 },
+        { id: "cx.4", title: "Detail view", status: "open", priority: 1 },
+        { id: "cx.5", title: "Share", status: "open", priority: 0 },
+      ],
+    });
+    const html = composeEpicMap(m);
+    expect(html).not.toContain('<span class="tag p">P1</span>');
+    expect(html).toContain('<span class="tag p p0">P0</span>');
+  });
+
   test("tracker text is escaped everywhere it lands", () => {
     const m = epicMeasurement();
     if (!m.epics.ok || !m.epicChildren.ok) throw new Error("fixture");
