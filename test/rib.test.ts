@@ -13,6 +13,7 @@ import {
   PULSE_KEY,
   RECOMMEND_KEY,
   SHIPPED_KEY,
+  TRACKERS_KEY,
   WIP_KEY,
 } from "../src/keys";
 
@@ -28,10 +29,10 @@ describe("rib contract shape", () => {
     }
   });
 
-  test("the surface lays out Now, the epic map, then backlog and shipped", () => {
+  test("the surface lays out the trackers, the overview, Now, the epic map, then backlog and shipped", () => {
     const surface = rib.surfaces?.[0];
     expect(surface?.id).toBe("beads");
-    expect(surface?.layout.header?.key).toBe(PULSE_KEY);
+    expect(surface?.layout.header?.key).toBe(TRACKERS_KEY);
     const rowKeys = surface?.layout.rows.map((r) =>
       r.columns.map((c) => columnRegions(c).map((region) => region.key)),
     );
@@ -39,11 +40,13 @@ describe("rib contract shape", () => {
     // without epics leaves no empty panel. The inspector has no region: it
     // opens in the canvas drawer.
     expect(rowKeys).toEqual([
+      [[PULSE_KEY]],
       [[WIP_KEY], [RECOMMEND_KEY], [ATTENTION_KEY]],
       [[EPIC_MAP_KEY]],
       [[BACKLOG_KEY], [SHIPPED_KEY]],
     ]);
     expect(surface?.layout.rows.map((r) => r.zoneTitle)).toEqual([
+      undefined,
       "Now",
       "Epics",
       "Backlog and shipped",
@@ -51,10 +54,21 @@ describe("rib contract shape", () => {
     const titles = surface?.layout.rows.flatMap((r) =>
       r.columns.flatMap((c) => columnRegions(c).map((region) => region.title)),
     );
-    expect(titles).toEqual(["In flight", "Next up", "Needs you", "Wave map", "Backlog", "Shipped"]);
-    for (const region of surface?.layout.rows[1]?.columns.flatMap(columnRegions) ?? []) {
-      expect(region.hideWhenEmpty).toBe(true);
-    }
+    expect(titles).toEqual([
+      "Overview",
+      "In flight",
+      "Next up",
+      "Your calls",
+      "Wave map",
+      "Backlog",
+      "Shipped",
+    ]);
+    // The map and Your calls hide when they have nothing to show.
+    const regions = surface?.layout.rows.flatMap((r) => r.columns.flatMap(columnRegions)) ?? [];
+    expect(regions.filter((r) => r.hideWhenEmpty).map((r) => r.key)).toEqual([
+      ATTENTION_KEY,
+      EPIC_MAP_KEY,
+    ]);
     // The map is the one html region; every other key is a structured view.
     expect(rib.views?.filter((v) => v.canvasKind === "html").map((v) => v.key)).toEqual([
       EPIC_MAP_KEY,
@@ -97,14 +111,19 @@ describe("rib contract shape", () => {
     }
   });
 
-  test("the surface opts into the host project picker", () => {
-    expect(rib.surfaces?.[0]?.projectScoped).toBe(true);
+  test("the surface owns its scope instead of the host's all-projects picker", () => {
+    expect(rib.surfaces?.[0]?.projectScoped).toBeUndefined();
   });
 
   test("select-project and select-bead succeed; unknown actions fail closed", async () => {
     const ctx = { getExec: () => ({}) as never };
-    const good = await rib.onAction?.({ type: "select-project", payload: { scopeId: "p1" } }, ctx);
+    const good = await rib.onAction?.({ type: "select-project", payload: {} }, ctx);
     expect(good?.ok).toBe(true);
+    const stranger = await rib.onAction?.(
+      { type: "select-project", payload: { scopeId: "p1" } },
+      ctx,
+    );
+    expect(stranger?.ok).toBe(false);
     const pick = await rib.onAction?.({ type: "select-bead", payload: { id: "tl-x" } }, ctx);
     expect(pick?.ok).toBe(true);
     // Selection answers with an open-canvas directive so the inspector lands
@@ -126,6 +145,127 @@ describe("rib contract shape", () => {
     expect(docs?.[0]?.content).toContain("beads_ready");
     expect(docs?.[0]?.content).toContain("retains claims with a recorded or unknown PR state");
     expect(docs?.[0]?.content).not.toContain("releases the claim on failure");
+  });
+});
+
+describe("no tracker registered", () => {
+  test("the strip says how to get one and the map frame stays markup", async () => {
+    const composers = new Map<string, () => Promise<unknown>>();
+    const ctx = {
+      getExec: () => ({ runJSON: async () => ({ ok: true, data: [] }) }),
+      getProjects: () => [],
+      getSnapshotManager: () => ({
+        register: (key: string, compose: () => Promise<unknown>) => {
+          composers.set(key, compose);
+          return () => {};
+        },
+        recompose: async () => undefined,
+      }),
+    };
+    try {
+      rib.registerTools?.(ctx as never);
+      expect(await composers.get(EPIC_MAP_KEY)?.()).toBe("");
+      expect(JSON.stringify(await composers.get(TRACKERS_KEY)?.())).toContain(
+        "no beads tracker registered",
+      );
+      expect(await composers.get(WIP_KEY)?.()).toEqual({ view: "board", sections: [] });
+    } finally {
+      rib.dispose?.();
+    }
+  });
+});
+
+describe("tracker choice", () => {
+  test("the picked tracker is remembered across a re-activation", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "beads-rib-data-"));
+    const roots = ["alpha", "bravo"].map((name) => {
+      const rootPath = mkdtempSync(join(tmpdir(), `beads-rib-${name}-`));
+      mkdirSync(join(rootPath, ".beads"));
+      return { id: name, name, rootPath };
+    });
+    const composers = new Map<string, () => Promise<unknown>>();
+    const ctx = {
+      getExec: () => ({ runJSON: async () => ({ ok: true, data: [] }) }),
+      getProjects: () => roots,
+      getDataDir: () => dataDir,
+      getSnapshotManager: () => ({
+        register: (key: string, compose: () => Promise<unknown>) => {
+          composers.set(key, compose);
+          return () => {};
+        },
+        recompose: async () => undefined,
+      }),
+    };
+    const selected = async () => {
+      const strip = (await composers.get(TRACKERS_KEY)?.()) as {
+        sections: { items: { title: string; selected?: boolean }[] }[];
+      };
+      return strip.sections[0]?.items.find((t) => t.selected)?.title;
+    };
+    try {
+      rib.registerTools?.(ctx as never);
+      expect(await selected()).toBe("alpha");
+      await rib.onAction?.({ type: "select-project", payload: { scopeId: "bravo" } }, ctx as never);
+      expect(await selected()).toBe("bravo");
+      rib.dispose?.();
+      rib.registerTools?.(ctx as never);
+      expect(await selected()).toBe("bravo");
+    } finally {
+      rib.dispose?.();
+      rmSync(dataDir, { recursive: true, force: true });
+      for (const root of roots) rmSync(root.rootPath, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("recompose ordering", () => {
+  test("a recompose asked for mid-compose still paints the newer state", async () => {
+    const rootPath = mkdtempSync(join(tmpdir(), "beads-rib-"));
+    mkdirSync(join(rootPath, ".beads"));
+    const composers = new Map<string, () => Promise<unknown>>();
+    const frames = new Map<string, unknown>();
+    const inflight = new Map<string, Promise<undefined>>();
+    const ctx = {
+      getExec: () => ({
+        runJSON: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 2));
+          return { ok: true, data: [] };
+        },
+      }),
+      getProjects: () => [{ id: "p1", name: "demo", rootPath }],
+      getSnapshotManager: () => ({
+        register: (key: string, compose: () => Promise<unknown>) => {
+          composers.set(key, compose);
+          return () => {};
+        },
+        // Like the host: a recompose during a compose shares the in-flight one.
+        recompose: (key: string) => {
+          const running = inflight.get(key);
+          if (running) return running;
+          const run = (async () => {
+            const frame = await composers.get(key)?.();
+            await new Promise((resolve) => setTimeout(resolve, 5));
+            frames.set(key, frame);
+            inflight.delete(key);
+            return undefined;
+          })();
+          inflight.set(key, run);
+          return run;
+        },
+      }),
+    };
+    try {
+      rib.registerTools?.(ctx as never);
+      for (let i = 0; i < 200; i++) {
+        if (JSON.stringify(frames.get(PULSE_KEY) ?? "").includes("measured ")) break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(JSON.stringify(frames.get(PULSE_KEY))).toContain("measured ");
+      expect(JSON.stringify(frames.get(PULSE_KEY))).not.toContain("first sweep");
+    } finally {
+      rib.dispose?.();
+      rmSync(rootPath, { recursive: true, force: true });
+    }
   });
 });
 

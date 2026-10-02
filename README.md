@@ -11,33 +11,44 @@ the data.
 
 ## What it contributes
 
-**A surface.** The *Beads* nav tab is project-scoped: the host's project
-picker in the surface header chooses which backlog renders, and a project
-without a `.beads` tracker gets an honest empty state that lists the projects
-that have one. The scoped board is composed in-process from `bd` output on a
+**A surface.** The *Beads* nav tab opens on a tracker strip: one tile per
+registered project that carries a `.beads` tracker, each with its in flight,
+open and closed counts. A click switches the board, and the choice is
+remembered across restarts. The strip is the rib's own, so picking a backlog
+never moves Chat's active project, and projects without a tracker never
+appear. The selected board is composed in-process from `bd` output on a
 5-minute cadence:
 
-three zones in the order the operator acts.
+- **Loading.** A first visit fills a meter in the Overview as each `bd` read
+  lands (about 3 seconds for a 40-bead tracker on bd 1.3). A project seen
+  before paints at once from its last sweep and refreshes in place, with the
+  chip reading `refreshing · N of 12`.
+
+Below the Overview come three zones in the order the operator acts.
 
 - **Overview.** One sentence with the totals (in flight, ready to start,
   waiting, shipped this week) above the flow strip (waiting → ready → in
   progress → in review → done 7d), one colour per lane. A shared cause reports
   here once: a `bd` older than 1.2, or a `gh` that fails every PR lookup.
   Panels that depend on it point at the header instead of alarming separately.
+  Merged PRs whose beads are still open show here as one line with a
+  confirmed **Reconcile merged PRs** action, and stale claims and epics ready
+  for closeout as one housekeeping line.
 - **Now.** *In flight* lists every claim with a three-stop stage meter
   (claimed, PR open, merged), how far along it is (claimed N ago, PR open with
   draft, CI and review state, merged and waiting on the close), what closing
   it releases, and its newest comment or run remark. *Next up* is one pick,
   ranked by `dependent_count` before priority, with its unlock chain and
-  runner-up. *Needs you* holds only actions: merged PRs to reconcile (with a
-  confirmed **Reconcile merged PRs** action), reviews to merge, hand-paused
-  work, stale claims and epic closeouts. When all five are empty it lists
-  them with their zero counts.
+  runner-up; it never picks a person's call. *Your calls* lists the beads only
+  a person can finish: type `decision`, or labelled `owner` or `human`,
+  ranked by how much work waits on each, with what it unblocks. The panel
+  hides when there are none.
 - **Epics.** *Wave map* draws each open epic as columns: a child's column is
   one more than the deepest column among its open blockers, so the first
   column holds what no open bead blocks and position says what waits on what. Lines join a
   bead to its blockers; hovering a bead lights its chain. A bead that holds
-  two or more others carries a `holds N` tag. Under an epic a child prints as
+  two or more others carries a `holds N` tag, and a person's call carries
+  `your call`. Under an epic a child prints as
   `.5`; the epic prints its id once. Clicking a bead in the map opens the
   inspector.
 - **Backlog and shipped.** *Backlog* is every open bead that is on no epic
@@ -111,7 +122,8 @@ and one that does the work:
   finding carries the exact `bd` command that would fix it.
 - `beads-work` — takes one bead from the ready queue to a reviewed draft PR:
   claims it (or the bead id you pass, refused while any of its `blocks`
-  dependencies is still open), investigates or plans, pauses for approval,
+  dependencies is still open; with no id it skips decisions and beads
+  labelled `owner` or `human`), investigates or plans, pauses for approval,
   implements in an isolated worktree, runs the project's own checks
   (discovered from its manifests), opens a draft PR, runs a three-lens review
   loop with an independent triage judge, waits on CI, and writes the outcome

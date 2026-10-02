@@ -66,10 +66,11 @@ nodes:
         fi
         bd update "$BEAD" --claim >/dev/null
       else
-        # Atomic claim of the first dependency-ready non-epic issue. Tolerate a
+        # Atomic claim of the first dependency-ready non-epic issue that is not
+        # a person's call (a decision, or labelled owner or human). Tolerate a
         # non-zero exit (empty queue / transient bd error) so the run reports
         # "empty" instead of dying before the writeback node can settle.
-        READY=$(bd ready --exclude-type=epic --claim --json 2>/dev/null || true)
+        READY=$(bd ready --exclude-type=epic,decision --exclude-label=owner,human --claim --json 2>/dev/null || true)
         BEAD=$(printf '%s' "$READY" | jq -r 'if type == "array" then (.[0].id // empty) else (.id // empty) end' 2>/dev/null || true)
       fi
       if [ -z "$BEAD" ]; then

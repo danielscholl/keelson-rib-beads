@@ -328,3 +328,72 @@ describe("bd preflight and evidence sweeps", () => {
     });
   });
 });
+
+describe("full list rows on bd 1.3", () => {
+  const project = { id: "p", name: "Project", rootPath: "/repo" };
+  const url = "https://github.com/acme/demo/pull/7";
+
+  function fake(version: string) {
+    const calls: string[][] = [];
+    const rows: BdIssue[] = [
+      issue("e", { issue_type: "epic" }),
+      issue("e.1", { parent: "e", notes: `bead-work run: PR ${url} — success — opened` }),
+      issue("e.2", {
+        dependencies: [{ issue_id: "e.2", depends_on_id: "e", type: "parent-child" }],
+      }),
+      issue("loose"),
+    ];
+    const closed = [issue("e.3", { status: "closed", parent: "e" })];
+    const exec = {
+      runJSON: async (command: string, args: string[]) => {
+        if (command === "gh") return { ok: true, data: { url, state: "OPEN", mergedAt: null } };
+        const bdArgs = args.slice(1, -1);
+        calls.push(bdArgs);
+        if (bdArgs[0] === "version") return { ok: true, data: { version } };
+        if (bdArgs[0] === "status") return { ok: true, data: { summary: {} } };
+        if (bdArgs[0] === "list" && bdArgs.includes("closed")) return { ok: true, data: closed };
+        if (bdArgs[0] === "list" && bdArgs[1] === "--limit") return { ok: true, data: rows };
+        if (bdArgs[0] === "show") {
+          const row = rows.find((r) => r.id === bdArgs[1]);
+          return { ok: true, data: row ? [row] : [] };
+        }
+        return { ok: true, data: [] };
+      },
+      runText: async () => ({ ok: true, data: "" }),
+    } as unknown as RibExec;
+    return { exec, calls };
+  }
+
+  test("run notes and epic membership come off the list, with no bd show per bead", async () => {
+    const { exec, calls } = fake("1.3.0");
+    const steps: string[] = [];
+    const m = await measureProject(
+      new BdClient(exec),
+      project,
+      () => new Date("2026-08-09T12:00:00Z"),
+      new GhClient(exec),
+      (p) => steps.push(`${p.done}/${p.total} ${p.label}`),
+    );
+    expect(calls.filter((c) => c[0] === "show")).toEqual([]);
+    expect(m.runInfo.ok && m.runInfo.data["e.1"]).toEqual({
+      ok: true,
+      data: { prUrl: url, outcome: "success", note: "opened" },
+    });
+    expect(m.epicChildren.ok && m.epicChildren.data.e?.map((c) => [c.id, c.status])).toEqual([
+      ["e.1", "open"],
+      ["e.2", "open"],
+      ["e.3", "closed"],
+    ]);
+    expect(steps[0]).toBe("0/12 bd version");
+    expect(steps.at(-1)).toBe("11/12 epic membership");
+  });
+
+  test("an older bd keeps the per-bead reads", async () => {
+    const { exec, calls } = fake("1.2.2");
+    const m = await measureProject(new BdClient(exec), project, undefined, new GhClient(exec));
+    const shows = calls.filter((c) => c[0] === "show").map((c) => c[1]);
+    expect(shows).toContain("e.1");
+    expect(shows).toContain("e");
+    expect(m.runInfo.ok && m.runInfo.data["e.1"]?.ok).toBe(true);
+  });
+});

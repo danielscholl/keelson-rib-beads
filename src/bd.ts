@@ -76,7 +76,21 @@ export interface BdLinked {
 // --include-dependents` arrived in 1.2.0.
 export const BD_VERSION_FLOOR = [1, 2, 0] as const;
 
-export type BdVersion = { version: string; supported: boolean };
+// From 1.3.0 a `bd list` row carries notes and the parent edge (omitted when
+// empty), so a sweep reads run notes and epic membership off the list instead
+// of one `bd show` per bead. Older bd keeps the per-bead reads.
+export const BD_FULL_ROWS = [1, 3, 0] as const;
+
+export type BdVersion = { version: string; supported: boolean; fullRows?: boolean };
+
+function atLeast(have: readonly number[], floor: readonly number[]): boolean {
+  for (let k = 0; k < floor.length; k++) {
+    const a = have[k] ?? 0;
+    const b = floor[k] ?? 0;
+    if (a !== b) return a > b;
+  }
+  return true;
+}
 
 export function parseBdVersion(raw: unknown): BdVersion | undefined {
   const version = (raw as { version?: unknown } | null)?.version;
@@ -84,16 +98,11 @@ export function parseBdVersion(raw: unknown): BdVersion | undefined {
   const parts = /^(\d+)\.(\d+)\.(\d+)/.exec(version.trim());
   if (!parts) return undefined;
   const have = parts.slice(1, 4).map(Number);
-  let supported = true;
-  for (let k = 0; k < BD_VERSION_FLOOR.length; k++) {
-    const a = have[k] ?? 0;
-    const b = BD_VERSION_FLOOR[k] ?? 0;
-    if (a !== b) {
-      supported = a > b;
-      break;
-    }
-  }
-  return { version: version.trim(), supported };
+  return {
+    version: version.trim(),
+    supported: atLeast(have, BD_VERSION_FLOOR),
+    fullRows: atLeast(have, BD_FULL_ROWS),
+  };
 }
 
 export const bdFloorLabel = (): string => `${BD_VERSION_FLOOR[0]}.${BD_VERSION_FLOOR[1]}+`;
