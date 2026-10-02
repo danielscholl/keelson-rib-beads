@@ -1015,8 +1015,15 @@ export function composeWip(m: ProjectMeasurement, ctx: PanelContext): Board {
       }),
       ...(evidence ? { evidence } : {}),
       fields: [
+        // A no-break space: the host lets a field label wrap at phone width.
         ...(holds.length
-          ? [{ label: "waits on", value: holds.map(holdText).join(", "), tone: "caution" as const }]
+          ? [
+              {
+                label: "waits\u00a0on",
+                value: holds.map(holdText).join(", "),
+                tone: "caution" as const,
+              },
+            ]
           : []),
         ...(info?.prUrl ? [prField(info.prUrl)] : []),
         ...(releases.length
