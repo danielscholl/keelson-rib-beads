@@ -52,10 +52,11 @@ Below the Overview come three zones in the order the operator acts.
   `.5`; the epic prints its id once. Clicking a bead in the map opens the
   inspector.
 - **Backlog and shipped.** *Backlog* is every open bead that is on no epic
-  and not in flight, grouped by priority. *Shipped* compares closes and
-  creates this week against last, then lists every close in the fortnight by
-  day with its PR and the first sentence of its close reason; a fortnight
-  with no closes is one line.
+  and not in flight, grouped by priority; it hides when there is none, and
+  Shipped takes the full width. *Shipped* compares closes and creates this
+  week against last, then lists every close in the fortnight by day, one row
+  each with its PR and time. The close reason is in the inspector's history.
+  A fortnight with no closes is one line.
 
 Clicking any bead opens the inspector in a drawer docked to the right, so
 the board stays in view and the next click swaps the bead in place (keelson

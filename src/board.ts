@@ -1252,9 +1252,8 @@ export function composeBacklog(m: ProjectMeasurement, ctx: PanelContext): Board 
         !(onLadder.has(i.id) && m.epics.ok && m.epics.data.length > 0),
     )
     .sort(byPriorityThenAge);
-  if (items.length === 0) {
-    return board([quiet("Nothing loose. Everything open is on an epic or in flight.")]);
-  }
+  // Nothing loose hides the panel, so Shipped takes the zone's full width.
+  if (items.length === 0) return HIDDEN;
   const shown = items.slice(0, BACKLOG_CAP);
   const sections: BoardSection[] = [];
   const byPriority = new Map<number, BdIssue[]>();
@@ -1294,7 +1293,7 @@ export function composeBacklog(m: ProjectMeasurement, ctx: PanelContext): Board 
 }
 
 // ── Shipped: this week against last, then every close in the fortnight by
-// day with the PR and the close reason's first sentence.
+// day, one row each with its PR. The close reason lives in the inspector.
 export function composeShipped(m: ProjectMeasurement, ctx: PanelContext = {}): Board {
   if (!m.closedFortnight.ok) return failedBoard("recent closes", m.closedFortnight.error, m);
   const now = new Date(m.asOf);
@@ -1353,24 +1352,16 @@ export function composeShipped(m: ProjectMeasurement, ctx: PanelContext = {}): B
   }
   const sections: BoardSection[] = [{ kind: "stats", items: stats }];
   const shown = closed.slice(0, SHIPPED_CAP);
-  let day: { title: string; items: CardItem[] } | undefined;
+  let day: { title: string; items: RowItem[] } | undefined;
   for (const i of shown) {
     const label = i.closed_at ? dayLabel(i.closed_at, now) : "Date not recorded";
     if (!day || day.title !== label) {
       day = { title: label, items: [] };
-      sections.push({ kind: "cards", title: day.title, items: day.items });
+      sections.push({ kind: "rows", title: day.title, items: day.items });
     }
     const pr = shippedPR(i);
-    day.items.push(
-      beadCard(i, {
-        meta: [i.issue_type === "epic" && "epic", shortPerson(personOf(i)), clock(i.closed_at)],
-        evidence: i.close_reason?.trim()
-          ? { text: firstSentence(i.close_reason) }
-          : { text: "Closed without a written reason." },
-        fields: pr ? [prField(pr)] : [],
-        selectedId: ctx.selectedId,
-      }),
-    );
+    const row = beadRow(i, [pr && prLabel(pr), clock(i.closed_at)], ctx);
+    day.items.push(i.issue_type === "epic" ? { ...row, chip: { label: "epic" } } : row);
   }
   if (closed.length > shown.length) {
     sections.push({

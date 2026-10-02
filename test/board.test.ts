@@ -814,10 +814,10 @@ describe("Backlog", () => {
     expect(flat).not.toContain("tl-f.1");
   });
 
-  test("an empty backlog says where the work went", () => {
+  test("an empty backlog hides the panel", () => {
     const m = fullMeasurement();
     m.backlog = ok([]);
-    expect(JSON.stringify(composeBacklog(m, {}))).toContain("Nothing loose");
+    expect(composeBacklog(m, {}).sections).toHaveLength(0);
   });
 });
 
@@ -857,21 +857,37 @@ describe("Shipped", () => {
     expect(stats.items[0]?.delta?.direction).toBe("flat");
     expect(stats.items[1]).toMatchObject({ label: "Created this week", value: 1 });
     const today = view.sections[1];
-    if (today?.kind !== "cards") throw new Error("no day group");
+    if (today?.kind !== "rows") throw new Error("no day group");
     expect(today.title).toBe("Today");
-    const card = today.items[0];
-    expect(card?.dot).toBe("ok");
-    expect(card?.fields?.[0]?.value).toBe("tl-g · Dan · 10:15Z");
-    expect(card?.fields?.[1]).toEqual({
-      label: "PR",
-      value: "demo#11",
-      href: "https://github.com/acme/demo/pull/11",
+    expect(today.items[0]).toEqual({
+      glyph: "ok",
+      text: "Done",
+      trailing: "tl-g · demo#11 · 10:15Z",
+      action: { type: "select-bead", payload: { id: "tl-g" } },
+      selected: false,
     });
-    expect(card?.reason?.text).toBe("Merged via PR #11: detail route.");
+    expect(JSON.stringify(view)).not.toContain("detail route");
     const older = view.sections[2];
-    if (older?.kind !== "cards") throw new Error("no older group");
+    if (older?.kind !== "rows") throw new Error("no older group");
     expect(older.title).toBe("Jul 30");
-    expect(older.items[0]?.reason?.text).toBe("Closed without a written reason.");
+    expect(older.items[0]?.trailing).toBe("tl-old · 10:00Z");
+  });
+
+  test("a closed epic carries an epic chip", () => {
+    const m = fullMeasurement();
+    m.closedFortnight = ok([
+      {
+        id: "tl-f",
+        title: "S1",
+        status: "closed",
+        priority: 1,
+        issue_type: "epic",
+        closed_at: "2026-08-09T10:00:00Z",
+      },
+    ]);
+    const day = composeShipped(m, {}).sections[1];
+    if (day?.kind !== "rows") throw new Error("no day group");
+    expect(day.items[0]?.chip).toEqual({ label: "epic" });
   });
 
   test("a PR URL in the close reason stands in for a missing run note", () => {
