@@ -432,8 +432,8 @@ nodes:
     context: fresh
     model: deep
     model_by_provider:
-      copilot: gpt-6-astra
-    effort: xhigh
+      copilot: claude-opus-5.5
+    effort: high
     # Single-turn large-codebase planning can sit >600s between provider chunks.
     # Match the heavy edit nodes' idle budget so chunk-sparse work can finish.
     idle_timeout: 1800000
@@ -625,8 +625,8 @@ nodes:
     context: fresh
     model: deep
     model_by_provider:
-      copilot: gpt-6-astra
-    effort: xhigh
+      copilot: mai-code-1.1-flash
+    effort: high
     allowed_tools: []
     output_format:
       type: object
@@ -749,8 +749,8 @@ nodes:
     context: fresh
     model: deep
     model_by_provider:
-      copilot: gpt-5.6-sol
-    effort: xhigh
+      copilot: gpt-6.1-sol
+    effort: high
     # Large changes run many edit+check cycles; a tight cap kills a run mid-task
     # and loses uncommitted work. Generous here; the per-task checks stay scoped
     # (below) so this budget is for real work, not full-suite thrash.
@@ -1094,6 +1094,8 @@ nodes:
   - id: create-pr
     depends_on: [dependency-audit]
     context: fresh
+    model_by_provider:
+      copilot: mai-code-1.1-flash
     prompt: |
       Push the branch and create a draft pull request that links the issue.
 
@@ -1261,8 +1263,8 @@ nodes:
     context: fresh
     model: deep
     model_by_provider:
-      copilot: gpt-5.6-terra
-    effort: xhigh
+      copilot: gpt-6-luna
+    effort: medium
     allowed_tools: [Read, Glob, Grep]
     output_format:
       type: object
@@ -1356,8 +1358,8 @@ nodes:
     context: fresh
     model: deep
     model_by_provider:
-      copilot: gpt-5.6-terra
-    effort: xhigh
+      copilot: gpt-6-luna
+    effort: medium
     allowed_tools: [Read, Glob, Grep]
     output_format:
       type: object
@@ -1423,8 +1425,8 @@ nodes:
     context: fresh
     model: deep
     model_by_provider:
-      copilot: gpt-5.6-terra
-    effort: xhigh
+      copilot: gpt-6-luna
+    effort: medium
     allowed_tools: [Read, Glob, Grep]
     output_format:
       type: object
@@ -1502,8 +1504,8 @@ nodes:
     context: fresh
     model: deep
     model_by_provider:
-      copilot: gpt-6-astra
-    effort: xhigh
+      copilot: gpt-6-luna
+    effort: medium
     allowed_tools: [Read, Glob, Grep]
     output_format:
       type: object
@@ -1608,8 +1610,8 @@ nodes:
     context: fresh
     model: deep
     model_by_provider:
-      copilot: gpt-5.6-terra
-    effort: high
+      copilot: gpt-6-luna
+    effort: medium
     prompt: |
       A review panel flagged the issues below as must-fix, and the previous node
       applied fixes. Verify the loop actually closed.
@@ -1641,7 +1643,8 @@ nodes:
   # else (context, effort, allowed_tools) would be dropped with a loader warning.
   - id: review-loop
     depends_on: [re-review]
-    model: deep
+    provider: copilot
+    model: mai-code-1.1-flash
     idle_timeout: 1800000
     loop:
       prompt: |
