@@ -162,9 +162,10 @@ and one that does the work:
   prompts use keelson's shared directives (`$DIRECTIVES.verify`, `review`,
   `confirm`), so this workflow needs keelson 0.113.0 or later.
   On the Copilot provider, `plan` pins `claude-opus-5.5`, `implement`
-  `gpt-6.1-sol`, the review lenses `gpt-6-luna`, the triage judge
-  `claude-opus-5.5` (a different vendor from the lenses whose findings it
-  judges), and `coverage-check` and `create-pr` `mai-code-1.1-flash`; the remaining judgment
+  `gpt-6.1-sol`, the review lenses `gpt-6-sol`, `re-review` and the triage
+  judge `gpt-6-luna` (a different model from the lenses whose findings it
+  judges), and `coverage-check` and `create-pr` `mai-code-1.1-flash`; the
+  remaining judgment
   nodes pin `gpt-6-astra` and edit nodes `gpt-5.6-sol`. Elsewhere they resolve
   through the `deep` tier. The closing review loop always runs on Copilot's
   `mai-code-1.1-flash`, because a loop node takes no per-provider model. Needs `gh`, `jq`,
