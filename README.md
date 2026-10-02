@@ -39,10 +39,11 @@ Below the Overview come three zones in the order the operator acts.
   draft, CI and review state, merged and waiting on the close), what closing
   it releases, and its newest comment or run remark. *Next up* is one pick,
   ranked by `dependent_count` before priority, with its unlock chain and
-  runner-up; it never picks a person's call. *Your calls* lists the beads only
-  a person can finish: type `decision`, or labelled `owner` or `human`,
-  ranked by how much work waits on each, with what it unblocks. The panel
-  hides when there are none.
+  runner-up; it never picks a person's call. With nothing ready it names
+  the claim whose close makes the most beads ready, and which ones. *Your
+  calls* lists the beads only a person can finish: type `decision`, or
+  labelled `owner` or `human`, ranked by how much work waits on each, with
+  what it unblocks. The panel hides when there are none.
 - **Epics.** *Wave map* draws each open epic as columns: a child's column is
   one more than the deepest column among its open blockers, so the first
   column holds what no open bead blocks and position says what waits on what. Lines join a

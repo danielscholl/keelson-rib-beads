@@ -445,6 +445,62 @@ describe("Next up", () => {
     m.ready = ok([]);
     expect(JSON.stringify(composeRecommend(m, {}))).toContain("Nothing is ready to start");
   });
+
+  test("with nothing ready it names the claim whose close frees the most", () => {
+    const m = fullMeasurement();
+    m.ready = ok([]);
+    setWip(m, [
+      { id: "tl-a", title: "Frees two", status: "in_progress", priority: 1, assignee: "dan" },
+      { id: "tl-z", title: "Frees one", status: "in_progress", priority: 0, assignee: "dan" },
+    ]);
+    m.blocked = ok([
+      { id: "tl-d", title: "Only a", status: "open", priority: 1, blocked_by: ["tl-a"] },
+      { id: "tl-e", title: "Also only a", status: "open", priority: 2, blocked_by: ["tl-a"] },
+      { id: "tl-h", title: "a and z", status: "open", priority: 2, blocked_by: ["tl-a", "tl-z"] },
+      { id: "tl-i", title: "Only z", status: "open", priority: 2, blocked_by: ["tl-z"] },
+      { id: "tl-j", title: "Hand blocked", status: "blocked", priority: 2, blocked_by: ["tl-a"] },
+    ]);
+    const rec = composeRecommend(m, {});
+    expect(() => validBoard(rec)).not.toThrow();
+    const section = rec.sections[0];
+    if (section?.kind !== "cards") throw new Error("no cards");
+    expect(section.title).toBe("Nothing is ready · next to unlock");
+    const card = section.items[0];
+    expect(card?.title).toBe("Frees two");
+    expect(card?.reason?.text).toBe("closing it makes 2 beads ready");
+    expect(card?.fields?.[1]).toEqual({ label: "frees", value: "tl-d, tl-e" });
+    expect(card?.footnote).toBe("then: tl-z frees 1 · Frees one");
+    expect(card?.actions?.map((a) => a.type)).toEqual(["select-bead"]);
+  });
+
+  test("an epic or parent blocker never counts as the last hold", () => {
+    const m = fullMeasurement();
+    m.ready = ok([]);
+    m.blocked = ok([
+      {
+        id: "tl-f.2",
+        title: "Under the epic",
+        status: "open",
+        priority: 1,
+        parent: "tl-f",
+        blocked_by: ["tl-f", "tl-a"],
+      },
+    ]);
+    expect(JSON.stringify(composeRecommend(m, {}))).toContain('"value":"tl-f.2"');
+  });
+
+  test("a ready human call keeps pointing at Your calls", () => {
+    const m = fullMeasurement();
+    m.ready = ok([
+      { id: "tl-q", title: "Pick one", status: "open", priority: 1, issue_type: "decision" },
+    ]);
+    m.blocked = ok([
+      { id: "tl-d", title: "Only a", status: "open", priority: 1, blocked_by: ["tl-a"] },
+    ]);
+    const flat = JSON.stringify(composeRecommend(m, {}));
+    expect(flat).toContain("Your calls has it");
+    expect(flat).not.toContain("next to unlock");
+  });
 });
 
 describe("In flight", () => {
