@@ -3,8 +3,8 @@ name: CI
 on:
   push:
     branches: [master]
+  # Every PR, so a stacked PR into another feature branch is tested too.
   pull_request:
-    branches: [master]
   schedule:
     - cron: "0 7 * * 1" # weekly, Monday 07:00 UTC, so harness drift shows up without a PR
   workflow_dispatch:

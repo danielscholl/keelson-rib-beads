@@ -1,0 +1,56 @@
+name: Dependabot bun.lock push
+
+# Privileged half of the Dependabot lockfile sync (see dependabot-bun-lock.yml).
+# Runs on workflow_run so it never checks out the PR's head with a write token;
+# it reads the lockfile artifact and writes it back through the Contents API.
+
+on:
+  workflow_run:
+    workflows: ["Dependabot bun.lock sync"]
+    types: [completed]
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: true
+
+jobs:
+  push-lockfile:
+    name: Push updated lockfile
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Download lockfile artifact
+        id: download
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+          name: bun-lock
+          path: artifact
+
+      - name: Commit bun.lock through the Contents API
+        if: steps.download.outcome == 'success'
+        env:
+          # A PAT makes CI re-run on the pushed commit; GITHUB_TOKEN pushes do not trigger workflows.
+          GH_TOKEN: ${{ secrets.DEPENDABOT_LOCKFILE_PAT || secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          branch=$(cat artifact/pr/HEAD_REF)
+          case "$branch" in
+            dependabot/*) ;;
+            *) echo "::error::refusing to push to non-Dependabot branch: $branch" >&2; exit 1 ;;
+          esac
+          # -F content=@file keeps the base64 body out of argv; -f would upload the literal string.
+          base64 -w0 artifact/bun.lock > "$RUNNER_TEMP/content.b64"
+          sha=$(gh api "repos/$REPO/contents/bun.lock?ref=$branch" --jq .sha)
+          gh api --method PUT "repos/$REPO/contents/bun.lock" \
+            -f message="build(deps): sync bun.lock with Dependabot manifest bump" \
+            -F content=@"$RUNNER_TEMP/content.b64" -f branch="$branch" -f sha="$sha"

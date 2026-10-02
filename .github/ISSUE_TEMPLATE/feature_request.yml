@@ -1,0 +1,42 @@
+name: Feature request
+description: Propose a capability or change to the Beads rib.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The rib reads a beads tracker into a board and chat tools, and drives work
+        from the ready queue through workflows. It never closes a bead on its own.
+        Describe what you are trying to do with your backlog; we'll work out where
+        it fits.
+
+        This repo is public. Leave out real bead titles, descriptions, notes and
+        comments; describe beads by shape instead.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What is hard or impossible today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What you'd like to see. Rough is fine.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Board
+        - Inspector
+        - Chat tools
+        - beads-work workflow
+        - beads-next or beads-groom workflow
+        - Docs
+        - Not sure / other
+    validations:
+      required: true
