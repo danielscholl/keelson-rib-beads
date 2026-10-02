@@ -39,14 +39,16 @@ three zones in the order the operator acts.
   bead to its blockers; hovering a bead lights its chain. A bead that holds
   two or more others carries a `holds N` tag. Under an epic a child prints as
   `.5`; the epic prints its id once. Clicking a bead in the map opens the
-  inspector (keelson 0.114.2 or later; an older host ignores the click).
+  inspector.
 - **Backlog and shipped.** *Backlog* is every open bead that is on no epic
   and not in flight, grouped by priority. *Shipped* compares closes and
   creates this week against last, then lists every close in the fortnight by
   day with its PR and the first sentence of its close reason; a fortnight
   with no closes is one line.
 
-Clicking any bead opens the inspector in the canvas drawer: facts, dependency
+Clicking any bead opens the inspector in a drawer docked to the right, so
+the board stays in view and the next click swaps the bead in place (keelson
+0.115.0 or later): facts, dependency
 links by edge type (an epic edge is membership, never "waits on"),
 description, acceptance criteria one per row, and a history of created,
 claimed, plan, PR, comments and closed. A linked bead opens in the same
