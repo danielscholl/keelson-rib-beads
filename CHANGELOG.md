@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/danielscholl/keelson-rib-beads/compare/v0.3.0...v0.4.0) (2026-10-02)
+
+
+### Added
+
+* **beads:** replace epic ladders with an epic wave map ([#22](https://github.com/danielscholl/keelson-rib-beads/issues/22)) ([0e8d3ac](https://github.com/danielscholl/keelson-rib-beads/commit/0e8d3acd042445df265acaf02e9fc45db8202b84))
+
 ## [0.3.0](https://github.com/danielscholl/keelson-rib-beads/compare/v0.2.0...v0.3.0) (2026-10-01)
 
 
