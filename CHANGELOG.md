@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/danielscholl/keelson-rib-beads/compare/v0.5.0...v0.6.0) (2026-10-02)
+
+
+### Added
+
+* **beads:** add tracker strip and your-calls panel ([#28](https://github.com/danielscholl/keelson-rib-beads/issues/28)) ([b227cac](https://github.com/danielscholl/keelson-rib-beads/commit/b227cacec1e46e4038b5b43244f7d3fb4c3813cd))
+
 ## [0.5.0](https://github.com/danielscholl/keelson-rib-beads/compare/v0.4.0...v0.5.0) (2026-10-02)
 
 
