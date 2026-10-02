@@ -114,13 +114,33 @@ const SCRIPT = `
       deps[id].forEach(function(d){(outs[d]=outs[d]||[]).push(id);});
     });
     function walk(id,rel,acc){(rel[id]||[]).forEach(function(n){if(!acc[n]){acc[n]=1;walk(n,rel,acc);}});return acc;}
+    var cols=[].slice.call(map.querySelectorAll(".wave")),colOf=Object.create(null);
+    cols.forEach(function(w,i){w.querySelectorAll(".chip").forEach(function(c){colOf[c.dataset.id]=i;});});
+    function seg(x1,y1,x2,y2){var dx=Math.min(40,(x2-x1)/2);return " C"+(x1+dx)+" "+y1+","+(x2-dx)+" "+y2+","+x2+" "+y2;}
+    // An edge that skips a column threads the gap between that column's
+    // chips nearest its line, so it never passes behind an unrelated bead.
+    function lane(w,r,want){
+      var ys=[],cs=[].slice.call(w.querySelectorAll(".chip")).map(function(c){return c.getBoundingClientRect();});
+      for(var i=0;i+1<cs.length;i++)ys.push((cs[i].bottom+cs[i+1].top)/2-r.top);
+      var last=cs[cs.length-1];
+      if(last&&last.bottom-r.top+12<=r.height)ys.push(last.bottom-r.top+12);
+      if(!ys.length)return want;
+      return ys.reduce(function(b,y){return Math.abs(y-want)<Math.abs(b-want)?y:b;});
+    }
     function draw(){
       var r=map.getBoundingClientRect();svg.innerHTML="";edges=[];
       Object.keys(deps).forEach(function(id){deps[id].forEach(function(d){
         var a=chips[d].getBoundingClientRect(),z=chips[id].getBoundingClientRect();
-        var x1=a.right-r.left,y1=a.top+a.height/2-r.top,x2=z.left-r.left,y2=z.top+z.height/2-r.top,dx=Math.min(40,(x2-x1)/2);
+        var x=a.right-r.left,y=a.top+a.height/2-r.top,x2=z.left-r.left,y2=z.top+z.height/2-r.top;
+        var path="M"+x+" "+y,ca=colOf[d],cb=colOf[id];
+        for(var k=ca+1;k<cb;k++){
+          var c=cols[k].getBoundingClientRect(),l=c.left-r.left,rt=c.right-r.left;
+          var ly=lane(cols[k],r,y+(y2-y)*(l-x)/Math.max(1,x2-x));
+          path+=seg(x,y,l,ly)+" L"+rt+" "+ly;x=rt;y=ly;
+        }
+        path+=seg(x,y,x2,y2);
         var p=document.createElementNS("http://www.w3.org/2000/svg","path");
-        p.setAttribute("d","M"+x1+" "+y1+" C"+(x1+dx)+" "+y1+","+(x2-dx)+" "+y2+","+x2+" "+y2);
+        p.setAttribute("d",path);
         svg.appendChild(p);edges.push({from:d,to:id,el:p});
       });});
       if(map.dataset.lit)light(map.dataset.lit);
