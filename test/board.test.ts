@@ -585,6 +585,42 @@ describe("In flight", () => {
     if (cards?.kind !== "cards") throw new Error("no cards");
     expect(cards.items[0]?.dot).toBe("info");
     expect(cards.items[0]?.pill?.label).toBe("waits on 1");
+    expect(cards.items[0]?.fields?.[1]).toEqual({
+      label: "waits on",
+      value: "tl-b · Ready one",
+      tone: "caution",
+    });
+  });
+
+  test("a claim waiting on another claim says the blocker is in flight; its epic never holds it", () => {
+    const m = fullMeasurement();
+    setWip(m, [
+      { id: "ep.1", title: "First", status: "in_progress", priority: 1, parent: "ep" },
+      { id: "ep.4", title: "Second", status: "in_progress", priority: 1, parent: "ep" },
+    ]);
+    m.blocked = ok([
+      {
+        id: "ep.4",
+        title: "Second",
+        status: "in_progress",
+        priority: 1,
+        blocked_by: ["ep", "ep.1"],
+      },
+      { id: "ep.1", title: "First", status: "in_progress", priority: 1, blocked_by: ["ep"] },
+    ]);
+    m.backlog = ok([
+      { id: "ep", title: "Epic", status: "open", priority: 1, issue_type: "epic" },
+      { id: "ep.1", title: "First", status: "in_progress", priority: 1, parent: "ep" },
+      { id: "ep.4", title: "Second", status: "in_progress", priority: 1, parent: "ep" },
+    ]);
+    const cards = composeWip(m, {}).sections[0];
+    if (cards?.kind !== "cards") throw new Error("no cards");
+    const byTitle = new Map(cards.items.map((c) => [c.title, c]));
+    expect(byTitle.get("First")?.fields?.some((f) => f.label === "waits on")).toBe(false);
+    expect(byTitle.get("First")?.pill?.label).toBe("P1");
+    expect(byTitle.get("Second")?.fields?.find((f) => f.label === "waits on")?.value).toBe(
+      ".1 · First (in flight)",
+    );
   });
 
   test("mixed owners keep the owner on each card and mark the unassigned", () => {
@@ -1450,9 +1486,17 @@ describe("ids and stages said once", () => {
 
   test("a claim carries a three-stop stage meter and what closing it releases", () => {
     const pr = { url: "https://github.com/acme/demo/pull/7", state: "OPEN" as const };
-    expect(stageBar(undefined, undefined).trailing).toBe("1 of 3");
+    expect(stageBar(undefined, undefined)).toMatchObject({
+      label: "claimed",
+      trailing: "next: PR open",
+    });
     const open = stageBar({ prUrl: pr.url } as never, pr as never);
-    expect(open.trailing).toBe("2 of 3");
+    expect(open).toMatchObject({ label: "PR open", trailing: "next: merged" });
+    const merged = { ...pr, state: "MERGED" as const, mergedAt: "2026-08-05T10:00:00Z" };
+    expect(stageBar({ prUrl: pr.url } as never, merged as never)).toMatchObject({
+      label: "merged",
+      trailing: "next: close",
+    });
     if (!("segments" in open)) throw new Error("no segments");
     expect(open.segments.map((s) => [s.label, s.tone])).toEqual([
       ["claimed", "info"],
