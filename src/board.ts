@@ -6,9 +6,9 @@
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 
-// The Beads surface reads in the order the operator acts: Now (In flight,
-// Next up, Needs you), then the epic wave map (map.ts), then Backlog and
-// Shipped. A header sentence says the totals once in words above the flow
+// The Beads surface reads in the order the operator acts: the tracker strip,
+// the Overview, Now (In flight, Next up, Your calls), then the epic wave map
+// (map.ts), then Backlog and Shipped. A header sentence says the totals once in words above the flow
 // strip, and reports a shared cause (an old bd, a failing gh) once instead of
 // letting every panel alarm on its own.
 //
@@ -21,13 +21,21 @@
 // merge drift are signals, never colours.
 
 import type { CanvasBoardView, CanvasTone } from "@keelson/shared";
-import type { BdComment, BdEpicRow, BdIssue, BdLinked, BeadRunInfo, Measured } from "./bd";
+import type {
+  BdComment,
+  BdEpicRow,
+  BdIssue,
+  BdLinked,
+  BdSummary,
+  BeadRunInfo,
+  Measured,
+} from "./bd";
 import { bdFloorLabel, unmeasured } from "./bd";
-import type { EpicMember, ProjectMeasurement } from "./measure";
+import type { EpicMember, ProjectMeasurement, SweepProgress } from "./measure";
 import { bdBelowFloor, byPriorityThenAge, parseRunNote, STALE_DAYS } from "./measure";
 import { isMergedPR, type PrInfo } from "./pr";
 
-const ATTENTION_CAP = 8;
+const CALLS_CAP = 8;
 const SHIPPED_CAP = 12;
 const BACKLOG_CAP = 80;
 const PARA_CAP = 24;
@@ -157,16 +165,28 @@ export function assigneeView(items: readonly BdIssue[]): AssigneeView {
   return { perItem: true, markUnassigned: true };
 }
 
+// Beads only a person can finish: a decision, or work labelled for its owner.
+// An agent run must never be pointed at one.
+export const HUMAN_LABELS = ["owner", "human"] as const;
+
+export function isHumanCall(i: { issue_type?: string; labels?: readonly string[] }): boolean {
+  if (i.issue_type === "decision") return true;
+  return (i.labels ?? []).some((l) => (HUMAN_LABELS as readonly string[]).includes(l));
+}
+
 // The recommendation: leverage first (dependent_count — finishing it frees
 // the most stuck work), priority second, age third. ONE pick with a named
-// runner-up: a queue of twelve is a report, not a decision.
+// runner-up: a queue of twelve is a report, not a decision. Human calls are
+// not agent work, so they are never the pick; Your calls ranks them.
 export function recommendNext(ready: BdIssue[]): { pick?: BdIssue; runnerUp?: BdIssue } {
-  const ranked = [...ready].sort((a, b) => {
-    const la = a.dependent_count ?? 0;
-    const lb = b.dependent_count ?? 0;
-    if (la !== lb) return lb - la;
-    return byPriorityThenAge(a, b);
-  });
+  const ranked = ready
+    .filter((i) => !isHumanCall(i))
+    .sort((a, b) => {
+      const la = a.dependent_count ?? 0;
+      const lb = b.dependent_count ?? 0;
+      if (la !== lb) return lb - la;
+      return byPriorityThenAge(a, b);
+    });
   return { pick: ranked[0], runnerUp: ranked[1] };
 }
 
@@ -585,7 +605,7 @@ function staleDaysOf(m: ProjectMeasurement, i: BdIssue, now: Date): number | und
 
 // ── Header: one sentence with the week's totals, the flow strip, and the
 // preflight, so one cause reads as one line.
-export function composePulse(m: ProjectMeasurement): Board {
+export function composePulse(m: ProjectMeasurement, refreshing?: SweepProgress): Board {
   const floor = bdBelowFloor(m);
   const split = stageSplit(m);
   // The strip is a distribution, so its populations must be disjoint: a
@@ -634,6 +654,38 @@ export function composePulse(m: ProjectMeasurement): Board {
       ...(gh.error ? { detail: gh.error.slice(0, 1000) } : {}),
     });
   }
+  // Merged on GitHub, still open in bd: one reconcile closes them all, so it
+  // is a line and a button here rather than a card per bead.
+  const drift =
+    m.prInfo.ok && m.backlog.ok
+      ? m.backlog.data.filter(
+          (i) => (i.status === "open" || i.status === "in_progress") && mergedPR(m.prInfo, i.id),
+        )
+      : [];
+  const partialPR =
+    m.prInfo.ok && !gh.failing
+      ? Object.entries(m.prInfo.data).flatMap(([id, e]) => (e.ok ? [] : [`${id}: ${e.error}`]))
+      : [];
+  if (partialPR.length && !floor) {
+    preflight.push({
+      icon: "⚠",
+      chip: { label: "UNMEASURED", tone: "error" },
+      text: `PR state could not be read for ${plural(partialPR.length, "bead")}, so a merge waiting to be reconciled may be missing here.`,
+      detail: partialPR.join("\n").slice(0, 1000),
+    });
+  }
+  const housekeeping = [
+    m.stale.ok && m.stale.data.length > 0 ? plural(m.stale.data.length, "stale claim") : "",
+    m.epics.ok && m.epics.data.some((r) => r.eligible_for_close)
+      ? `${plural(m.epics.data.filter((r) => r.eligible_for_close).length, "epic")} ready for closeout`
+      : "",
+  ].filter(Boolean);
+  if (housekeeping.length) {
+    preflight.push({
+      glyph: "neutral",
+      text: `Housekeeping: ${housekeeping.join(" · ")}. The beads-groom workflow reports both.`,
+    });
+  }
   const flowFailures = [
     ...(m.blocked.ok ? [] : [`waiting: ${m.blocked.error}`]),
     ...(m.ready.ok ? [] : [`ready: ${m.ready.error}`]),
@@ -652,12 +704,32 @@ export function composePulse(m: ProjectMeasurement): Board {
   const chip = [
     m.bd.ok && m.bd.data ? `bd ${m.bd.data.version}` : m.bd.ok ? "bd version unknown" : undefined,
     gh.label,
-    `measured ${m.asOf.slice(11, 16)}Z`,
+    refreshing
+      ? `refreshing · ${refreshing.done} of ${refreshing.total}`
+      : `measured ${m.asOf.slice(11, 16)}Z`,
   ].filter(Boolean);
   return board(
     [
       { kind: "segments", title: sentence, items: segments },
       ...(preflight.length ? [{ kind: "rows" as const, items: preflight }] : []),
+      ...(drift.length
+        ? [
+            {
+              kind: "rows" as const,
+              items: [
+                {
+                  glyph: "warn" as const,
+                  chip: { label: "merged", tone: "warn" as const },
+                  text: `${plural(drift.length, "bead")} merged on GitHub and still open in bd: ${drift
+                    .slice(0, 6)
+                    .map((i) => i.id)
+                    .join(", ")}${drift.length > 6 ? ` +${drift.length - 6} more` : ""}.`,
+                },
+              ],
+            },
+            { kind: "actions" as const, wrap: true, items: [reconcileAction(m.project.id)] },
+          ]
+        : []),
     ],
     {
       status: { label: m.project.name, tone: floor || gh.failing ? "error" : "ok" },
@@ -693,9 +765,12 @@ export function composeRecommend(m: ProjectMeasurement, ctx: PanelContext): Boar
   const blocked = m.blocked.ok ? m.blocked.data : [];
   const { pick, runnerUp } = recommendNext(m.ready.data);
   if (!pick) {
+    const calls = m.ready.data.filter(isHumanCall).length;
     return board([
       quiet(
-        "Nothing is ready to start. Everything open is blocked or on hold; Needs you shows what would release work.",
+        calls > 0
+          ? `Nothing ready is agent work. ${plural(calls, "ready bead")} ${calls === 1 ? "is a call" : "are calls"} for you; Your calls has ${calls === 1 ? "it" : "them"}.`
+          : "Nothing is ready to start. Everything open is blocked or on hold; the wave map shows what holds it.",
         "warn",
       ),
     ]);
@@ -889,179 +964,78 @@ function livePR(m: ProjectMeasurement, id: string): PrInfo | undefined {
   return entry?.ok ? entry.data : undefined;
 }
 
-// ── Needs you: the operator's queue, most actionable first — merged PRs
-// waiting on a close, reviews to merge, hand-paused work, stale claims, and
-// epic closeouts. Only actions: a dam is ordinary sequencing, so it rides the
-// epic map as a tag on the bead that holds the work.
-export function composeAttention(m: ProjectMeasurement, ctx: PanelContext): Board {
-  const now = new Date(m.asOf);
-  const floor = bdBelowFloor(m);
+// ── Your calls: the beads only a person can finish (decisions and work
+// labelled owner or human), ranked by how much work waits on each. Agent
+// housekeeping (reconciles, stale claims, closeouts) rides the header line,
+// and an empty list hides the panel.
+
+export function composeYourCalls(m: ProjectMeasurement, ctx: PanelContext): Board {
+  if (!m.backlog.ok) return failedBoard("calls waiting on you", m.backlog.error, m);
   const blocked = m.blocked.ok ? m.blocked.data : [];
-  const sections: BoardSection[] = [];
-  const failures: { what: string; error: string }[] = [];
-  // Every input this panel folds in alarms on failure, since a section that
-  // renders nothing would read as a clean board.
-  const alarm = (what: string, error: string) => {
-    failures.push({ what, error });
-  };
-
-  if (!m.prInfo.ok) {
-    alarm("PR merge state", m.prInfo.error);
-  } else {
-    const drift = m.backlog.ok
-      ? m.backlog.data.flatMap((i) => {
-          const pr = mergedPR(m.prInfo, i.id);
-          return pr && (i.status === "open" || i.status === "in_progress") ? [{ i, pr }] : [];
-        })
-      : [];
-    if (drift.length > 0) {
-      sections.push({
-        kind: "cards",
-        title: "Merged, close pending",
-        items: drift.map(({ i, pr }) =>
-          beadCard(i, {
-            meta: [
-              `merged ${ago(pr.mergedAt, now) ?? ""} ago`,
-              `bead still ${i.status.replace("_", " ")}`,
-            ],
-            signal: { label: "reconcile", tone: "warn" },
-            fields: [prField(pr.url)],
-            actions: [reconcileAction(m.project.id)],
-            selectedId: ctx.selectedId,
-          }),
-        ),
-      });
-    }
-    if (!m.backlog.ok) alarm("merge drift", m.backlog.error);
-    if (!ghHealth(m).failing) {
-      const failures = Object.entries(m.prInfo.data)
-        .filter(([, entry]) => !entry.ok)
-        .map(([id, entry]) => `${id}: ${entry.ok ? "" : entry.error}`);
-      if (failures.length) alarm("PR state for some beads", failures.join("\n"));
-    }
-  }
-  if (!m.blocked.ok) alarm("the blocked union", m.blocked.error);
-
-  // Review to merge: the act only a human can do, on GitHub.
-  const split = stageSplit(m);
-  if (!split.ok) {
-    alarm("review-stage work", split.error);
-  } else {
-    const reviews = split.data.inReview.filter((i) => !mergedPR(m.prInfo, i.id));
-    if (reviews.length > 0) {
-      sections.push({
-        kind: "cards",
-        title: "Review to merge",
-        items: reviews.map((i) => {
-          const info = runInfoOf(m, i.id);
-          const pr = livePR(m, i.id);
-          return beadCard(i, {
-            meta: [flightStage(i, info, pr, now), ago(i.updated_at, now)],
-            ...(pr?.checks === "failing"
-              ? { signal: { label: "CI failing", tone: "error" as const } }
-              : pr?.review === "changes requested"
-                ? { signal: { label: "changes requested", tone: "warn" as const } }
-                : {}),
-            fields: info?.prUrl ? [prField(info.prUrl)] : [],
-            selectedId: ctx.selectedId,
-          });
-        }),
-      });
-    }
-  }
-
-  // Paused by hand: status-blocked with no dependency edge.
-  const paused = blocked.filter((i) => !i.blocked_by?.length);
-  if (paused.length > 0) {
-    sections.push({
-      kind: "cards",
-      title: "Paused by hand",
-      items: paused.slice(0, ATTENTION_CAP).map((i) =>
-        beadCard(i, {
-          meta: [
-            shortPerson(personOf(i)),
-            ago(i.updated_at, now) && `paused ${ago(i.updated_at, now)}`,
-          ],
-          signal: { label: "paused by hand", tone: "caution" },
-          selectedId: ctx.selectedId,
-        }),
-      ),
+  const blockers = new Map<string, string[]>(blocked.map((b) => [b.id, b.blocked_by ?? []]));
+  const calls = m.backlog.data
+    .filter((i) => i.status !== "closed" && i.issue_type !== "epic" && isHumanCall(i))
+    .map((i) => {
+      const levels = unlockLevels(i.id, blocked);
+      return { i, levels, holds: levels.flat().length };
+    })
+    .sort((a, b) => b.holds - a.holds || byPriorityThenAge(a.i, b.i));
+  if (calls.length === 0) return HIDDEN;
+  const shown = calls.slice(0, CALLS_CAP);
+  const short = (id: string, from: string) => shortId(id, parentIdOf(from));
+  const cards = shown.map(({ i, levels, holds }) => {
+    const waits = blockers.get(i.id) ?? [];
+    const first = levels[0] ?? [];
+    const deeper = holds - first.length;
+    return beadCard(i, {
+      meta: [
+        i.issue_type === "decision" ? "decision" : "owner call",
+        `P${i.priority}`,
+        i.status === "in_progress" ? `on it: ${shortPerson(personOf(i)) ?? "claimed"}` : undefined,
+      ],
+      signal: waits.length
+        ? { label: `waits on ${waits.length}`, tone: "caution" }
+        : holds > 0
+          ? { label: `holds ${holds}`, tone: "warn" }
+          : undefined,
+      evidence:
+        holds > 0
+          ? {
+              label: "unblocks",
+              text: `${first.map((b) => short(b.id, i.id)).join(", ")}${deeper > 0 ? ` → ${deeper} more behind them` : ""}`,
+            }
+          : { label: "unblocks", text: "nothing waits on it" },
+      selectedId: ctx.selectedId,
     });
-  }
-
-  if (!m.stale.ok) alarm("stale claims", m.stale.error);
-  const staleItems = m.stale.ok ? m.stale.data : [];
-  if (staleItems.length > 0) {
-    sections.push({
+  });
+  // Distinct, since one bead can wait behind several calls.
+  const total = new Set(calls.flatMap((c) => c.levels.flat().map((b) => b.id))).size;
+  return board([
+    ...(m.blocked.ok
+      ? []
+      : [
+          {
+            kind: "rows" as const,
+            items: [alarmRow("what each call holds", m.blocked.error, m)],
+          },
+        ]),
+    {
       kind: "cards",
-      title: `Stale claims, quiet ${STALE_DAYS}d+`,
-      items: staleItems.map((i) => {
-        const comment = latestCommentOf(m, i.id);
-        return beadCard(i, {
-          meta: [shortPerson(personOf(i)), "verify or release"],
-          signal: signalOf(i, { staleDays: staleDaysOf(m, i, now) ?? STALE_DAYS }),
-          ...(comment ? { evidence: commentEvidence(comment, now) } : {}),
-          selectedId: ctx.selectedId,
-        });
-      }),
-    });
-  }
-
-  // Epic closeouts: a review ask, never a close button. Closing is a
-  // merge-time human act with a written reason.
-  if (!m.epics.ok) {
-    alarm("epic closeout eligibility", m.epics.error);
-  } else {
-    const eligible = m.epics.data.filter((r) => r.eligible_for_close);
-    if (eligible.length > 0)
-      sections.push({
-        kind: "cards",
-        title: "Epic closeout review",
-        items: eligible.map((r) => ({
-          ...beadCard(r.epic, {
-            meta: ["epic", `${r.closed_children}/${r.total_children} done`],
-            signal: { label: "closeout review", tone: "warn" },
-            selectedId: ctx.selectedId,
-          }),
-          ...(r.total_children > 0
-            ? { bar: { value: r.closed_children, total: r.total_children } }
-            : {}),
-        })),
-      });
-  }
-
-  // Below the version floor the failures share one cause, so they share a row.
-  const alarms: RowItem[] = floor
-    ? failures.length
+      title:
+        total > 0
+          ? `${plural(calls.length, "call")} · ${plural(total, "bead")} wait on them`
+          : plural(calls.length, "call"),
+      items: cards,
+    },
+    ...(calls.length > shown.length
       ? [
-          alarmRow(
-            "this panel",
-            failures
-              .filter((f) => !f.error.includes(floor))
-              .map((f) => `${f.what}: ${f.error}`)
-              .join("\n") || floor,
-            m,
-          ),
+          {
+            kind: "rows" as const,
+            items: [{ icon: "…", text: `Showing ${shown.length} of ${calls.length} calls.` }],
+          },
         ]
-      : []
-    : failures.map((f) => alarmRow(f.what, f.error, m));
-  if (sections.length === 0 && alarms.length === 0) {
-    // Every check ran and found nothing, so the panel says which checks.
-    return board([
-      quiet("Nothing needs you.", "ok"),
-      {
-        kind: "rows",
-        items: [
-          "Merged PRs to reconcile",
-          "Reviews to merge",
-          "Paused by hand",
-          "Stale claims",
-          "Epic closeouts",
-        ].map((text) => ({ text, trailing: "0" })),
-      },
-    ]);
-  }
-  return board([...(alarms.length ? [{ kind: "rows" as const, items: alarms }] : []), ...sections]);
+      : []),
+  ]);
 }
 
 // ── Epics: what the wave map (map.ts) draws for each open epic. A member's
@@ -1080,6 +1054,8 @@ export interface EpicNode {
   external: string[];
   handPaused: boolean;
   pick: boolean;
+  // A decision or owner-labelled bead: a person's call, never agent work.
+  yours: boolean;
   dam?: Dam;
 }
 
@@ -1108,6 +1084,7 @@ export function epicNodes(
     reviewIds: ReadonlySet<string>;
     pickId?: string;
     dams?: ReadonlyMap<string, Dam>;
+    humanIds?: ReadonlySet<string>;
   },
 ): EpicNode[] {
   const open = members.filter((c) => c.status !== "closed");
@@ -1161,6 +1138,7 @@ export function epicNodes(
       external: e.external,
       handPaused,
       pick: member.id === lanes.pickId,
+      yours: lanes.humanIds?.has(member.id) ?? false,
       ...(dam ? { dam } : {}),
     };
   });
@@ -1193,6 +1171,7 @@ export function epicViews(m: ProjectMeasurement): EpicView[] {
   const reviewIds = new Set(split.ok ? split.data.inReview.map((i) => i.id) : []);
   const pickId = m.ready.ok ? recommendNext(m.ready.data).pick?.id : undefined;
   const dams = new Map(damGroups(blocked, backlogIndex(m)).map((d) => [d.blockerId, d]));
+  const humanIds = new Set(m.backlog.ok ? m.backlog.data.filter(isHumanCall).map((i) => i.id) : []);
   const views = m.epics.data
     .filter((r) => r.epic.status !== "closed")
     .map((row) => {
@@ -1203,6 +1182,7 @@ export function epicViews(m: ProjectMeasurement): EpicView[] {
         reviewIds,
         pickId,
         dams,
+        humanIds,
       });
       const inLane = (lane: EpicLane) => nodes.filter((n) => n.lane === lane).length;
       const gate =
@@ -1807,59 +1787,89 @@ export function composeInspectNeedsBd(m: Pick<ProjectMeasurement, "bd">): Board 
   return failedBoard("the inspector", floor, m);
 }
 
-// ── Scope resting states, rendered on the header (the one always-on region);
-// every other panel hides itself via the zero-section signal.
-export function composeNoTrackerPulse(
-  projectName: string,
-  beadsProjects: readonly { name: string }[],
-): Board {
-  return board(
-    beadsProjects.length > 0
-      ? [
-          {
-            kind: "rows",
-            title: "Projects with a beads tracker",
-            items: beadsProjects.map((p) => ({
-              chip: { label: "beads", tone: "accent" },
-              text: p.name,
-            })),
-          },
-        ]
-      : [
-          {
-            kind: "journey",
-            items: [
-              {
-                title: "Register a project",
-                text: "Add a keelson project whose repository carries a .beads tracker.",
-              },
-              {
-                title: "The board measures it",
-                text: "What is in flight, what is left and what shipped, measured with bd, never inferred.",
-              },
-              {
-                title: "Drive work from chat",
-                text: "beads_ready picks the queue up; the beads-next workflow recommends what to start first.",
-              },
-            ],
-          },
-        ],
+// ── The tracker strip: one tile per registered project with a beads
+// tracker, the selected one ringed. A click switches the whole surface.
+export interface TrackerTile {
+  id: string;
+  name: string;
+  // Absent while the first count is still queued behind the selected sweep.
+  summary?: Measured<BdSummary>;
+}
+
+function tileCounts(summary: Measured<BdSummary> | undefined): NonNullable<CardItem["fields"]> {
+  if (!summary) return [{ value: "counting…" }];
+  if (!summary.ok) return [{ value: "UNMEASURED", tone: "error" }];
+  const s = summary.data;
+  return [
     {
-      status: { label: `no beads tracker in ${projectName}`, tone: "neutral" },
-      chip: "select a beads project in the picker above",
+      value: `${s.in_progress_issues} in flight · ${s.open_issues} open · ${s.closed_issues} closed`,
     },
-  );
+  ];
+}
+
+export function composeTrackers(tiles: readonly TrackerTile[], selectedId?: string): Board {
+  if (tiles.length === 0) {
+    return board(
+      [
+        {
+          kind: "journey",
+          items: [
+            {
+              title: "Register a project",
+              text: "Add a keelson project whose repository carries a .beads tracker.",
+            },
+            {
+              title: "The board measures it",
+              text: "What is in flight, what is left and what shipped, measured with bd, never inferred.",
+            },
+            {
+              title: "Drive work from chat",
+              text: "beads_ready picks the queue up; the beads-next workflow recommends what to start first.",
+            },
+          ],
+        },
+      ],
+      { status: { label: "no beads tracker registered", tone: "neutral" } },
+    );
+  }
+  return board([
+    {
+      kind: "cards",
+      grid: true,
+      items: tiles.map((t) => ({
+        title: t.name,
+        dot: t.id === selectedId ? "brand" : "neutral",
+        selected: t.id === selectedId,
+        action: { type: "select-project", payload: { scopeId: t.id } },
+        fields: tileCounts(t.summary),
+      })),
+    },
+  ]);
 }
 
 export const EMPTY_PANEL: Board = HIDDEN;
 
-// ── The first sweep of a newly picked project: the panels name the project
-// being measured instead of leaving the previous project's frames in place.
-export function composeMeasuringPulse(projectName: string): Board {
-  return board([quiet(`Measuring ${projectName}. The panels fill in when bd answers.`)], {
-    status: { label: projectName, tone: "neutral" },
-    chip: "first sweep running",
-  });
+// ── The first sweep of a newly picked project: the header fills a meter as
+// each bd read lands, and the panels name the project being measured instead
+// of leaving the previous project's frames in place.
+export function composeMeasuringPulse(projectName: string, progress?: SweepProgress): Board {
+  const p = progress ?? { done: 0, total: 1, label: "bd" };
+  return board(
+    [
+      {
+        kind: "segments",
+        title: `Measuring ${projectName}: reading ${p.label}…`,
+        items: [
+          { label: "Read", n: p.done, tone: STAGE_TONE.working },
+          { label: "To go", n: Math.max(0, p.total - p.done), tone: STAGE_TONE.waiting },
+        ],
+      },
+    ],
+    {
+      status: { label: projectName, tone: "neutral" },
+      chip: `first sweep · ${p.done} of ${p.total}`,
+    },
+  );
 }
 
 export function composeMeasuringPanel(projectName: string): Board {

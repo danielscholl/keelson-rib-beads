@@ -5,15 +5,16 @@ import {
   ago,
   assigneeView,
   beadTimeline,
-  composeAttention,
   composeBacklog,
   composeInspect,
   composeInspectNeedsBd,
-  composeNoTrackerPulse,
+  composeMeasuringPulse,
   composePulse,
   composeRecommend,
   composeShipped,
+  composeTrackers,
   composeWip,
+  composeYourCalls,
   criteriaItems,
   damGroups,
   declaredDownstream,
@@ -22,6 +23,7 @@ import {
   epicViews,
   firstSentence,
   flightStage,
+  isHumanCall,
   lifecycleOf,
   lifecycleTone,
   parentIdOf,
@@ -311,18 +313,10 @@ describe("header", () => {
     expect(flat).toContain("bd 1.0.4 is on PATH and the board needs 1.2+");
     expect(flat).not.toContain("Hatched segments");
     expect(pulse.header?.status?.tone).toBe("error");
-    for (const view of [composeAttention(m, {}), composeWip(m, {})]) {
-      expect(() => validBoard(view)).not.toThrow();
-      const rows = JSON.stringify(view);
-      expect(rows).toContain("needs bd 1.2+. See the header.");
-      expect(rows).not.toContain("could not be measured");
-    }
-    // Attention folds every failure into one row, raw errors kept behind it.
-    const att = composeAttention(m, {});
-    const alarms = att.sections[0];
-    if (alarms?.kind !== "rows") throw new Error("no alarm rows");
-    expect(alarms.items).toHaveLength(1);
-    expect(alarms.items[0]?.detail).toContain("epic closeout eligibility: exit 1");
+    const wip = composeWip(m, {});
+    expect(() => validBoard(wip)).not.toThrow();
+    expect(JSON.stringify(wip)).toContain("needs bd 1.2+. See the header.");
+    expect(JSON.stringify(wip)).not.toContain("could not be measured");
     expect(composeInspectNeedsBd(m).sections).toHaveLength(1);
   });
 
@@ -335,13 +329,79 @@ describe("header", () => {
     expect(pulse.header?.chip).toContain("gh failing");
     expect(JSON.stringify(pulse)).toContain("gh: not logged in");
     expect(JSON.stringify(composeWip(m, {}))).not.toContain("UNMEASURED PR");
-    expect(JSON.stringify(composeAttention(m, {}))).not.toContain("PR state for some beads");
+    expect(JSON.stringify(pulse)).not.toContain("PR state could not be read");
   });
 
-  test("a scope without a tracker renders the map, not a fake backlog", () => {
-    const view = composeNoTrackerPulse("demo", [{ name: "tracked" }]);
+  test("agent housekeeping is one quiet line, never a card per bead", () => {
+    const m = fullMeasurement();
+    m.stale = ok([{ id: "tl-s", title: "Quiet", status: "in_progress", priority: 2 }]);
+    const flat = JSON.stringify(composePulse(m));
+    expect(flat).toContain("Housekeeping: 1 stale claim · 1 epic ready for closeout.");
+    m.stale = ok([]);
+    m.epics = ok([]);
+    expect(JSON.stringify(composePulse(m))).not.toContain("Housekeeping");
+  });
+
+  test("a first sweep fills a meter as each read lands", () => {
+    const view = composeMeasuringPulse("demo", { done: 4, total: 12, label: "blocked work" });
     expect(() => validBoard(view)).not.toThrow();
-    expect(JSON.stringify(view)).toContain("tracked");
+    const strip = view.sections[0];
+    if (strip?.kind !== "segments") throw new Error("no meter");
+    expect(strip.title).toBe("Measuring demo: reading blocked work…");
+    expect(strip.items.map((i) => i.n)).toEqual([4, 8]);
+    expect(view.header?.chip).toBe("first sweep · 4 of 12");
+  });
+
+  test("a refresh over the last good sweep says so on the chip, not in place of the board", () => {
+    const pulse = composePulse(fullMeasurement(), { done: 3, total: 12, label: "ready queue" });
+    expect(pulse.header?.chip).toContain("refreshing · 3 of 12");
+    expect(pulse.header?.chip).not.toContain("measured");
+    expect(pulse.sections[0]?.kind).toBe("segments");
+  });
+});
+
+describe("tracker strip", () => {
+  test("one selectable tile per tracker, counts from bd status", () => {
+    const view = composeTrackers(
+      [
+        {
+          id: "a",
+          name: "alpha",
+          summary: ok({
+            total_issues: 32,
+            open_issues: 18,
+            ready_issues: 4,
+            blocked_issues: 14,
+            in_progress_issues: 3,
+            closed_issues: 11,
+          }),
+        },
+        { id: "b", name: "bravo" },
+        { id: "c", name: "charlie", summary: { ok: false, error: "exit 1" } },
+      ],
+      "a",
+    );
+    expect(() => validBoard(view)).not.toThrow();
+    const tiles = view.sections[0];
+    if (tiles?.kind !== "cards") throw new Error("no tiles");
+    expect(tiles.grid).toBe(true);
+    expect(tiles.items.map((t) => t.selected)).toEqual([true, false, false]);
+    expect(tiles.items[1]?.action).toEqual({
+      type: "select-project",
+      payload: { scopeId: "b" },
+    });
+    expect(tiles.items.map((t) => t.fields?.[0]?.value)).toEqual([
+      "3 in flight · 18 open · 11 closed",
+      "counting…",
+      "UNMEASURED",
+    ]);
+  });
+
+  test("no tracker registered shows how to get one", () => {
+    const view = composeTrackers([]);
+    expect(() => validBoard(view)).not.toThrow();
+    expect(view.sections[0]?.kind).toBe("journey");
+    expect(view.header?.status?.label).toBe("no beads tracker registered");
   });
 });
 
@@ -501,74 +561,125 @@ describe("In flight", () => {
   });
 });
 
-describe("Needs you", () => {
-  test("a dam is sequencing, not an action, so it never lists here", () => {
+describe("Your calls", () => {
+  function withCalls(): ProjectMeasurement {
     const m = fullMeasurement();
-    m.blocked = ok([
-      { id: "tl-d", title: "Dep blocked", status: "open", priority: 1, blocked_by: ["tl-b"] },
+    if (!m.backlog.ok) throw new Error("fixture not measured");
+    m.backlog = ok([
+      ...m.backlog.data,
+      {
+        id: "tl-o",
+        title: "Owner: pick the GitHub home",
+        status: "open",
+        priority: 0,
+        labels: ["owner"],
+      },
+      {
+        id: "tl-q",
+        title: "Which identity CI uses",
+        status: "open",
+        priority: 1,
+        issue_type: "decision",
+      },
+      { id: "tl-l", title: "Owner: low stakes", status: "open", priority: 2, labels: ["human"] },
     ]);
-    m.epics = ok([]);
-    const att = composeAttention(m, {});
-    expect(() => validBoard(att)).not.toThrow();
-    expect(JSON.stringify(att)).not.toContain("Dams");
-    expect(JSON.stringify(att)).toContain("Nothing needs you");
+    m.blocked = ok([
+      { id: "tl-x", title: "Waits on owner", status: "open", priority: 2, blocked_by: ["tl-q"] },
+      { id: "tl-y", title: "Waits on x", status: "open", priority: 2, blocked_by: ["tl-x"] },
+    ]);
+    return m;
+  }
+
+  test("a decision type or an owner or human label is a person's call", () => {
+    expect(isHumanCall({ issue_type: "decision" })).toBe(true);
+    expect(isHumanCall({ labels: ["factory", "owner"] })).toBe(true);
+    expect(isHumanCall({ labels: ["human"] })).toBe(true);
+    expect(isHumanCall({ issue_type: "task", labels: ["factory"] })).toBe(false);
   });
 
-  test("hand-paused work, stale claims and closeouts are bead cards with one signal", () => {
-    const m = fullMeasurement();
-    m.stale = ok([
+  test("no call waiting hides the panel instead of listing zeros", () => {
+    const view = composeYourCalls(fullMeasurement(), {});
+    expect(view.sections).toHaveLength(0);
+  });
+
+  test("calls rank by the work waiting on them and say what they unblock", () => {
+    const view = composeYourCalls(withCalls(), { selectedId: "tl-o" });
+    expect(() => validBoard(view)).not.toThrow();
+    const cards = view.sections[0];
+    if (cards?.kind !== "cards") throw new Error("no cards");
+    expect(cards.title).toBe("3 calls · 2 beads wait on them");
+    // tl-x waits on two calls and still counts once.
+    const both = withCalls();
+    both.blocked = ok([
       {
-        id: "tl-s",
-        title: "Quiet",
-        status: "in_progress",
+        id: "tl-x",
+        title: "Waits on two",
+        status: "open",
         priority: 2,
-        owner: "sam@x.dev",
-        updated_at: "2026-07-30T12:00:00Z",
+        blocked_by: ["tl-q", "tl-o"],
       },
     ]);
-    const att = composeAttention(m, { selectedId: "tl-e" });
-    expect(() => validBoard(att)).not.toThrow();
-    const byTitle = (t: string) => att.sections.find((s) => s.kind === "cards" && s.title === t);
-    const paused = byTitle("Paused by hand");
-    const stale = byTitle("Stale claims, quiet 7d+");
-    const closeout = byTitle("Epic closeout review");
-    if (paused?.kind !== "cards" || stale?.kind !== "cards" || closeout?.kind !== "cards")
-      throw new Error("missing sections");
-    expect(paused.items[0]?.selected).toBe(true);
-    expect(paused.items[0]?.pill?.label).toBe("paused by hand");
-    expect(stale.items[0]?.pill?.label).toBe("stale 10d");
-    expect(stale.items[0]?.fields?.[0]?.value).toBe("tl-s · sam · verify or release");
-    expect(closeout.items[0]?.pill?.label).toBe("closeout review");
-    expect(closeout.items[0]?.bar).toEqual({ value: 4, total: 4 });
-    expect(JSON.stringify(closeout)).not.toContain("claim-bead");
-  });
-
-  test("failed inputs alarm instead of reading as a clean board", () => {
-    const m = fullMeasurement();
-    m.stale = { ok: false, error: "bd stale: exit 1" };
-    m.epics = { ok: false, error: "bd epic status: exit 1" };
-    const flat = JSON.stringify(composeAttention(m, {}));
-    expect(flat).toContain("Stale claims could not be measured");
-    expect(flat).toContain("Epic closeout eligibility could not be measured");
-  });
-
-  test("a measured zero says nothing needs you", () => {
-    const m = fullMeasurement();
-    m.blocked = ok([]);
-    m.epics = ok([]);
-    const att = composeAttention(m, {});
-    expect(() => validBoard(att)).not.toThrow();
-    expect(JSON.stringify(att)).toContain("Nothing needs you");
-    // The empty state names the checks that ran, each with its zero.
-    const checks = att.sections[1];
-    if (checks?.kind !== "rows") throw new Error("no checks");
-    expect(checks.items.map((r) => [r.text, r.trailing])).toEqual([
-      ["Merged PRs to reconcile", "0"],
-      ["Reviews to merge", "0"],
-      ["Paused by hand", "0"],
-      ["Stale claims", "0"],
-      ["Epic closeouts", "0"],
+    const shared = composeYourCalls(both, {}).sections[0];
+    if (shared?.kind !== "cards") throw new Error("no cards");
+    expect(shared.title).toBe("3 calls · 1 bead wait on them");
+    expect(cards.items.map((c) => c.fields?.[0]?.value)).toEqual([
+      "tl-q · decision · P1",
+      "tl-o · owner call · P0",
+      "tl-l · owner call · P2",
     ]);
+    expect(cards.items[0]?.pill).toEqual({ label: "holds 2", tone: "warn" });
+    expect(cards.items[0]?.reason).toEqual({
+      label: "unblocks",
+      text: "tl-x → 1 more behind them",
+    });
+    expect(cards.items[1]?.reason?.text).toBe("nothing waits on it");
+    expect(cards.items[1]?.selected).toBe(true);
+    expect(JSON.stringify(view)).not.toContain("claim-bead");
+  });
+
+  test("a call someone already took says who", () => {
+    const m = withCalls();
+    if (!m.backlog.ok) throw new Error("fixture not measured");
+    m.backlog = ok(
+      m.backlog.data.map((i) =>
+        i.id === "tl-o" ? { ...i, status: "in_progress", assignee: "dan@x.dev" } : i,
+      ),
+    );
+    expect(JSON.stringify(composeYourCalls(m, {}))).toContain(
+      "tl-o · owner call · P0 · on it: dan",
+    );
+  });
+
+  test("an unmeasured backlog alarms; unmeasured edges alarm above the calls", () => {
+    const m = withCalls();
+    m.blocked = { ok: false, error: "bd blocked: exit 1" };
+    const flat = JSON.stringify(composeYourCalls(m, {}));
+    expect(flat).toContain("What each call holds could not be measured");
+    expect(flat).toContain("tl-q");
+    m.backlog = { ok: false, error: "bd list: exit 1" };
+    expect(JSON.stringify(composeYourCalls(m, {}))).toContain("UNMEASURED");
+  });
+
+  test("Next up never picks a call, and says so when only calls are ready", () => {
+    const m = withCalls();
+    m.ready = ok([
+      {
+        id: "tl-o",
+        title: "Owner: pick",
+        status: "open",
+        priority: 0,
+        labels: ["owner"],
+        dependent_count: 9,
+      },
+      { id: "tl-c", title: "Ready two", status: "open", priority: 2 },
+    ]);
+    expect(JSON.stringify(composeRecommend(m, {}))).toContain('"id":"tl-c"');
+    m.ready = ok([
+      { id: "tl-o", title: "Owner: pick", status: "open", priority: 0, labels: ["owner"] },
+    ]);
+    const flat = JSON.stringify(composeRecommend(m, {}));
+    expect(flat).toContain("Nothing ready is agent work. 1 ready bead is a call for you");
+    expect(flat).not.toContain("claim-bead");
   });
 });
 
@@ -1028,22 +1139,17 @@ describe("verified merge drift on the board", () => {
     return m;
   }
 
-  test("Needs you leads with merges to reconcile, with the scoped confirmed action", () => {
-    const att = composeAttention(mergedBoard(), {});
-    expect(() => validBoard(att)).not.toThrow();
-    const drift = att.sections[0];
-    if (drift?.kind !== "cards") throw new Error("no drift cards");
-    expect(drift.title).toBe("Merged, close pending");
-    expect(drift.items.map((i) => i.fields?.[0]?.value?.toString().split(" · ")[0])).toEqual([
-      "tl-b",
-      "tl-a",
-      "tl-f.2",
-    ]);
-    const action = drift.items[0]?.actions?.[0];
-    expect(action?.type).toBe("sync-merged-beads");
-    expect(action?.payload).toEqual({ projectId: "p1" });
-    expect(drift.items[0]?.fields?.[1]?.href).toBe(url(2));
-    expect(JSON.stringify(att)).not.toContain('"title":"Review to merge"');
+  test("the header names merges to reconcile once, with the scoped confirmed action", () => {
+    const pulse = composePulse(mergedBoard());
+    expect(() => validBoard(pulse)).not.toThrow();
+    expect(JSON.stringify(pulse)).toContain(
+      "3 beads merged on GitHub and still open in bd: tl-b, tl-a, tl-f.2.",
+    );
+    const actions = pulse.sections.find((s) => s.kind === "actions");
+    if (actions?.kind !== "actions") throw new Error("no reconcile action");
+    expect(actions.items[0]?.type).toBe("sync-merged-beads");
+    expect(actions.items[0]?.payload).toEqual({ projectId: "p1" });
+    expect(actions.items[0]?.confirm).toBeDefined();
   });
 
   test("a merged open bead reads as close pending everywhere and cannot be started", () => {
@@ -1065,8 +1171,9 @@ describe("verified merge drift on the board", () => {
       "tl-f.2": ok(undefined),
     });
     m.blocked = { ok: false, error: "bd blocked failed" };
-    const flat = JSON.stringify(composeAttention(m, {}));
-    expect(flat).toContain("Merged, close pending");
+    const flat = JSON.stringify(composePulse(m));
+    expect(flat).toContain("1 bead merged on GitHub and still open in bd: tl-a.");
+    expect(flat).toContain("PR state could not be read for 1 bead");
     expect(flat).toContain("gh rate limit");
     expect(flat).toContain("bd blocked failed");
   });
@@ -1075,9 +1182,9 @@ describe("verified merge drift on the board", () => {
     const m = mergedBoard();
     m.runInfo = ok({ "tl-a": ok({ prUrl: url(1), outcome: "merged" }) });
     m.prInfo = ok({ "tl-a": ok({ url: url(1), state: "OPEN", mergedAt: null }) });
-    const flat = JSON.stringify(composeAttention(m, {}));
-    expect(flat).not.toContain("Merged, close pending");
-    expect(flat).toContain("Review to merge");
+    const flat = JSON.stringify(composePulse(m));
+    expect(flat).not.toContain("merged on GitHub");
+    expect(JSON.stringify(composeWip(m, {}))).toContain("PR open");
     expect(JSON.stringify(composeWip(m, {}))).not.toContain("merged · close pending");
   });
 });

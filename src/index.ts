@@ -6,6 +6,8 @@
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type {
   Rib,
   RibAction,
@@ -15,21 +17,28 @@ import type {
   SnapshotManager,
 } from "@keelson/shared";
 import { z } from "zod";
-import { BdClient, type BeadsProject, discoverBeadsProjects } from "./bd";
+import {
+  BdClient,
+  type BdSummary,
+  type BeadsProject,
+  discoverBeadsProjects,
+  type Measured,
+  unmeasured,
+} from "./bd";
 import { BEAD_ID_PATTERN } from "./bead-id";
 import {
-  composeAttention,
   composeBacklog,
   composeInspect,
   composeInspectNeedsBd,
   composeMeasuringPanel,
   composeMeasuringPulse,
-  composeNoTrackerPulse,
   composePulse,
   composeRecommend,
   composeShipped,
   composeSweepFailed,
+  composeTrackers,
   composeWip,
+  composeYourCalls,
   EMPTY_PANEL,
   recommendNext,
 } from "./board";
@@ -43,6 +52,7 @@ import {
   PULSE_KEY,
   RECOMMEND_KEY,
   SHIPPED_KEY,
+  TRACKERS_KEY,
   WIP_KEY,
 } from "./keys";
 import { composeEpicMap, epicMapFailed } from "./map";
@@ -52,6 +62,8 @@ import {
   measureProject,
   type ProjectMeasurement,
   readComments,
+  SWEEP_STEPS,
+  type SweepProgress,
 } from "./measure";
 import { GhClient } from "./pr";
 import { type SyncReport, syncMergedPRs } from "./sync";
@@ -65,32 +77,44 @@ let seedTimer: ReturnType<typeof setTimeout> | undefined;
 let bdClient: BdClient | undefined;
 let ghClient: GhClient | undefined;
 const syncingProjects = new Set<string>();
-let getAllProjects: (() => readonly { id: string; name: string; rootPath: string }[]) | undefined;
 let listBeadsProjects: (() => BeadsProject[]) | undefined;
+let dataDir: string | undefined;
 const cleanupInFlight = new Map<string, Promise<void>>();
 
-// The surface is projectScoped: the host posts `select-project` with the
-// chosen project id; the panels render THAT backlog. `selectedBeadId` drives
-// the inspector; both reset on scope change.
+// The rib owns its scope: the tracker strip posts `select-project` with a
+// beads project id, the choice persists across restarts, and with none saved
+// the first tracker by name is shown. `selectedBeadId` drives the inspector
+// and resets on scope change.
 let scopeId: string | undefined;
 let selectedBeadId: string | undefined;
-// The project whose sweep last settled. Until a newly picked project's first
-// sweep settles, its panels say so rather than keep the previous project's
-// frames under the new name.
-let settledScope: string | undefined;
 
 const REFRESH_MS = 300_000;
 // Boot-time compose can race project loading; one early re-seed repaints the
 // first frames without waiting a full cadence.
 const SEED_RETRY_MS = 15_000;
-// One bd sweep feeds every panel: composers share this cache, and only
-// refreshAll() (cadence, mutation, scope change) pays for a re-measure —
-// invalidation is event-driven, so the TTL matches the cadence and exists
-// only as a backstop. A short TTL made every selection pay a full serialized
-// bd sweep before the inspector could answer.
+// One bd sweep per project feeds every panel. Only refreshAll() (cadence,
+// mutation) pays for a re-measure — invalidation is event-driven, so the TTL
+// matches the cadence and exists only as a backstop. A failed sweep expires
+// sooner so the next compose retries.
 const MEASURE_TTL_MS = REFRESH_MS;
+const FAILED_TTL_MS = 30_000;
+// Projects whose last good sweep stays in memory, so switching back paints
+// at once and refreshes in place.
+const KEEP_PROJECTS = 6;
 
-let measureCache: { scopeId: string; at: number; promise: Promise<ProjectMeasurement> } | undefined;
+interface Sweep {
+  at: number;
+  promise: Promise<ProjectMeasurement>;
+  progress: SweepProgress;
+  result?: Measured<ProjectMeasurement>;
+}
+
+const sweeps = new Map<string, Sweep>();
+const lastGood = new Map<string, ProjectMeasurement>();
+// Tile counts for the tracker strip, one `bd status` per project.
+const summaries = new Map<string, Measured<BdSummary>>();
+let summariesAt = 0;
+let summariesRunning = false;
 
 const FRAME_BEAD_ID = new RegExp(`^${BEAD_ID_PATTERN}$`);
 const selectProjectPayload = z.object({ scopeId: z.string().min(1).optional() });
@@ -225,36 +249,173 @@ async function cleanupEndedRun(event: RibRunEvent, ctx: RibContext): Promise<voi
 }
 const syncPayload = z.object({ projectId: z.string().min(1) });
 
-function scopedProject(): BeadsProject | undefined {
-  if (!scopeId) return undefined;
-  return listBeadsProjects?.().find((p) => p.id === scopeId);
+function sortedTrackers(): BeadsProject[] {
+  return [...(listBeadsProjects?.() ?? [])].sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function getMeasurement(project: BeadsProject): Promise<ProjectMeasurement> {
-  const now = Date.now();
-  if (
-    measureCache &&
-    measureCache.scopeId === project.id &&
-    now - measureCache.at < MEASURE_TTL_MS
-  ) {
-    return measureCache.promise;
+const scopeFile = (): string | undefined => (dataDir ? join(dataDir, "scope.json") : undefined);
+
+function savedScope(): string | undefined {
+  const file = scopeFile();
+  if (!file || !existsSync(file)) return undefined;
+  try {
+    const raw = JSON.parse(readFileSync(file, "utf8")) as { scopeId?: unknown };
+    return typeof raw.scopeId === "string" ? raw.scopeId : undefined;
+  } catch {
+    return undefined;
   }
-  if (!bdClient || !ghClient) return Promise.reject(new Error("beads clients not bound"));
-  const promise = measureProject(bdClient, project, undefined, ghClient);
-  measureCache = { scopeId: project.id, at: now, promise };
-  // A failed sweep must not poison the cache window.
-  promise.catch(() => {
-    if (measureCache?.promise === promise) measureCache = undefined;
+}
+
+function saveScope(id: string): void {
+  const file = scopeFile();
+  if (!file || !dataDir) return;
+  try {
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(file, JSON.stringify({ scopeId: id }));
+  } catch {
+    // A lost preference costs one click; it never blocks the board.
+  }
+}
+
+// The scope resolves lazily: projects can register after activation, and a
+// tracker that disappears falls back to the saved choice or the first one.
+function scopedProject(): BeadsProject | undefined {
+  const trackers = sortedTrackers();
+  const current = scopeId ? trackers.find((p) => p.id === scopeId) : undefined;
+  if (current) return current;
+  const saved = savedScope();
+  const fallback = trackers.find((p) => p.id === saved) ?? trackers[0];
+  scopeId = fallback?.id;
+  return fallback;
+}
+
+function startSweep(project: BeadsProject): Sweep {
+  if (!bdClient || !ghClient) {
+    const error = "beads clients not bound";
+    const promise = Promise.reject(new Error(error));
+    promise.catch(() => undefined);
+    return {
+      at: Date.now(),
+      promise,
+      progress: { done: 0, total: SWEEP_STEPS, label: "bd version" },
+      result: unmeasured(error),
+    };
+  }
+  const progress: SweepProgress = { done: 0, total: SWEEP_STEPS, label: "bd version" };
+  let started: Sweep | undefined;
+  const promise = measureProject(bdClient, project, undefined, ghClient, (p) => {
+    if (!started) return;
+    started.progress = p;
+    if (scopeId === project.id && sweeps.get(project.id) === started) recomposeKeys([PULSE_KEY]);
   });
-  return promise;
+  const sweep: Sweep = { at: Date.now(), progress, promise };
+  started = sweep;
+  sweeps.set(project.id, sweep);
+  const settle = (result: Measured<ProjectMeasurement>) => {
+    if (sweeps.get(project.id) !== sweep) return;
+    sweep.result = result;
+    if (result.ok) {
+      lastGood.delete(project.id);
+      lastGood.set(project.id, result.data);
+      while (lastGood.size > KEEP_PROJECTS) {
+        const oldest = lastGood.keys().next().value;
+        if (oldest === undefined) break;
+        lastGood.delete(oldest);
+      }
+      summaries.set(project.id, result.data.summary);
+    } else {
+      sweep.at = Date.now() - MEASURE_TTL_MS + FAILED_TTL_MS;
+    }
+    if (scopeId === project.id) recomposeKeys(ALL_KEYS);
+    void refreshSummaries();
+  };
+  sweep.promise.then(
+    (m) => settle({ ok: true, data: m }),
+    (err) => settle(unmeasured(err instanceof Error ? err.message : String(err))),
+  );
+  return sweep;
+}
+
+function getSweep(project: BeadsProject): Sweep {
+  const sweep = sweeps.get(project.id);
+  if (sweep && (!sweep.result || Date.now() - sweep.at < MEASURE_TTL_MS)) return sweep;
+  return startSweep(project);
+}
+
+// The settled measurement when there is one, else the in-flight sweep's.
+// Callers that must answer now (the inspector) prefer the last good sweep.
+async function currentMeasurement(project: BeadsProject): Promise<ProjectMeasurement> {
+  const sweep = getSweep(project);
+  if (sweep.result?.ok) return sweep.result.data;
+  const previous = lastGood.get(project.id);
+  if (previous && !sweep.result) return previous;
+  return sweep.promise;
+}
+
+// Counts for the strip's other tiles, read after the selected sweep so they
+// never delay it (bd is serialized). Throttled to half the cadence.
+async function refreshSummaries(): Promise<void> {
+  if (summariesRunning || !bdClient) return;
+  if (Date.now() - summariesAt < REFRESH_MS / 2 && summaries.size > 0) {
+    recomposeKeys([TRACKERS_KEY]);
+    return;
+  }
+  summariesRunning = true;
+  try {
+    for (const project of sortedTrackers()) {
+      if (project.id === scopeId && summaries.has(project.id)) continue;
+      const bd = bdClient;
+      if (!bd) return;
+      const res = await bd
+        .readJSON<{ summary?: BdSummary }>(project.rootPath, ["status"])
+        .catch((err: unknown) =>
+          unmeasured<{ summary?: BdSummary }>(err instanceof Error ? err.message : String(err)),
+        );
+      summaries.set(
+        project.id,
+        res.ok
+          ? res.data.summary
+            ? { ok: true, data: res.data.summary }
+            : unmeasured("bd status carried no summary")
+          : res,
+      );
+      recomposeKeys([TRACKERS_KEY]);
+    }
+    summariesAt = Date.now();
+  } finally {
+    summariesRunning = false;
+  }
+}
+
+// The host answers a recompose that lands mid-compose with the in-flight
+// frame, so a state change during a compose would never paint. A key asked
+// for while composing runs once more when that compose ends.
+const composing = new Set<string>();
+const recomposeAgain = new Set<string>();
+
+function recomposeKey(key: string): void {
+  const sm = snapshots;
+  if (!sm) return;
+  if (composing.has(key)) {
+    recomposeAgain.add(key);
+    return;
+  }
+  composing.add(key);
+  sm.recompose(key)
+    .catch(() => undefined)
+    .finally(() => {
+      composing.delete(key);
+      if (recomposeAgain.delete(key) && snapshots === sm) recomposeKey(key);
+    });
 }
 
 function recomposeKeys(keys: readonly string[]): void {
-  for (const key of keys) snapshots?.recompose(key).catch(() => undefined);
+  for (const key of keys) recomposeKey(key);
 }
 
 function refreshAll(): void {
-  measureCache = undefined;
+  sweeps.clear();
+  summariesAt = 0;
   recomposeKeys(ALL_KEYS);
 }
 
@@ -279,46 +440,47 @@ function syncErrors(report: SyncReport): string | undefined {
   );
 }
 
-// Composer factory: every panel resolves the scope the same way — no scope or
-// a scope without a tracker renders the resting state on the pulse panel and
-// hides the rest (the zero-section signal).
+// Composer factory: every panel resolves the scope the same way. With no
+// tracker registered only the strip renders; the rest hide (the
+// zero-section signal). A pending sweep paints the project's last good
+// measurement when there is one, else a measuring placeholder; the sweep's
+// settle recomposes every key.
 function makePanelComposer(
-  key: string,
-  compose: (m: ProjectMeasurement) => unknown,
-  measuring: (projectName: string) => unknown,
-  resting: () => unknown = () => EMPTY_PANEL,
+  compose: (m: ProjectMeasurement, refreshing?: SweepProgress) => unknown,
+  measuring: (projectName: string, progress: SweepProgress) => unknown,
   failed: (error: string) => unknown = composeSweepFailed,
+  resting: unknown = EMPTY_PANEL,
 ): () => Promise<unknown> {
   return async () => {
     const project = scopedProject();
-    if (!project) return resting();
-    const sweep = getMeasurement(project);
-    if (settledScope !== project.id) {
-      // Settled either way, so a first sweep that throws recomposes into the
-      // alarm below instead of looping on the placeholder.
-      const settle = () => {
-        if (scopeId !== project.id) return;
-        settledScope = project.id;
-        recomposeKeys([key]);
-      };
-      sweep.then(settle, settle);
-      return measuring(project.name);
-    }
+    if (!project) return resting;
+    const sweep = getSweep(project);
     // The host keeps the last frame when a composer throws, which would
     // leave a placeholder or another project's panels standing.
-    try {
-      return compose(await sweep);
-    } catch (err) {
-      return failed(err instanceof Error ? err.message : String(err));
-    }
+    const safely = (m: ProjectMeasurement, refreshing?: SweepProgress) => {
+      try {
+        return compose(m, refreshing);
+      } catch (err) {
+        return failed(err instanceof Error ? err.message : String(err));
+      }
+    };
+    if (sweep.result)
+      return sweep.result.ok ? safely(sweep.result.data) : failed(sweep.result.error);
+    const previous = lastGood.get(project.id);
+    return previous ? safely(previous, sweep.progress) : measuring(project.name, sweep.progress);
   };
 }
 
-function restingPulse(): unknown {
-  const name = scopeId
-    ? (getAllProjects?.().find((p) => p.id === scopeId)?.name ?? "the selected project")
-    : "the current scope";
-  return composeNoTrackerPulse(name, listBeadsProjects?.() ?? []);
+function composeTrackerStrip(): unknown {
+  const project = scopedProject();
+  return composeTrackers(
+    sortedTrackers().map((p) => ({
+      id: p.id,
+      name: p.name,
+      ...(summaries.has(p.id) ? { summary: summaries.get(p.id) } : {}),
+    })),
+    project?.id,
+  );
 }
 
 const rib: Rib = {
@@ -333,33 +495,48 @@ const rib: Rib = {
     }),
   ),
 
-  // Three zones in the order the operator acts: what is running, what to
-  // start and what needs a decision; the epic map at full width, hidden when
-  // no epic is open; then what is loose and what landed. Freshness shows once,
-  // on the header. The inspector has no region; selection opens it in the
-  // canvas drawer. The rib drives refresh in-process, so regions declare no
-  // cadence.
+  // The tracker strip on top picks the backlog; the Overview under it says
+  // the totals. Then three zones in the order the operator acts: what is
+  // running, what to start and the calls only a person can make; the epic map
+  // at full width, hidden when no epic is open; then what is loose and what
+  // landed. The inspector has no region; selection opens it in the canvas
+  // drawer. The rib drives refresh in-process, so regions declare no cadence.
+  // Not projectScoped: the host's picker lists every project and moves Chat's
+  // active project too, while this strip lists only trackers.
   surfaces: [
     {
       id: BEADS_SURFACE_ID,
       title: "Beads",
       heading: "Beads backlog",
       subtitle: "Measured with bd: what's in flight, what's left, and what shipped.",
-      projectScoped: true,
       layout: {
         header: {
-          key: PULSE_KEY,
-          title: "Overview",
-          glyph: { char: "◉", tone: "accent" },
-          live: true,
+          key: TRACKERS_KEY,
+          title: "Trackers",
+          glyph: { char: "▦", tone: "accent" },
         },
         rows: [
+          {
+            columns: [
+              {
+                key: PULSE_KEY,
+                title: "Overview",
+                glyph: { char: "◉", tone: "accent" },
+                live: true,
+              },
+            ],
+          },
           {
             zoneTitle: "Now",
             columns: [
               { key: WIP_KEY, title: "In flight", glyph: { char: "◐", tone: "info" } },
               { key: RECOMMEND_KEY, title: "Next up", glyph: { char: "→", tone: "accent" } },
-              { key: ATTENTION_KEY, title: "Needs you", glyph: { char: "●", tone: "warn" } },
+              {
+                key: ATTENTION_KEY,
+                title: "Your calls",
+                glyph: { char: "◆", tone: "warn" },
+                hideWhenEmpty: true,
+              },
             ],
           },
           {
@@ -410,20 +587,25 @@ const rib: Rib = {
         "",
         "## The surface",
         "",
-        "Project-scoped (the host's project picker chooses the backlog) and arranged",
-        "in three zones. The Overview header says the totals in one sentence (in",
+        "A tracker strip on top lists every registered project with a .beads",
+        "tracker and its counts; a click switches the board and the choice persists.",
+        "A first sweep fills a progress meter; a project seen before paints from its",
+        "last sweep and refreshes in place. The Overview says the totals in one sentence (in",
         "flight, ready to start, waiting, shipped this week) above the flow strip",
         "(waiting → ready → in progress → in review → done 7d), and reports a shared",
         "cause once: a bd older than 1.2 or a gh that fails every PR lookup. Now holds",
         "In flight (every claim with a stage meter — claimed, PR open, merged — its",
         "live stage, what closing it releases, and the newest comment or run remark),",
         "Next up (one leverage-ranked pick with its unlock chain, runner-up, and",
-        "Inspect / Start actions) and Needs you (actions only: merged PRs to",
-        "reconcile, reviews to merge, hand-paused work, stale claims, epic",
-        "closeouts). Epics holds the wave map: each open epic's children in columns,",
+        "Inspect / Start actions; never a person's call) and Your calls (beads of",
+        "type decision or labelled owner or human, ranked by the work waiting on",
+        "each; hidden when empty). Merged PRs to reconcile and agent housekeeping",
+        "(stale claims, epic closeouts) are one line each on the Overview.",
+        "Epics holds the wave map: each open epic's children in columns,",
         "a column being one more than the deepest column among a bead's open",
         "blockers, with lines to its blockers and a holds N tag on a bead that holds",
-        "two or more. Clicking a bead in the map opens the inspector.",
+        "two or more and a your call tag on a person's call. Clicking a bead in the",
+        "map opens the inspector.",
         "Backlog and shipped holds the Backlog (open beads on no",
         "epic, grouped by priority) and Shipped: closes this week against last,",
         "created this week against last, and every close in the fortnight by day",
@@ -456,6 +638,8 @@ const rib: Rib = {
         "- Ready order is priority, but leverage outranks it: a bead with a high",
         "  dependent_count unblocks the most downstream work — start there.",
         "- Epics are structure, never work items (`--exclude-type=epic`).",
+        "- A decision, or a bead labelled owner or human, is a person's call: Next up",
+        "  skips it and beads-work never auto-claims it (an explicit id still works).",
         "- Closing follows verified merge and explicit confirmation, or manual",
         "  beads_close with a reason; automated runs never close beads. Cleanup",
         "  releases only a claim still held by the run when create-pr never",
@@ -483,7 +667,7 @@ const rib: Rib = {
     bdClient = new BdClient(exec);
     ghClient = new GhClient(exec);
     listBeadsProjects = () => discoverBeadsProjects(ctx.getProjects?.() ?? []);
-    getAllProjects = () => ctx.getProjects?.() ?? [];
+    dataDir = ctx.getDataDir?.();
 
     for (const un of unregisters) un();
     unregisters = [];
@@ -492,10 +676,8 @@ const rib: Rib = {
       const sm = snapshots;
       const register = (key: string, compose: () => Promise<unknown>) =>
         unregisters.push(sm.register(key, compose));
-      register(
-        PULSE_KEY,
-        makePanelComposer(PULSE_KEY, composePulse, composeMeasuringPulse, restingPulse),
-      );
+      register(TRACKERS_KEY, async () => composeTrackerStrip());
+      register(PULSE_KEY, makePanelComposer(composePulse, composeMeasuringPulse));
       const panel = (
         key: string,
         compose: (m: ProjectMeasurement, ctx: { selectedId?: string }) => unknown,
@@ -503,32 +685,25 @@ const rib: Rib = {
         register(
           key,
           makePanelComposer(
-            key,
             (m) => compose(m, { selectedId: selectedBeadId }),
             composeMeasuringPanel,
           ),
         );
       panel(RECOMMEND_KEY, composeRecommend);
       panel(WIP_KEY, composeWip);
-      panel(ATTENTION_KEY, composeAttention);
+      panel(ATTENTION_KEY, composeYourCalls);
       panel(BACKLOG_KEY, composeBacklog);
       panel(SHIPPED_KEY, composeShipped);
       // An empty fragment hides the region, at rest and while measuring.
       register(
         EPIC_MAP_KEY,
-        makePanelComposer(
-          EPIC_MAP_KEY,
-          composeEpicMap,
-          () => "",
-          () => "",
-          epicMapFailed,
-        ),
+        makePanelComposer(composeEpicMap, () => "", epicMapFailed, ""),
       );
       register(INSPECT_KEY, async () => {
         const project = scopedProject();
         if (!project || !bdClient) return composeInspect(undefined, []);
         if (!selectedBeadId) return composeInspect(undefined, []);
-        const m = await getMeasurement(project);
+        const m = await currentMeasurement(project);
         if (bdBelowFloor(m)) return composeInspectNeedsBd(m);
         const id = selectedBeadId;
         const issue = await fetchIssue(bdClient, project.rootPath, id);
@@ -574,8 +749,8 @@ const rib: Rib = {
     }
   },
 
-  // Board actions: the host's project chip posts `select-project`; the panels
-  // post `select-bead` (inspector) and `claim-bead` (bd update --claim).
+  // Board actions: the tracker strip posts `select-project`; the panels post
+  // `select-bead` (inspector) and `claim-bead` (bd update --claim).
   onAction: async (action: RibAction) => {
     // The epic map is a sandboxed frame that renders tracker text, so a
     // frame-relayed action may select a bead and nothing else.
@@ -591,10 +766,17 @@ const rib: Rib = {
             error: "select-project payload must be { scopeId?: string }",
           };
         }
-        scopeId = parsed.data.scopeId;
-        selectedBeadId = undefined;
-        settledScope = undefined;
-        refreshAll();
+        const target = parsed.data.scopeId;
+        if (target && !sortedTrackers().some((p) => p.id === target)) {
+          return { ok: false as const, error: `no beads tracker is registered as ${target}` };
+        }
+        if (target !== scopeId) selectedBeadId = undefined;
+        scopeId = target;
+        const project = scopedProject();
+        if (project) saveScope(project.id);
+        // A select with no tracker id re-measures the current one.
+        if (project && !target) sweeps.delete(project.id);
+        recomposeKeys(ALL_KEYS);
         return { ok: true as const };
       }
       case "select-bead": {
@@ -677,17 +859,20 @@ const rib: Rib = {
     for (const un of unregisters) un();
     unregisters = [];
     snapshots = undefined;
-    // The SPA re-posts the explicit selection on mount, so a re-activation
-    // starts clean rather than trusting stale scope.
+    // A re-activation resolves scope again from the saved choice.
     scopeId = undefined;
     selectedBeadId = undefined;
-    settledScope = undefined;
-    measureCache = undefined;
+    sweeps.clear();
+    lastGood.clear();
+    composing.clear();
+    recomposeAgain.clear();
+    summaries.clear();
+    summariesAt = 0;
     bdClient = undefined;
     ghClient = undefined;
     syncingProjects.clear();
-    getAllProjects = undefined;
     listBeadsProjects = undefined;
+    dataDir = undefined;
     cleanupInFlight.clear();
   },
 };

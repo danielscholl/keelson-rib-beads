@@ -10,6 +10,7 @@
 // layout, the view declarations, and the recompose calls the tools make.
 // One key per panel so each updates independently. The inspector has no
 // region; it opens in the canvas drawer. The epic map is the one `html` key.
+export const TRACKERS_KEY = "rib:beads:trackers";
 export const PULSE_KEY = "rib:beads:pulse";
 export const WIP_KEY = "rib:beads:wip";
 export const ATTENTION_KEY = "rib:beads:attention";
@@ -20,6 +21,7 @@ export const SHIPPED_KEY = "rib:beads:shipped";
 export const INSPECT_KEY = "rib:beads:inspect";
 
 export const ALL_KEYS = [
+  TRACKERS_KEY,
   PULSE_KEY,
   WIP_KEY,
   ATTENTION_KEY,

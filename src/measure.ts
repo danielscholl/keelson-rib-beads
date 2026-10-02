@@ -58,9 +58,9 @@ export interface ProjectMeasurement {
   // The whole non-closed backlog (`bd list` default scope: open, in-progress,
   // blocked, deferred) — the board's Plan tree, mirroring the CLI's tree view.
   backlog: Measured<BdIssue[]>;
-  // Epic membership by parent-child dependency links (epic id → child ids):
-  // dotted ids alone miss it, and `bd list` carries no dependency payload —
-  // only `bd show <epic> --include-dependents` names an epic's children.
+  // Epic membership by parent-child links (epic id → children): dotted ids
+  // alone miss it. Read off list rows on bd 1.3+, else one `bd show <epic>
+  // --include-dependents` per epic.
   epicChildren: Measured<Record<string, EpicMember[]>>;
   // The newest comment on each claimed bead that has any — the In flight
   // row's evidence line.
@@ -215,6 +215,7 @@ export async function collectRecordedPRs(
   gh: GhClient,
   project: BeadsProject,
   backlog: Measured<BdIssue[]>,
+  opts: { rowsCarryNotes?: boolean; onBead?: (done: number, total: number) => void } = {},
 ): Promise<Pick<ProjectMeasurement, "runInfo" | "prInfo">> {
   if (!backlog.ok) {
     return {
@@ -225,8 +226,12 @@ export async function collectRecordedPRs(
   const runs: Record<string, Measured<BeadRunInfo | undefined>> = {};
   const prs: Record<string, Measured<PrInfo | undefined>> = {};
   const links: { id: string; prUrl: string }[] = [];
-  for (const bead of eligibleBeads(backlog.data)) {
-    const run = await readRunInfo(bd, project.rootPath, bead.id);
+  const eligible = eligibleBeads(backlog.data);
+  for (const [at, bead] of eligible.entries()) {
+    const run: Measured<BeadRunInfo | undefined> = opts.rowsCarryNotes
+      ? { ok: true, data: parseRunNote(bead.notes) }
+      : await readRunInfo(bd, project.rootPath, bead.id);
+    if (!opts.rowsCarryNotes) opts.onBead?.(at + 1, eligible.length);
     runs[bead.id] = run;
     if (!run.ok) {
       prs[bead.id] = run;
@@ -240,17 +245,65 @@ export async function collectRecordedPRs(
   return { runInfo: { ok: true, data: runs }, prInfo: { ok: true, data: prs } };
 }
 
+// The parent edge as a list row reports it: the `parent` field, or the
+// parent-child dependency record when only that is present.
+export function parentOf(i: BdIssue): string | undefined {
+  if (i.parent) return i.parent;
+  const edge = (i.dependencies ?? []).find((d) => (d.dependency_type ?? d.type) === "parent-child");
+  return edge?.depends_on_id;
+}
+
+// Epic membership read off full list rows: every open and closed bead whose
+// parent is an open epic in the backlog.
+export function epicMembersFromRows(
+  backlog: readonly BdIssue[],
+  closed: readonly BdIssue[],
+): Record<string, EpicMember[]> {
+  const map: Record<string, EpicMember[]> = {};
+  for (const epic of backlog) if (epic.issue_type === "epic") map[epic.id] = [];
+  const seen = new Set<string>();
+  for (const i of [...backlog, ...closed]) {
+    const parent = parentOf(i);
+    const members = parent ? map[parent] : undefined;
+    if (!members || seen.has(i.id)) continue;
+    seen.add(i.id);
+    members.push({
+      id: i.id,
+      title: i.title,
+      status: i.status,
+      ...(i.priority !== undefined ? { priority: i.priority } : {}),
+    });
+  }
+  return map;
+}
+
+// Sweep progress for the loading header: which read is running and how many
+// of the sweep's fixed steps have finished.
+export interface SweepProgress {
+  done: number;
+  total: number;
+  label: string;
+}
+
+export const SWEEP_STEPS = 12;
+
 export async function measureProject(
   bd: BdClient,
   project: BeadsProject,
   now: () => Date = () => new Date(),
   gh?: GhClient,
+  onProgress?: (p: SweepProgress) => void,
 ): Promise<ProjectMeasurement> {
   const cwd = project.rootPath;
+  let done = 0;
+  const step = (label: string) => onProgress?.({ done: done++, total: SWEEP_STEPS, label });
 
+  step("bd version");
   const bdVersion = await readBdVersion(bd, cwd);
   const tooOld = bdBelowFloor({ bd: bdVersion });
+  const fullRows = bdVersion.ok && bdVersion.data?.fullRows === true;
 
+  step("summary");
   const statusRes = await bd.readJSON<{ summary?: BdSummary }>(cwd, ["status"]);
   const summary: Measured<BdSummary> = statusRes.ok
     ? statusRes.data.summary
@@ -258,6 +311,7 @@ export async function measureProject(
       : unmeasured("bd status carried no summary")
     : statusRes;
 
+  step("in-flight work");
   const wipRes = await bd.readJSON<unknown>(cwd, [
     "list",
     "--status",
@@ -269,6 +323,7 @@ export async function measureProject(
     ? { ok: true, data: asArray(wipRes.data) }
     : wipRes;
 
+  step("ready queue");
   const readyRes = await bd.readJSON<unknown>(cwd, [
     "ready",
     "--exclude-type=epic",
@@ -282,7 +337,9 @@ export async function measureProject(
         ? unmeasured("in-progress unmeasured, so the ready subtraction cannot run")
         : readyRes;
 
+  step("blocked work");
   const depBlockedRes = await bd.readJSON<unknown>(cwd, ["blocked"]);
+  step("paused work");
   const statusBlockedRes = await bd.readJSON<unknown>(cwd, [
     "list",
     "--status",
@@ -305,6 +362,7 @@ export async function measureProject(
             .join("; "),
         );
 
+  step("epics");
   const epicsRes = await bd.readJSON<unknown>(cwd, ["epic", "status"]);
   const epics: Measured<BdEpicRow[]> = epicsRes.ok
     ? {
@@ -315,6 +373,7 @@ export async function measureProject(
       }
     : epicsRes;
 
+  step("recent closes");
   const closedRes = await bd.readJSON<unknown>(cwd, ["list", "--status", "closed", "--limit", "0"]);
   const recentlyClosed: Measured<BdIssue[]> = closedRes.ok
     ? { ok: true, data: recentCloses(asArray(closedRes.data), now()) }
@@ -323,6 +382,7 @@ export async function measureProject(
     ? { ok: true, data: recentCloses(asArray(closedRes.data), now(), FLOW_WINDOW_DAYS) }
     : closedRes;
 
+  step("stale claims");
   const staleRes = await bd.readJSON<unknown>(cwd, [
     "stale",
     "--days",
@@ -334,11 +394,17 @@ export async function measureProject(
     ? { ok: true, data: asArray(staleRes.data) }
     : staleRes;
 
+  step("backlog");
   const backlog = await readBacklog(bd, cwd);
+  step("run notes and PRs");
   const { runInfo, prInfo } = tooOld
     ? { runInfo: unmeasured<never>(tooOld), prInfo: unmeasured<never>(tooOld) }
     : gh
-      ? await collectRecordedPRs(bd, gh, project, backlog)
+      ? await collectRecordedPRs(bd, gh, project, backlog, {
+          rowsCarryNotes: fullRows,
+          onBead: (n, of) =>
+            onProgress?.({ done: done - 1, total: SWEEP_STEPS, label: `run notes ${n} of ${of}` }),
+        })
       : {
           runInfo:
             unmeasured<Record<string, Measured<BeadRunInfo | undefined>>>(
@@ -348,14 +414,18 @@ export async function measureProject(
             unmeasured<Record<string, Measured<PrInfo | undefined>>>("GitHub reader not bound"),
         };
 
-  // One bd show per epic in the open backlog (epics are few); a failed lookup
-  // marks the whole map unmeasured rather than presenting partial membership
-  // as complete.
+  // Full rows name each bead's parent, so membership needs no extra read.
+  // Otherwise one bd show per epic in the open backlog (epics are few); a
+  // failed lookup marks the whole map unmeasured rather than presenting
+  // partial membership as complete.
+  step("epic membership");
   let epicChildren: Measured<Record<string, EpicMember[]>>;
   if (tooOld) {
     epicChildren = unmeasured(tooOld);
   } else if (!backlog.ok) {
     epicChildren = unmeasured("backlog unmeasured, so epic membership cannot be read");
+  } else if (fullRows && closedRes.ok) {
+    epicChildren = { ok: true, data: epicMembersFromRows(backlog.data, asArray(closedRes.data)) };
   } else {
     const map: Record<string, EpicMember[]> = {};
     let failure: string | undefined;

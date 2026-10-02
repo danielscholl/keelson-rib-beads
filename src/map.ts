@@ -91,6 +91,7 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .dot.waiting{border:1.5px solid var(--muted)}.dot.hold{border:1.5px dashed var(--muted)}
 .tag{font:600 11px var(--sans);padding:1px 6px;border-radius:4px;white-space:nowrap;background:var(--card);color:var(--fg)}
 .tag.next{background:var(--accent);color:var(--on-accent)}
+.tag.you{background:var(--warn);color:var(--on-accent)}
 .tag.p{color:var(--warn)}.tag.p0{color:var(--crit)}
 .alarm{border:1px solid var(--crit);border-radius:8px;padding:8px 10px;margin-bottom:10px}
 .alarm b{color:var(--crit);font:600 11px var(--mono);margin-right:8px}
@@ -192,6 +193,7 @@ function chip(node: EpicNode, epicId: string): string {
   const held = node.dam?.held.length ?? 0;
   const tags = [
     node.pick ? '<span class="tag next">next up</span>' : "",
+    node.yours ? '<span class="tag you">your call</span>' : "",
     member.priority === 0 ? '<span class="tag p p0">P0</span>' : "",
     member.priority === 1 ? '<span class="tag p">P1</span>' : "",
     node.handPaused ? '<span class="tag">paused by hand</span>' : "",
