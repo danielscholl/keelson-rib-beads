@@ -80,6 +80,7 @@ describe("rib contract shape", () => {
       effect: "open-canvas",
       key: INSPECT_KEY,
       title: "Bead tl-x",
+      placement: "side",
     });
     const flag = await rib.onAction?.(
       { type: "select-bead", payload: { id: "--help" }, origin: "canvas-html" },

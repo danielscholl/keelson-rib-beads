@@ -428,7 +428,7 @@ const rib: Rib = {
         "epic, grouped by priority) and Shipped: closes this week against last,",
         "created this week against last, and every close in the fortnight by day",
         "with its PR and the first sentence of its close reason. Clicking any bead",
-        "on a structured panel opens the inspector in the canvas drawer: facts,",
+        "opens the inspector in a side drawer beside the board: facts,",
         "dependency links by edge type (each opens that bead), description,",
         "acceptance criteria, and a history timeline (created, claimed, plan, PR,",
         "comments, closed). Every panel is fail-closed: a failed bd query renders",
@@ -620,6 +620,7 @@ const rib: Rib = {
             effect: "open-canvas" as const,
             key: INSPECT_KEY,
             title: `Bead ${parsed.data.id}`,
+            placement: "side" as const,
           },
         };
       }
