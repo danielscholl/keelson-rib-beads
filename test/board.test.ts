@@ -12,7 +12,6 @@ import {
   composeNoTrackerPulse,
   composePulse,
   composeRecommend,
-  composeSelected,
   composeShipped,
   composeWip,
   criteriaItems,
@@ -654,27 +653,6 @@ describe("Epics", () => {
       ["e.2", 0, "ready", false],
       ["e.3", 0, "waiting", true],
     ]);
-  });
-
-  test("the Selected panel carries the map's pick with a trusted Inspect action", () => {
-    const m = epicBoard();
-    const resting = composeSelected(m, undefined);
-    expect(() => validBoard(resting)).not.toThrow();
-    expect(JSON.stringify(resting)).toContain("Select a bead in the map");
-    const picked = composeSelected(m, "cx.1");
-    expect(() => validBoard(picked)).not.toThrow();
-    const cards = picked.sections[0];
-    if (cards?.kind !== "cards") throw new Error("no card");
-    // A closed child is not in the backlog, so it reads from epic membership.
-    expect(cards.items[0]?.title).toBe("Scaffold");
-    expect(cards.items[0]?.fields?.[0]?.value).toBe("cx.1 · closed");
-    expect(cards.items[0]?.actions?.[0]).toEqual({
-      type: "select-bead",
-      label: "Inspect",
-      payload: { id: "cx.1" },
-    });
-    m.epics = ok([]);
-    expect(composeSelected(m, "cx.1").sections).toHaveLength(0);
   });
 
   test("no open epic yields no views", () => {

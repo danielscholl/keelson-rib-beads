@@ -12,7 +12,6 @@ import {
   INSPECT_KEY,
   PULSE_KEY,
   RECOMMEND_KEY,
-  SELECTED_KEY,
   SHIPPED_KEY,
   WIP_KEY,
 } from "../src/keys";
@@ -41,7 +40,7 @@ describe("rib contract shape", () => {
     // opens in the canvas drawer.
     expect(rowKeys).toEqual([
       [[WIP_KEY], [RECOMMEND_KEY], [ATTENTION_KEY]],
-      [[SELECTED_KEY, EPIC_MAP_KEY]],
+      [[EPIC_MAP_KEY]],
       [[BACKLOG_KEY], [SHIPPED_KEY]],
     ]);
     expect(surface?.layout.rows.map((r) => r.zoneTitle)).toEqual([
@@ -52,15 +51,7 @@ describe("rib contract shape", () => {
     const titles = surface?.layout.rows.flatMap((r) =>
       r.columns.flatMap((c) => columnRegions(c).map((region) => region.title)),
     );
-    expect(titles).toEqual([
-      "In flight",
-      "Next up",
-      "Needs you",
-      "Selected",
-      "Wave map",
-      "Backlog",
-      "Shipped",
-    ]);
+    expect(titles).toEqual(["In flight", "Next up", "Needs you", "Wave map", "Backlog", "Shipped"]);
     for (const region of surface?.layout.rows[1]?.columns.flatMap(columnRegions) ?? []) {
       expect(region.hideWhenEmpty).toBe(true);
     }
@@ -85,12 +76,11 @@ describe("rib contract shape", () => {
       ctx,
     );
     expect(select?.ok).toBe(true);
-    // The host drops an open-canvas reply to a frame, so the rib says where
-    // the selection went instead of sending one.
-    expect(
-      (select as { data?: { effect?: string; message?: string } }).data?.effect,
-    ).toBeUndefined();
-    expect((select as { data?: { message?: string } }).data?.message).toContain("tl-x selected");
+    expect((select as { data?: unknown }).data).toEqual({
+      effect: "open-canvas",
+      key: INSPECT_KEY,
+      title: "Bead tl-x",
+    });
     const flag = await rib.onAction?.(
       { type: "select-bead", payload: { id: "--help" }, origin: "canvas-html" },
       ctx,

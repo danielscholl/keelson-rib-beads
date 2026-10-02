@@ -15,7 +15,6 @@ export const WIP_KEY = "rib:beads:wip";
 export const ATTENTION_KEY = "rib:beads:attention";
 export const RECOMMEND_KEY = "rib:beads:recommend";
 export const EPIC_MAP_KEY = "rib:beads:epic-map";
-export const SELECTED_KEY = "rib:beads:selected";
 export const BACKLOG_KEY = "rib:beads:backlog";
 export const SHIPPED_KEY = "rib:beads:shipped";
 export const INSPECT_KEY = "rib:beads:inspect";
@@ -26,7 +25,6 @@ export const ALL_KEYS = [
   ATTENTION_KEY,
   RECOMMEND_KEY,
   EPIC_MAP_KEY,
-  SELECTED_KEY,
   BACKLOG_KEY,
   SHIPPED_KEY,
   INSPECT_KEY,
@@ -36,11 +34,12 @@ export const BEADS_SURFACE_ID = "beads";
 
 // Retired keys, not registered anymore: the v0.1 mega-board, the
 // finished-this-week strip, the Plan, Portfolio and Momentum panels the
-// Backlog, Epics and Shipped panels replaced, and the epic ladders the wave
-// map replaced.
+// Backlog, Epics and Shipped panels replaced, the epic ladders the wave map
+// replaced, and the Selected panel a map click made redundant.
 export const BOARD_KEY = "rib:beads:board";
 export const CLOSED_KEY = "rib:beads:closed";
 export const PLAN_KEY = "rib:beads:plan";
 export const PORTFOLIO_KEY = "rib:beads:portfolio";
 export const MOMENTUM_KEY = "rib:beads:momentum";
 export const LADDERS_KEY = "rib:beads:ladders";
+export const SELECTED_KEY = "rib:beads:selected";

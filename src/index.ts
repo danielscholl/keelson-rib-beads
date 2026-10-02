@@ -27,7 +27,6 @@ import {
   composeNoTrackerPulse,
   composePulse,
   composeRecommend,
-  composeSelected,
   composeShipped,
   composeSweepFailed,
   composeWip,
@@ -43,7 +42,6 @@ import {
   INSPECT_KEY,
   PULSE_KEY,
   RECOMMEND_KEY,
-  SELECTED_KEY,
   SHIPPED_KEY,
   WIP_KEY,
 } from "./keys";
@@ -76,8 +74,6 @@ const cleanupInFlight = new Map<string, Promise<void>>();
 // the inspector; both reset on scope change.
 let scopeId: string | undefined;
 let selectedBeadId: string | undefined;
-// The bead last picked inside the wave map frame; the Selected panel shows it.
-let mapSelectedId: string | undefined;
 // The project whose sweep last settled. Until a newly picked project's first
 // sweep settles, its panels say so rather than keep the previous project's
 // frames under the new name.
@@ -369,20 +365,12 @@ const rib: Rib = {
           {
             zoneTitle: "Epics",
             columns: [
-              [
-                {
-                  key: SELECTED_KEY,
-                  title: "Selected",
-                  glyph: { char: "◎", tone: "accent" },
-                  hideWhenEmpty: true,
-                },
-                {
-                  key: EPIC_MAP_KEY,
-                  title: "Wave map",
-                  glyph: { char: "▰", tone: "accent" },
-                  hideWhenEmpty: true,
-                },
-              ],
+              {
+                key: EPIC_MAP_KEY,
+                title: "Wave map",
+                glyph: { char: "▰", tone: "accent" },
+                hideWhenEmpty: true,
+              },
             ],
           },
           {
@@ -435,8 +423,8 @@ const rib: Rib = {
         "closeouts). Epics holds the wave map: each open epic's children in columns,",
         "a column being one more than the deepest column among a bead's open",
         "blockers, with lines to its blockers and a holds N tag on a bead that holds",
-        "two or more. Selecting a bead in the map shows it in Selected, whose Inspect",
-        "opens the inspector. Backlog and shipped holds the Backlog (open beads on no",
+        "two or more. Clicking a bead in the map opens the inspector.",
+        "Backlog and shipped holds the Backlog (open beads on no",
         "epic, grouped by priority) and Shipped: closes this week against last,",
         "created this week against last, and every close in the fortnight by day",
         "with its PR and the first sentence of its close reason. Clicking any bead",
@@ -525,14 +513,6 @@ const rib: Rib = {
       panel(ATTENTION_KEY, composeAttention);
       panel(BACKLOG_KEY, composeBacklog);
       panel(SHIPPED_KEY, composeShipped);
-      register(
-        SELECTED_KEY,
-        makePanelComposer(
-          SELECTED_KEY,
-          (m) => composeSelected(m, mapSelectedId),
-          () => EMPTY_PANEL,
-        ),
-      );
       // An empty fragment hides the region, at rest and while measuring.
       register(
         EPIC_MAP_KEY,
@@ -613,7 +593,6 @@ const rib: Rib = {
         }
         scopeId = parsed.data.scopeId;
         selectedBeadId = undefined;
-        mapSelectedId = undefined;
         settledScope = undefined;
         refreshAll();
         return { ok: true as const };
@@ -623,28 +602,16 @@ const rib: Rib = {
         if (!parsed.success) {
           return { ok: false as const, error: "select-bead payload must be { id: string }" };
         }
-        const fromMap = action.origin === "canvas-html";
-        if (fromMap && !FRAME_BEAD_ID.test(parsed.data.id)) {
+        if (action.origin === "canvas-html" && !FRAME_BEAD_ID.test(parsed.data.id)) {
           return { ok: false as const, error: "select-bead from a frame needs a bead id" };
         }
         selectedBeadId = parsed.data.id;
-        if (fromMap || mapSelectedId !== parsed.data.id) {
-          mapSelectedId = fromMap ? parsed.data.id : undefined;
-        }
         // Compose the inspector BEFORE answering: the open-canvas directive
         // below opens that snapshot in the drawer, and it must show the bead
         // just clicked, not the previous frame. Selection is cheap — the
         // measurement cache holds, only bd show runs.
         await snapshots?.recompose(INSPECT_KEY).catch(() => undefined);
         recomposeKeys(ALL_KEYS.filter((key) => key !== INSPECT_KEY));
-        // The host drops an open-canvas reply to a frame, so a map click
-        // answers with where the bead went instead.
-        if (fromMap) {
-          return {
-            ok: true as const,
-            data: { message: `${parsed.data.id} selected. Inspect opens it.` },
-          };
-        }
         // The inspector lives only in the canvas drawer, so a click anywhere
         // on the page shows its detail in view.
         return {
@@ -713,7 +680,6 @@ const rib: Rib = {
     // starts clean rather than trusting stale scope.
     scopeId = undefined;
     selectedBeadId = undefined;
-    mapSelectedId = undefined;
     settledScope = undefined;
     measureCache = undefined;
     bdClient = undefined;

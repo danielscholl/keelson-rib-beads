@@ -38,8 +38,8 @@ three zones in the order the operator acts.
   column holds what no open bead blocks and position says what waits on what. Lines join a
   bead to its blockers; hovering a bead lights its chain. A bead that holds
   two or more others carries a `holds N` tag. Under an epic a child prints as
-  `.5`; the epic prints its id once. Selecting a bead in the map shows it in
-  *Selected*, whose **Inspect** opens the inspector.
+  `.5`; the epic prints its id once. Clicking a bead in the map opens the
+  inspector (keelson 0.114.2 or later; an older host ignores the click).
 - **Backlog and shipped.** *Backlog* is every open bead that is on no epic
   and not in flight, grouped by priority. *Shipped* compares closes and
   creates this week against last, then lists every close in the fortnight by
