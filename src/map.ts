@@ -15,6 +15,7 @@
 import { bdFloorLabel } from "./bd";
 import {
   clampTitle,
+  commonPriority,
   type EpicLane,
   type EpicNode,
   type EpicView,
@@ -192,7 +193,7 @@ function alarm(what: string, error: string): string {
   return `<div class="alarm"><b>UNMEASURED</b>${esc(what)}<pre>${esc(error.slice(0, 1000))}</pre></div>`;
 }
 
-function chip(node: EpicNode, epicId: string): string {
+function chip(node: EpicNode, epicId: string, common: number | undefined): string {
   const { member, lane } = node;
   const short = (id: string) => shortId(id, epicId);
   const held = node.dam?.held.length ?? 0;
@@ -200,7 +201,7 @@ function chip(node: EpicNode, epicId: string): string {
     node.pick ? '<span class="tag next">next up</span>' : "",
     node.yours ? '<span class="tag you">your call</span>' : "",
     member.priority === 0 ? '<span class="tag p p0">P0</span>' : "",
-    member.priority === 1 ? '<span class="tag p">P1</span>' : "",
+    member.priority === 1 && common !== 1 ? '<span class="tag p">P1</span>' : "",
     node.handPaused ? '<span class="tag">paused by hand</span>' : "",
     held > 1
       ? `<span class="tag" title="${esc(`${held} wait on this directly, ${node.dam?.transitive ?? held} downstream`)}">holds ${held}</span>`
@@ -268,6 +269,7 @@ function epicBlock(view: EpicView): string {
           "",
         )}${done.length > DONE_LISTED ? `<span>+${done.length - DONE_LISTED} more</span>` : ""}</div>`
     : "";
+  const common = commonPriority(nodes.map((n) => n.member));
   const waveCount = nodes.reduce((max, n) => Math.max(max, n.wave + 1), 0);
   // A wave with no bead draws no column (an epic whose first wave all waits
   // on another epic); the rest keep their numbers.
@@ -279,7 +281,7 @@ function epicBlock(view: EpicView): string {
     .map(({ w, inWave }) => {
       const note = w === 0 ? " · unblocked" : "";
       return `<div class="wave"><h3>Wave ${w + 1} <span>· ${inWave.length}${note}</span></h3>${inWave
-        .map((n) => chip(n, epicId))
+        .map((n) => chip(n, epicId, common))
         .join("")}</div>`;
     })
     .join("");

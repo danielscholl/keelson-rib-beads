@@ -5,6 +5,7 @@ import {
   ago,
   assigneeView,
   beadTimeline,
+  commonPriority,
   composeBacklog,
   composeInspect,
   composeInspectNeedsBd,
@@ -150,6 +151,22 @@ function setWip(m: ProjectMeasurement, items: BdIssue[]): void {
   m.runInfo = ok(Object.fromEntries(items.map((i) => [i.id, ok(undefined)])));
   m.prInfo = ok(Object.fromEntries(items.map((i) => [i.id, ok(undefined)])));
 }
+
+describe("priority pills", () => {
+  test("the priority most of a set shares is common only when it strictly leads", () => {
+    expect(commonPriority([{ priority: 1 }, { priority: 1 }, { priority: 2 }])).toBe(1);
+    expect(commonPriority([{ priority: 1 }, { priority: 2 }])).toBeUndefined();
+    expect(commonPriority([{}, {}, { priority: 1 }])).toBe(2);
+    expect(commonPriority([])).toBeUndefined();
+  });
+
+  test("P1 shows only where it stands out; P0 always shows", () => {
+    const bead = (priority: number): BdIssue => ({ id: "x", title: "x", status: "open", priority });
+    expect(signalOf(bead(1), { commonPriority: 1 })).toBeUndefined();
+    expect(signalOf(bead(1), { commonPriority: 2 })?.label).toBe("P1");
+    expect(signalOf(bead(0), { commonPriority: 0 })?.label).toBe("P0");
+  });
+});
 
 describe("recommendNext / unlockChain", () => {
   test("leverage outranks priority; runner-up is named", () => {
@@ -615,7 +632,8 @@ describe("In flight", () => {
     if (cards?.kind !== "cards") throw new Error("no cards");
     const byTitle = new Map(cards.items.map((c) => [c.title, c]));
     expect(byTitle.get("First")?.fields?.some((f) => f.label === "waits on")).toBe(false);
-    expect(byTitle.get("First")?.pill?.label).toBe("P1");
+    // Both claims are P1, so a P1 pill would say nothing.
+    expect(byTitle.get("First")?.pill).toBeUndefined();
     expect(byTitle.get("Second")?.fields?.find((f) => f.label === "waits on")?.value).toBe(
       ".1 · First (in flight)",
     );
