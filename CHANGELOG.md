@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.0](https://github.com/danielscholl/keelson-rib-beads/compare/v0.4.0...v0.5.0) (2026-10-02)
+
+
+### Added
+
+* **beads:** open bead inspector in a side drawer ([#25](https://github.com/danielscholl/keelson-rib-beads/issues/25)) ([e7cc32b](https://github.com/danielscholl/keelson-rib-beads/commit/e7cc32b7bbebd8963a138a146da2eb8d73f7bb44))
+
+
+### Fixed
+
+* **beads:** route map edges around unrelated chips ([#26](https://github.com/danielscholl/keelson-rib-beads/issues/26)) ([11edb71](https://github.com/danielscholl/keelson-rib-beads/commit/11edb71c6f9dadd388ba3740c10d7e8da56a6b7d))
+
 ## [0.4.0](https://github.com/danielscholl/keelson-rib-beads/compare/v0.3.0...v0.4.0) (2026-10-02)
 
 
