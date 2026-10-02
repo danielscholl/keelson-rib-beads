@@ -75,6 +75,9 @@ describe("review eval fixture", () => {
     expect(written.nodes[1]).toEqual({ ...shipped, depends_on: ["capture-diff"] });
     const high = buildWorkflow({ effort: "high" }).nodes as Array<Record<string, unknown>>;
     expect(high[1]).toEqual({ ...shipped, depends_on: ["capture-diff"], effort: "high" });
+    const light = buildWorkflow({ model: "fast" }).nodes as Array<Record<string, unknown>>;
+    expect(light[1]?.model).toBe("fast");
+    expect(light[1]?.model_by_provider).toBeUndefined();
   });
 });
 

@@ -55,6 +55,14 @@
           "style": { "useImportType": "off" }
         }
       }
+    },
+    {
+      "includes": ["evals/review/cases.ts"],
+      "linter": {
+        "rules": {
+          "suspicious": { "noTemplateCurlyInString": "off" }
+        }
+      }
     }
   ]
 }
