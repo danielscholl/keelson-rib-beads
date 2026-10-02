@@ -927,7 +927,19 @@ export function composeWip(m: ProjectMeasurement, ctx: PanelContext): Board {
   }
   const floor = bdBelowFloor(m);
   const blocked = m.blocked.ok ? m.blocked.data : [];
-  const blockers = new Map<string, string[]>(blocked.map((b) => [b.id, b.blocked_by ?? []]));
+  const index = backlogIndex(m);
+  const inFlight = new Set(m.inProgress.data.map((i) => i.id));
+  // What still holds a claim, minus structure edges, so a claim under an
+  // epic never reads as waiting on its own epic.
+  const holdsOf = (i: BdIssue): string[] => {
+    const parent = i.parent ?? index.get(i.id)?.parent;
+    const entry = blocked.find((b) => b.id === i.id);
+    return (entry?.blocked_by ?? []).filter((dep) => {
+      if (dep === parent) return false;
+      const blocker = index.get(dep);
+      return blocker?.issue_type !== "epic" && blocker?.status !== "closed";
+    });
+  };
   const people = assigneeView(m.inProgress.data);
   const runCount = m.inProgress.data.filter((i) => runInfoOf(m, i.id) !== undefined).length;
   const otherCount = m.inProgress.data.length - runCount;
@@ -961,6 +973,13 @@ export function composeWip(m: ProjectMeasurement, ctx: PanelContext): Board {
         ? { label: `run ${info.outcome ?? "note"}`, text: firstSentence(info.note) }
         : undefined;
     const releases = unlockLevels(i.id, blocked)[0] ?? [];
+    const holds = holdsOf(i);
+    const short = (id: string) => shortId(id, parentIdOf(i.id));
+    const holdText = (id: string) => {
+      const title = holds.length === 1 ? index.get(id)?.title : undefined;
+      const state = inFlight.has(id) ? " (in flight)" : "";
+      return `${short(id)}${title ? ` · ${clampTitle(title, 60)}` : ""}${state}`;
+    };
     const card = beadCard(i, {
       meta: [
         people.perItem
@@ -972,19 +991,17 @@ export function composeWip(m: ProjectMeasurement, ctx: PanelContext): Board {
       ],
       signal: signalOf(i, {
         mergePending: Boolean(mergedPR(m.prInfo, i.id)),
-        waitingOn: blockers.get(i.id),
+        waitingOn: holds,
         staleDays: staleDaysOf(m, i, now),
       }),
       ...(evidence ? { evidence } : {}),
       fields: [
+        ...(holds.length
+          ? [{ label: "waits on", value: holds.map(holdText).join(", "), tone: "caution" as const }]
+          : []),
         ...(info?.prUrl ? [prField(info.prUrl)] : []),
         ...(releases.length
-          ? [
-              {
-                label: "releases",
-                value: releases.map((b) => shortId(b.id, parentIdOf(i.id))).join(", "),
-              },
-            ]
+          ? [{ label: "releases", value: releases.map((b) => short(b.id)).join(", ") }]
           : []),
         ...(runError
           ? [{ value: `UNMEASURED run note: ${runError}`.slice(0, 120), tone: "error" as const }]
@@ -1006,8 +1023,9 @@ export function composeWip(m: ProjectMeasurement, ctx: PanelContext): Board {
   ]);
 }
 
-// A claim's three recorded stops as a meter: claimed, PR open, merged. A stop
-// not reached stays neutral and says so in its label.
+// A claim's three recorded stops as a meter: claimed, PR open, merged. The
+// caption names the stop reached and the one after it; a stop not reached
+// stays neutral and says so in its label.
 export function stageBar(
   info: BeadRunInfo | undefined,
   pr: PrInfo | undefined,
@@ -1016,8 +1034,8 @@ export function stageBar(
   const names = ["claimed", "PR open", "merged"];
   const last = reached.lastIndexOf(true);
   return {
-    label: "stage",
-    trailing: `${last + 1} of ${names.length}`,
+    label: names[last] ?? "claimed",
+    trailing: last + 1 < names.length ? `next: ${names[last + 1]}` : "next: close",
     segments: names.map((name, at) => ({
       label: at <= last ? name : `${name}, not yet`,
       n: 1,

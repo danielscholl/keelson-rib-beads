@@ -35,9 +35,11 @@ Below the Overview come three zones in the order the operator acts.
   confirmed **Reconcile merged PRs** action, and stale claims and epics ready
   for closeout as one housekeeping line.
 - **Now.** *In flight* lists every claim with a three-stop stage meter
-  (claimed, PR open, merged), how far along it is (claimed N ago, PR open with
-  draft, CI and review state, merged and waiting on the close), what closing
-  it releases, and its newest comment or run remark. *Next up* is one pick,
+  (claimed, PR open, merged) captioned with the stop reached and the next
+  one, how far along it is (claimed N ago, PR open with draft, CI and review
+  state, merged and waiting on the close), what still holds it when a claim
+  waits on an open bead, what closing it releases, and its newest comment or
+  run remark. *Next up* is one pick,
   ranked by `dependent_count` before priority, with its unlock chain and
   runner-up; it never picks a person's call. With nothing ready it names
   the claim whose close makes the most beads ready, and which ones. *Your
