@@ -626,7 +626,7 @@ describe("In flight", () => {
     expect(cards.items[0]?.dot).toBe("info");
     expect(cards.items[0]?.pill?.label).toBe("waits on 1");
     expect(cards.items[0]?.fields?.[1]).toEqual({
-      label: "waits on",
+      label: "waits\u00a0on",
       value: "tl-b · Ready one",
       tone: "caution",
     });
@@ -656,10 +656,10 @@ describe("In flight", () => {
     const cards = composeWip(m, {}).sections[0];
     if (cards?.kind !== "cards") throw new Error("no cards");
     const byTitle = new Map(cards.items.map((c) => [c.title, c]));
-    expect(byTitle.get("First")?.fields?.some((f) => f.label === "waits on")).toBe(false);
+    expect(byTitle.get("First")?.fields?.some((f) => f.label === "waits\u00a0on")).toBe(false);
     // Both claims are P1, so a P1 pill would say nothing.
     expect(byTitle.get("First")?.pill).toBeUndefined();
-    expect(byTitle.get("Second")?.fields?.find((f) => f.label === "waits on")?.value).toBe(
+    expect(byTitle.get("Second")?.fields?.find((f) => f.label === "waits\u00a0on")?.value).toBe(
       ".1 · First (in flight)",
     );
   });
