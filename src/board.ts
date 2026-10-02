@@ -209,6 +209,45 @@ export function unlockLevels(id: string, blocked: BdIssue[]): BdIssue[][] {
   return levels;
 }
 
+// The beads that go ready the moment `id` closes: open, unclaimed, and held
+// by no other open blocker. Structure edges drop out the way damGroups drops
+// them.
+export function freedBy(
+  id: string,
+  blocked: BdIssue[],
+  index: ReadonlyMap<string, BdIssue>,
+): BdIssue[] {
+  return blocked.filter((b) => {
+    if (b.status !== "open") return false;
+    const parent = b.parent ?? index.get(b.id)?.parent;
+    const holds = (b.blocked_by ?? []).filter((dep) => {
+      if (dep === parent) return false;
+      const blocker = index.get(dep);
+      return blocker?.issue_type !== "epic" && blocker?.status !== "closed";
+    });
+    return holds.length > 0 && holds.every((dep) => dep === id);
+  });
+}
+
+// With nothing ready, the claims whose close frees work, most freed first;
+// ties rank the way Next up ranks a pick.
+export function nextToUnlock(
+  inFlight: BdIssue[],
+  blocked: BdIssue[],
+  index: ReadonlyMap<string, BdIssue>,
+): { claim: BdIssue; freed: BdIssue[] }[] {
+  return inFlight
+    .map((claim) => ({ claim, freed: freedBy(claim.id, blocked, index) }))
+    .filter((c) => c.freed.length > 0)
+    .sort((a, b) => {
+      if (a.freed.length !== b.freed.length) return b.freed.length - a.freed.length;
+      const la = a.claim.dependent_count ?? 0;
+      const lb = b.claim.dependent_count ?? 0;
+      if (la !== lb) return lb - la;
+      return byPriorityThenAge(a.claim, b.claim);
+    });
+}
+
 export function unlockChain(
   id: string,
   blocked: BdIssue[],
@@ -766,6 +805,35 @@ export function composeRecommend(m: ProjectMeasurement, ctx: PanelContext): Boar
   const { pick, runnerUp } = recommendNext(m.ready.data);
   if (!pick) {
     const calls = m.ready.data.filter(isHumanCall).length;
+    const unlock =
+      calls === 0 && m.inProgress.ok
+        ? nextToUnlock(m.inProgress.data, blocked, backlogIndex(m))
+        : [];
+    const [first, second] = unlock;
+    if (first) {
+      const short = (id: string) => shortId(id, parentIdOf(first.claim.id));
+      return board([
+        {
+          kind: "cards",
+          title: "Nothing is ready · next to unlock",
+          items: [
+            beadCard(first.claim, {
+              meta: ["in flight", shortPerson(personOf(first.claim)), `P${first.claim.priority}`],
+              evidence: {
+                label: "why",
+                text: `closing it makes ${plural(first.freed.length, "bead")} ready`,
+              },
+              fields: [{ label: "frees", value: first.freed.map((b) => short(b.id)).join(", ") }],
+              selectedId: ctx.selectedId,
+              actions: [{ type: "select-bead", label: "Inspect", payload: { id: first.claim.id } }],
+              footnote: second
+                ? `then: ${short(second.claim.id)} frees ${second.freed.length} · ${clampTitle(second.claim.title, 80)}`
+                : "no other claim frees work on its own",
+            }),
+          ],
+        },
+      ]);
+    }
     return board([
       quiet(
         calls > 0
