@@ -63,11 +63,12 @@ describe("rib contract shape", () => {
       "Backlog",
       "Shipped",
     ]);
-    // The map and Your calls hide when they have nothing to show.
+    // The map, Your calls and Backlog hide when they have nothing to show.
     const regions = surface?.layout.rows.flatMap((r) => r.columns.flatMap(columnRegions)) ?? [];
     expect(regions.filter((r) => r.hideWhenEmpty).map((r) => r.key)).toEqual([
       ATTENTION_KEY,
       EPIC_MAP_KEY,
+      BACKLOG_KEY,
     ]);
     // The map is the one html region; every other key is a structured view.
     expect(rib.views?.filter((v) => v.canvasKind === "html").map((v) => v.key)).toEqual([
