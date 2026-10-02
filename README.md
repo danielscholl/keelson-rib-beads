@@ -17,31 +17,40 @@ without a `.beads` tracker gets an honest empty state that lists the projects
 that have one. The scoped board is composed in-process from `bd` output on a
 5-minute cadence:
 
-three zones in the order a status conversation runs.
+three zones in the order the operator acts.
 
-- **Overview.** One sentence with the week's totals (shipped, in flight, left
-  to do) above the flow strip (waiting → ready → in progress → in review →
-  done 7d). A shared cause reports here once: a `bd` older than 1.2, or a `gh`
-  that fails every PR lookup. Panels that depend on it point at the header
-  instead of alarming separately.
-- **Doing.** *In flight* lists every claim with how far along it is (claimed
-  N ago, PR open with draft, CI and review state, merged and waiting on the
-  close) and its newest comment or run remark. *Needs you* holds merged PRs to
-  reconcile (with a confirmed **Reconcile merged PRs** action), reviews to
-  merge, dams (blockers grouped by what they hold), hand-paused work, stale
-  claims and epic closeouts.
-- **To do.** *Next up* is one pick, ranked by `dependent_count` before
-  priority, with its unlock chain and runner-up. *Epics* draws one ladder per
-  open epic: a stage meter, then the children in the order the edges allow.
-  *Backlog* is everything else open, grouped by priority.
-- **Done.** *Shipped* compares closes and creates this week against last, then
-  lists every close in the fortnight by day with its PR and the first sentence
-  of its close reason.
+- **Overview.** One sentence with the totals (in flight, ready to start,
+  waiting, shipped this week) above the flow strip (waiting → ready → in
+  progress → in review → done 7d), one colour per lane. A shared cause reports
+  here once: a `bd` older than 1.2, or a `gh` that fails every PR lookup.
+  Panels that depend on it point at the header instead of alarming separately.
+- **Now.** *In flight* lists every claim with a three-stop stage meter
+  (claimed, PR open, merged), how far along it is (claimed N ago, PR open with
+  draft, CI and review state, merged and waiting on the close), what closing
+  it releases, and its newest comment or run remark. *Next up* is one pick,
+  ranked by `dependent_count` before priority, with its unlock chain and
+  runner-up. *Needs you* holds only actions: merged PRs to reconcile (with a
+  confirmed **Reconcile merged PRs** action), reviews to merge, hand-paused
+  work, stale claims and epic closeouts. When all five are empty it lists
+  them with their zero counts.
+- **Epics.** *Wave map* draws each open epic as columns: a child's column is
+  one more than the deepest column among its open blockers, so the first
+  column holds what no open bead blocks and position says what waits on what. Lines join a
+  bead to its blockers; hovering a bead lights its chain. A bead that holds
+  two or more others carries a `holds N` tag. Under an epic a child prints as
+  `.5`; the epic prints its id once. Selecting a bead in the map shows it in
+  *Selected*, whose **Inspect** opens the inspector.
+- **Backlog and shipped.** *Backlog* is every open bead that is on no epic
+  and not in flight, grouped by priority. *Shipped* compares closes and
+  creates this week against last, then lists every close in the fortnight by
+  day with its PR and the first sentence of its close reason; a fortnight
+  with no closes is one line.
 
 Clicking any bead opens the inspector in the canvas drawer: facts, dependency
 links by edge type (an epic edge is membership, never "waits on"),
-description, acceptance criteria, and a history of created, claimed, plan, PR,
-comments and closed. A stop the tracker did not record says so.
+description, acceptance criteria one per row, and a history of created,
+claimed, plan, PR, comments and closed. A linked bead opens in the same
+drawer, so a chain can be walked. A stop the tracker did not record says so.
 
 **One shape per bead.** A bead is a card when it has evidence to show (lane
 dot, title, a meta line led by the id as `bd` prints it, one signal pill, and
@@ -53,6 +62,12 @@ The blocked set is the **union** of dependency-blocked (`bd blocked`) and
 status-blocked (`bd list --status blocked`); either query alone undercounts.
 An epic whose children have all closed raises a **closeout review**, never an
 offer to close.
+
+The wave map is the one `html` region: the host renders it in a sandboxed
+frame, and the rib accepts only bead selection from it. Claiming and
+reconciling stay on the structured panels. Picking another project shows
+"Measuring <project>" on every panel until that project's first sweep
+answers.
 
 **Two leverage metrics, never one contested word.** `N downstream` is the
 declared `dependent_count` and does the ranking; `releases N now` is measured

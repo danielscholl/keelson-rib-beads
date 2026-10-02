@@ -27,7 +27,7 @@ export const RECENT_CLOSE_DAYS = 7;
 export const FLOW_WINDOW_DAYS = 14;
 
 // One member of an epic as its parent-child edge reports it: enough to draw
-// the ladder, closed children included.
+// the epic map, closed children included.
 export interface EpicMember {
   id: string;
   title: string;
