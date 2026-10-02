@@ -11,7 +11,7 @@ on:
 
 permissions:
   contents: write
-  actions: read
+  actions: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.workflow_run.head_branch }}
@@ -20,7 +20,14 @@ concurrency:
 jobs:
   push-lockfile:
     name: Push updated lockfile
-    if: github.event.workflow_run.conclusion == 'success'
+    # Trust comes from the workflow_run payload, never the artifact: a fork PR
+    # can rewrite the producer and upload a crafted lockfile or branch name.
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.actor.id == 49699333 &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      startsWith(github.event.workflow_run.head_branch, 'dependabot/')
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -40,17 +47,23 @@ jobs:
         env:
           # A PAT makes CI re-run on the pushed commit; GITHUB_TOKEN pushes do not trigger workflows.
           GH_TOKEN: ${{ secrets.DEPENDABOT_LOCKFILE_PAT || secrets.GITHUB_TOKEN }}
+          HAS_PAT: ${{ secrets.DEPENDABOT_LOCKFILE_PAT != '' }}
           REPO: ${{ github.repository }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
           set -euo pipefail
-          branch=$(cat artifact/pr/HEAD_REF)
-          case "$branch" in
-            dependabot/*) ;;
-            *) echo "::error::refusing to push to non-Dependabot branch: $branch" >&2; exit 1 ;;
-          esac
+          branch="$BRANCH"
+          if [ "$(cat artifact/pr/HEAD_REF)" != "$branch" ]; then
+            echo "::error::artifact names a different branch than the run that built it" >&2
+            exit 1
+          fi
           # -F content=@file keeps the base64 body out of argv; -f would upload the literal string.
           base64 -w0 artifact/bun.lock > "$RUNNER_TEMP/content.b64"
           sha=$(gh api "repos/$REPO/contents/bun.lock?ref=$branch" --jq .sha)
           gh api --method PUT "repos/$REPO/contents/bun.lock" \
             -f message="build(deps): sync bun.lock with Dependabot manifest bump" \
             -F content=@"$RUNNER_TEMP/content.b64" -f branch="$branch" -f sha="$sha"
+          # GITHUB_TOKEN may still dispatch a workflow, and its checks land on the new commit.
+          if [ "$HAS_PAT" != "true" ]; then
+            gh workflow run ci.yml --repo "$REPO" --ref "$branch"
+          fi
