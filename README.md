@@ -13,8 +13,11 @@ the data.
 
 **A surface.** The *Beads* nav tab opens on a tracker strip: one tile per
 registered project that carries a `.beads` tracker, each with its ready,
-in flight, open and closed counts. A click switches the board, and the choice is
-remembered across restarts. The strip is the rib's own, so picking a backlog
+in flight, open and closed counts. A click switches the board, and the choice
+is remembered across restarts. The choice belongs to the server, not the
+browser: every open Beads board shows the same tracker, so a click in one tab
+(or by an agent driving a browser) switches the others too. The strip is the
+rib's own, so picking a backlog
 never moves Chat's active project, and projects without a tracker never
 appear. The selected board is composed in-process from `bd` output on a
 5-minute cadence:
