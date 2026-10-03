@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { parseRunNote } from "../src/measure";
 
 // Runs the beads-writeback node's bash against a fake `bd` on PATH that
 // answers `bd show` with a chosen status and records every other call.
@@ -62,6 +63,7 @@ async function runWriteback(): Promise<{ stdout: string; exitCode: number }> {
       ...process.env,
       PATH: `${binDir}:${process.env.PATH ?? ""}`,
       KEELSON_ARTIFACTS_DIR: artifacts,
+      KEELSON_RUN_ID: "c2ecde81-8c02-41d9-a0af-5b6a9dc6dd11",
     },
     stdout: "pipe",
     stderr: "pipe",
@@ -118,6 +120,19 @@ describe("beads-writeback", () => {
       true,
     );
     expect(recorded).toContain("update fn-bye --status open --assignee ");
+  });
+
+  test("the note names its run, so the inspector can open it later", async () => {
+    installFakeBd("in_progress");
+    await runWriteback();
+    const note = calls().find((c) => c.startsWith("note fn-bye "));
+    expect(note).toEndWith("(run c2ecde81-8c02-41d9-a0af-5b6a9dc6dd11)");
+    const parsed = parseRunNote(note?.slice("note fn-bye ".length));
+    expect(parsed).toMatchObject({
+      runId: "c2ecde81-8c02-41d9-a0af-5b6a9dc6dd11",
+      outcome: "failed",
+      note: "no PR was opened",
+    });
   });
 
   test("a failed run with a PR records its URL and releases the bead without closing", async () => {

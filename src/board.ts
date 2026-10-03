@@ -32,7 +32,13 @@ import type {
 } from "./bd";
 import { bdFloorLabel, unmeasured } from "./bd";
 import type { EpicMember, ProjectMeasurement, SweepProgress } from "./measure";
-import { bdBelowFloor, byPriorityThenAge, parseRunNote, STALE_DAYS } from "./measure";
+import {
+  bdBelowFloor,
+  byPriorityThenAge,
+  parseRunNote,
+  parseRunNotes,
+  STALE_DAYS,
+} from "./measure";
 import { isMergedPR, type PrInfo } from "./pr";
 import { type LiveRun, RUN_PHASES } from "./runs";
 
@@ -2043,6 +2049,10 @@ export function composeInspect(
       ...(opts.comments && !opts.comments.ok ? [alarmRow("comments", opts.comments.error)] : []),
     ],
   });
+  const runs = runRows(i.notes, opts.run?.runId);
+  if (runs.length) {
+    right.push({ kind: "rows", title: opts.run ? "Earlier runs" : "Runs", items: runs });
+  }
   return board([
     {
       kind: "columns",
@@ -2052,6 +2062,39 @@ export function composeInspect(
       ],
     },
   ]);
+}
+
+// Every past run a bead's notes name, newest first, each opening in the run
+// drawer. The live run is the line above the actions, so it is not repeated.
+export function runRows(notes: string | undefined, liveRunId?: string): RowItem[] {
+  // A run can write two notes (its writeback, then a cancel's cleanup); the newest speaks.
+  const newest = new Map<string, BeadRunInfo & { runId: string }>();
+  for (const r of parseRunNotes(notes)) {
+    if (!r.runId || r.runId === liveRunId) continue;
+    newest.delete(r.runId);
+    newest.set(r.runId, { ...r, runId: r.runId });
+  }
+  return [...newest.values()].reverse().map((r) => {
+    const pr = r.prUrl
+      ? `PR ${prLabel(r.prUrl)}`
+      : r.prState === "number-only"
+        ? `PR #${r.prNumber}`
+        : r.prState === "unknown"
+          ? "PR state unknown"
+          : "no PR";
+    const outcome = r.outcome ?? "ended";
+    return {
+      glyph:
+        outcome === "success"
+          ? STAGE_TONE.done
+          : outcome === "failed"
+            ? ("error" as const)
+            : STAGE_TONE.waiting,
+      text: `${outcome} · ${pr}`,
+      trailing: `run ${r.runId.slice(0, 4)} ›`,
+      action: { type: "open-run", payload: { runId: r.runId } },
+    };
+  });
 }
 
 // The inspector when bd is below the floor: `bd show --include-dependents`

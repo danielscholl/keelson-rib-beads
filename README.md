@@ -84,7 +84,10 @@ the board stays in view and the next click swaps the bead in place (keelson
 (id, status, priority, owner, type), then dependency links by edge type (an
 epic edge is membership, never "waits on"), description, acceptance criteria
 one per row, and a history of created, claimed, plan, PR, comments and
-closed. A blocked bead offers only the pick to start instead. A linked bead
+closed. Under the history, *Runs* lists every `beads-work` run the bead's
+notes name, newest first, each opening in the run drawer; a bead with a live
+run titles it *Earlier runs*, since the live one has its own line beside it.
+A blocked bead offers only the pick to start instead. A linked bead
 opens in the same drawer, so a chain can be walked. A stop the tracker did
 not record says so.
 
@@ -151,7 +154,8 @@ and one that does the work:
   implements in an isolated worktree, runs the project's own checks
   (discovered from its manifests), opens a draft PR, runs a three-lens review
   loop with an independent triage judge, waits on CI, and writes the outcome
-  back to the bead as a `bead-work run:` note the board reads. The approver's
+  back to the bead as a `bead-work run:` note, ending `(run <id>)`, that
+  the board reads. The approver's
   reply at the plan gate lands on the bead too, as a `bead-work plan:` note,
   so the decision record shows what was approved and with what changes.
   Two deterministic guards run around the agent nodes: attribution trailers
