@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { RibExec } from "@keelson/shared";
 import {
   beadIdOf,
+  gateOf,
   type LiveRun,
   NODE_PHASE,
   phaseOf,
@@ -59,6 +60,44 @@ describe("run phases", () => {
     expect(viewOf(detail({ status: "paused", nodes }), "2026-10-02T23:10:00.000Z")?.phase).toBe(
       "approval",
     );
+  });
+});
+
+describe("plan gate", () => {
+  test("a paused run carries when the gate opened and what the plan commits to", () => {
+    const nodes = [
+      {
+        nodeId: "plan-ready",
+        status: "succeeded",
+        outputText:
+          "PLAN_FILE=/tmp/plan.md\nTASK_COUNT=7\n\n=== PLAN ===\n# Feature: X\n\n## Summary\nSix projects under one\nsolution. Scaffolding only.\n\n## Success criteria\n- [ ] y",
+      },
+      { nodeId: "approve-plan", status: "awaiting", startedAt: "2026-10-02T23:07:00.000Z" },
+    ];
+    expect(gateOf({ nodes })).toEqual({
+      since: "2026-10-02T23:07:00.000Z",
+      tasks: 7,
+      summary: "Six projects under one solution. Scaffolding only.",
+    });
+    expect(
+      viewOf(detail({ status: "paused", nodes }), "2026-10-02T23:10:00.000Z")?.gate?.tasks,
+    ).toBe(7);
+    expect(
+      viewOf(detail({ nodes: nodes.slice(0, 1) }), "2026-10-02T23:10:00.000Z")?.gate,
+    ).toBeUndefined();
+  });
+
+  test("only a pause at approve-plan is a plan gate", () => {
+    const nodes = [{ nodeId: "some-other-gate", status: "awaiting" }];
+    expect(
+      viewOf(detail({ status: "paused", nodes }), "2026-10-02T23:10:00.000Z")?.gate,
+    ).toBeUndefined();
+  });
+
+  test("a plan-ready output without a plan gives an empty gate, never a guess", () => {
+    expect(
+      gateOf({ nodes: [{ nodeId: "plan-ready", status: "succeeded", outputText: "nothing" }] }),
+    ).toEqual({});
   });
 });
 

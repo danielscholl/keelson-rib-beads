@@ -85,14 +85,23 @@ export interface LiveRun {
   // Absent until the run names its bead: ARGUMENTS, else the claim node.
   beadId?: string;
   pr?: string;
+  // Present while the run waits at its plan gate.
+  gate?: RunGate;
   // Set when the newest read failed; the rest is the last good read.
   error?: string;
+}
+
+export interface RunGate {
+  since?: string;
+  tasks?: number;
+  summary?: string;
 }
 
 const runNode = z.object({
   nodeId: z.string(),
   status: z.string(),
   outputText: z.string().nullable().optional(),
+  startedAt: z.string().nullable().optional(),
 });
 const runDetail = z.object({
   data: z.object({
@@ -167,6 +176,25 @@ function prOf(run: RunDetail): string | undefined {
   return undefined;
 }
 
+// What the plan gate asks about, from plan-ready's output: the task count and
+// the plan's own summary, so a card can say what approving commits to.
+export function gateOf(run: Pick<RunDetail, "nodes">): RunGate {
+  const awaiting = run.nodes.find((n) => n.status === "awaiting");
+  const ready = run.nodes.find((n) => n.nodeId === "plan-ready")?.outputText ?? "";
+  const tasks = Number(/^TASK_COUNT=(\d+)$/m.exec(ready)?.[1]);
+  const after = ready.split(/^## Summary[ \t]*$/m)[1] ?? "";
+  const summary = after
+    .trim()
+    .split(/\n\s*\n|\n#/)[0]
+    ?.replace(/\s+/g, " ")
+    .trim();
+  return {
+    ...(awaiting?.startedAt ? { since: awaiting.startedAt } : {}),
+    ...(Number.isFinite(tasks) && tasks > 0 ? { tasks } : {}),
+    ...(summary ? { summary } : {}),
+  };
+}
+
 export function viewOf(run: RunDetail, readAt: string): LiveRun | undefined {
   if (!isLive(run.status)) return undefined;
   const beadId = beadIdOf(run);
@@ -181,6 +209,9 @@ export function viewOf(run: RunDetail, readAt: string): LiveRun | undefined {
     ...(run.workingDir ? { workingDir: run.workingDir } : {}),
     ...(beadId ? { beadId } : {}),
     ...(pr ? { pr } : {}),
+    ...(run.nodes.some((n) => n.nodeId === "approve-plan" && n.status === "awaiting")
+      ? { gate: gateOf(run) }
+      : {}),
   };
 }
 
