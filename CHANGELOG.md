@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.8.0](https://github.com/danielscholl/keelson-rib-beads/compare/v0.7.1...v0.8.0) (2026-10-03)
+
+
+### Added
+
+* **beads:** put open plan gates in Your calls, the Overview and the tracker tile ([#49](https://github.com/danielscholl/keelson-rib-beads/issues/49)) ([f35ec4d](https://github.com/danielscholl/keelson-rib-beads/commit/f35ec4d4e0993020761af838d521ceb1f96bf4d9))
+* **beads:** show live beads-work runs on In flight ([#47](https://github.com/danielscholl/keelson-rib-beads/issues/47)) ([de8c403](https://github.com/danielscholl/keelson-rib-beads/commit/de8c4037df8675b29e2f97c24aba960b3bcf533e))
+
 ## [0.7.1](https://github.com/danielscholl/keelson-rib-beads/compare/v0.7.0...v0.7.1) (2026-10-02)
 
 
