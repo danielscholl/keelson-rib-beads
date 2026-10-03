@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/danielscholl/keelson-rib-beads/compare/v0.9.0...v0.10.0) (2026-10-03)
+
+
+### Added
+
+* **beads:** order the Now row as Next up, In flight, Your calls ([#53](https://github.com/danielscholl/keelson-rib-beads/issues/53)) ([96ff97a](https://github.com/danielscholl/keelson-rib-beads/commit/96ff97adf9338b89191fc0cf5f89011e3001c0ef))
+
 ## [0.9.0](https://github.com/danielscholl/keelson-rib-beads/compare/v0.8.0...v0.9.0) (2026-10-03)
 
 
