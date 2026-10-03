@@ -432,7 +432,7 @@ nodes:
     context: fresh
     model: deep
     model_by_provider:
-      copilot: claude-opus-5.5
+      copilot: gpt-6-astra
     effort: high
     # Single-turn large-codebase planning can sit >600s between provider chunks.
     # Match the heavy edit nodes' idle budget so chunk-sparse work can finish.
@@ -792,6 +792,10 @@ nodes:
         the full `verify.sh`. The dedicated validate node runs the full gate
         once; running the whole suite after every task is what makes large
         changes time out.
+      - When the project has a formatter (biome, prettier, ruff, black, gofmt,
+        cargo fmt, dotnet format, …), run it on the files you touched BEFORE
+        that check, every time. A formatting failure found by the check costs
+        a whole extra type-check-and-test cycle; the formatter costs a second.
       - **Never** `git add -A` / `git add .` / `git add -u`. Stage files by name.
       - **Never** commit anything under `$ARTIFACTS_DIR`, scratch files
         (`*.scratch.md`, `*.tmp.md`), or PR-body drafts at the repo root.
@@ -888,8 +892,8 @@ nodes:
     context: fresh
     model: deep
     model_by_provider:
-      copilot: gpt-5.6-sol
-    effort: high
+      copilot: gpt-6-sol
+    effort: medium
     prompt: |
       Review the validation output below.
 
@@ -1571,12 +1575,27 @@ nodes:
       better one; `none` plus the reason when there is none). `summary` is one
       sentence on the branch's health.
 
-  - id: apply-fixes
+  # Prints `0` only for a parseable empty `must_fix` list; anything else
+  # (prose, null, missing, malformed) keeps the fix pair running.
+  - id: must-fix-count
     depends_on: [triage]
+    bash: |
+      set -uo pipefail
+      if [ -n "${KEELSON_NODE_triage_OUTPUT_FILE:-}" ] && [ -f "$KEELSON_NODE_triage_OUTPUT_FILE" ]; then
+        TRIAGE=$(cat "$KEELSON_NODE_triage_OUTPUT_FILE")
+      else
+        TRIAGE="${KEELSON_NODE_triage_OUTPUT:-}"
+      fi
+      COUNT=$(printf '%s' "$TRIAGE" | jq -r '.must_fix | if type == "array" then length else "unknown" end' 2>/dev/null || true)
+      echo "${COUNT:-unknown}"
+
+  - id: apply-fixes
+    depends_on: [triage, must-fix-count]
+    when: "$must-fix-count.output != '0'"
     context: fresh
     model: deep
     model_by_provider:
-      copilot: gpt-5.6-sol
+      copilot: gpt-6.1-sol
     effort: high
     prompt: |
       Apply ONLY the confirmed must-fix issues from triage below. If the list is
@@ -1607,6 +1626,7 @@ nodes:
 
   - id: re-review
     depends_on: [apply-fixes]
+    when: "$must-fix-count.output != '0'"
     context: fresh
     model: deep
     model_by_provider:
@@ -1641,8 +1661,13 @@ nodes:
   # rather than hard-failing the run and stranding the draft PR.
   # Loop nodes only honour `model` / `provider` among the AI fields — anything
   # else (context, effort, allowed_tools) would be dropped with a loader warning.
+  # Runs whether the fix pair ran or was skipped on an empty must-fix list, but
+  # never after a failed fixer or re-review: triage supplies the success the
+  # rule needs, a skipped pair is not a failure, and both halves of the pair
+  # are joined directly because a failed apply-fixes only skips re-review.
   - id: review-loop
-    depends_on: [re-review]
+    depends_on: [triage, apply-fixes, re-review]
+    trigger_rule: none_failed_min_one_success
     provider: copilot
     model: mai-code-1.1-flash
     idle_timeout: 1800000
@@ -1654,7 +1679,8 @@ nodes:
         ## Confirmed must-fix findings from triage
         $triage.output
 
-        ## What the previous verification pass reported
+        ## What the previous verification pass reported (empty when triage
+        ## confirmed no must-fix findings, so no fix pass ran)
         $re-review.output
 
         ## Previous iteration of this loop (empty on the first pass)
@@ -1951,8 +1977,7 @@ nodes:
     context: fresh
     model: deep
     model_by_provider:
-      copilot: gpt-6-astra
-    effort: xhigh
+      copilot: mai-code-1.1-flash
     output_format:
       type: object
       required: [ci_status, actionable, conflicts, criteria_count, brief_status, summary]

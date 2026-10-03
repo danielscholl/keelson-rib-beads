@@ -55,6 +55,7 @@ export const NODE_PHASE: Readonly<Record<string, RunPhase>> = {
   "review-conventions": "review",
   "review-coverage": "review",
   triage: "review",
+  "must-fix-count": "review",
   "apply-fixes": "review",
   "re-review": "review",
   "review-loop": "review",
