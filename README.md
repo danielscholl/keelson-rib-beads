@@ -41,22 +41,22 @@ Below the Overview come three zones in the order the operator acts.
   Merged PRs whose beads are still open show here as one line with a
   confirmed **Reconcile merged PRs** action, and stale claims and epics ready
   for closeout as one housekeeping line.
-- **Now.** *In flight* lists every claim with a three-stop stage meter
-  (claimed, PR open, merged) captioned with the stop reached and the next
-  one, how far along it is (claimed N ago, PR open with draft, CI and review
-  state, merged and waiting on the close), what still holds it when a claim
-  waits on an open bead, what closing it releases, and its newest comment or
-  run remark. While a `beads-work` run holds a bead, its card swaps the stage
-  meter for the run's six phases (brief, plan, approval, build, review, CI),
-  names the run and how long it has been going, and carries **Open run**,
-  which opens the run beside the board. An open plan gate reads as waiting on
-  you. A run that has not picked its bead yet is a row above the cards. The
-  rib reads each live run's status every 15 seconds, and not at all when no
-  run is live; a run that ends re-measures its tracker. *Next up* is one pick,
-  ranked by `dependent_count` before priority, with its unlock chain and
-  runner-up; it never picks a person's call. With nothing ready it names
-  the claim whose close makes the most beads ready, and which ones. *Your
-  calls* lists the beads only a person can finish: type `decision`, or
+- **Now.** *Next up* is one pick, ranked by `dependent_count` before
+  priority, with its unlock chain and runner-up; it never picks a person's
+  call. With nothing ready it names the claim whose close makes the most
+  beads ready, and which ones. *In flight* lists every claim with a
+  three-stop stage meter (claimed, PR open, merged) captioned with the stop
+  reached and the next one, how far along it is (claimed N ago, PR open with
+  draft, CI and review state, merged and waiting on the close), what still
+  holds it when a claim waits on an open bead, what closing it releases, and
+  its newest comment or run remark. While a `beads-work` run holds a bead,
+  its card swaps the stage meter for the run's six phases (brief, plan,
+  approval, build, review, CI), names the run and how long it has been
+  going, and carries **Open run**, which opens the run beside the board. An
+  open plan gate reads as waiting on you. A run that has not picked its bead
+  yet is a row above the cards. The rib reads each live run's status every
+  15 seconds, and not at all when no run is live; a run that ends
+  re-measures its tracker. *Your calls* lists the beads only a person can finish: type `decision`, or
   labelled `owner` or `human`, ranked by how much work waits on each, with
   what it unblocks. A run waiting at its plan gate leads the list whatever
   its bead holds, since it does nothing until answered: its card names the

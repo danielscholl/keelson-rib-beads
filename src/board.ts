@@ -7,7 +7,7 @@
 //     http://www.apache.org/licenses/LICENSE-2.0
 
 // The Beads surface reads in the order the operator acts: the tracker strip,
-// the Overview, Now (In flight, Next up, Your calls), then the epic wave map
+// the Overview, Now (Next up, In flight, Your calls), then the epic wave map
 // (map.ts), then Backlog and Shipped. The Overview's flow strip says the
 // totals once, and reports a shared cause (an old bd, a failing gh) once
 // instead of letting every panel alarm on its own.
