@@ -16,6 +16,7 @@ import { extractBeadId } from "./bead-id";
 
 export const RUN_WORKFLOW = "beads-work";
 export const RUN_POLL_MS = 15_000;
+const READ_TIMEOUT_MS = 10_000;
 
 // The points where an operator would act or wait, in run order.
 export const RUN_PHASES = ["brief", "plan", "approval", "build", "review", "CI"] as const;
@@ -139,9 +140,14 @@ export function phaseOf(run: Pick<RunDetail, "nodes" | "runningNodes">): RunPhas
   return RUN_PHASES[at] ?? "brief";
 }
 
+// The claim node's own order: the bead input, then the first id in ARGUMENTS.
+function beadFromInputs(inputs: Record<string, string> | null | undefined): string | undefined {
+  return extractBeadId(inputs?.bead) ?? extractBeadId(inputs?.ARGUMENTS);
+}
+
 export function beadIdOf(run: Pick<RunDetail, "inputs" | "nodes">): string | undefined {
-  const fromArgs = extractBeadId(run.inputs?.ARGUMENTS);
-  if (fromArgs) return fromArgs;
+  const fromInputs = beadFromInputs(run.inputs);
+  if (fromInputs) return fromInputs;
   const claim = run.nodes.find((n) => n.nodeId === "claim" && n.status === "succeeded");
   if (!claim?.outputText) return undefined;
   try {
@@ -213,21 +219,29 @@ export class RunTracker {
 
   async event(event: RibRunEvent): Promise<void> {
     if (event.workflowName !== RUN_WORKFLOW) return;
+    if (!isLive(event.status)) return this.end(event.runId);
     // A run whose first read fails still polls, unmeasured, until one lands.
-    const seed: LiveRun | undefined =
-      isLive(event.status) && !this.live.has(event.runId)
-        ? {
-            runId: event.runId,
-            status: event.status,
-            phase: "brief",
-            startedAt: event.startedAt,
-            readAt: this.nowIso(),
-            ...(extractBeadId(event.inputs.ARGUMENTS)
-              ? { beadId: extractBeadId(event.inputs.ARGUMENTS) }
-              : {}),
-          }
-        : undefined;
+    const beadId = beadFromInputs(event.inputs);
+    const seed: LiveRun | undefined = this.live.has(event.runId)
+      ? undefined
+      : {
+          runId: event.runId,
+          status: event.status,
+          phase: "brief",
+          startedAt: event.startedAt,
+          readAt: this.nowIso(),
+          ...(beadId ? { beadId } : {}),
+        };
     await this.readAll([event.runId], seed);
+  }
+
+  // The host's end event is final: no read can bring the run back after it.
+  private end(runId: string): void {
+    this.reads.set(runId, (this.reads.get(runId) ?? 0) + 1);
+    const ended = this.live.get(runId);
+    this.live.delete(runId);
+    this.syncTimer();
+    if (ended) this.deps.onChange([{ ...ended, readAt: this.nowIso() }]);
   }
 
   // One poll pass over every live run; overlapping calls share the pass.
@@ -274,7 +288,9 @@ export class RunTracker {
     const fail = (error: string): LiveRun | undefined =>
       before ? { ...before, error, readAt: this.nowIso() } : undefined;
     if (!exec) return fail("exec unavailable");
-    const res = await exec.runJSON<unknown>("keelson", ["workflow", "status", runId, "--json"]);
+    const res = await exec.runJSON<unknown>("keelson", ["workflow", "status", runId, "--json"], {
+      timeoutMs: READ_TIMEOUT_MS,
+    });
     if (!res.ok) return /not found/i.test(res.error) ? undefined : fail(res.error);
     const parsed = runDetail.safeParse(res.data);
     if (!parsed.success) return fail("run detail did not parse");

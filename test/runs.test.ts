@@ -63,8 +63,11 @@ describe("run phases", () => {
 });
 
 describe("binding a run to its bead", () => {
-  test("ARGUMENTS names the bead first, then the claim node's output", () => {
+  test("the bead input names the bead first, then ARGUMENTS, then the claim node's output", () => {
     expect(beadIdOf({ inputs: { ARGUMENTS: "cos-hjf.1" }, nodes: [] })).toBe("cos-hjf.1");
+    expect(beadIdOf({ inputs: { bead: "cos-hjf.2", ARGUMENTS: "cos-hjf.1" }, nodes: [] })).toBe(
+      "cos-hjf.2",
+    );
     const claimed: Node = {
       nodeId: "claim",
       status: "succeeded",
@@ -92,11 +95,13 @@ describe("run tracker", () => {
   function harness() {
     const runs = new Map<string, ReturnType<typeof detail>>();
     const calls: string[][] = [];
+    const options: ({ timeoutMs?: number } | undefined)[] = [];
     let fail: string | undefined;
     let hold: Promise<void> | undefined;
     const exec = {
-      async runJSON(_cmd: string, args: string[]) {
+      async runJSON(_cmd: string, args: string[], opts?: { timeoutMs?: number }) {
         calls.push(args);
+        options.push(opts);
         if (fail) return { ok: false, code: 1, error: fail };
         const run = runs.get(args[2] ?? "");
         const gate = hold;
@@ -116,6 +121,7 @@ describe("run tracker", () => {
     return {
       runs,
       calls,
+      options,
       changes,
       tracker,
       failWith: (error: string | undefined) => {
@@ -208,6 +214,27 @@ describe("run tracker", () => {
     release();
     await slowPoll;
     expect(h.tracker.all()).toHaveLength(0);
+    h.tracker.dispose();
+  });
+
+  test("an end event removes the run even when its status cannot be read", async () => {
+    const h = harness();
+    const run = detail();
+    h.runs.set(run.runId, run);
+    await h.tracker.event(launch(run));
+    h.failWith("connection refused");
+    await h.tracker.event(launch(run, "succeeded"));
+    expect(h.tracker.all()).toHaveLength(0);
+    expect(h.changes.at(-1)?.[0]?.runId).toBe(run.runId);
+    h.tracker.dispose();
+  });
+
+  test("a status read is bounded so one hung call cannot stall every run", async () => {
+    const h = harness();
+    const run = detail();
+    h.runs.set(run.runId, run);
+    await h.tracker.event(launch(run));
+    expect(h.options.at(-1)?.timeoutMs).toBeGreaterThan(0);
     h.tracker.dispose();
   });
 
