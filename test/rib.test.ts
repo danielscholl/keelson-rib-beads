@@ -674,6 +674,24 @@ describe("beads-work CI fixer gating", () => {
   });
 });
 
+describe("beads-work must-fix gating", () => {
+  test("the review loop runs after a skipped fix pair, never after a failed fixer or re-review", async () => {
+    const yaml = await Bun.file(new URL("../workflows/beads-work.yml", import.meta.url)).text();
+    const workflow = Bun.YAML.parse(yaml) as {
+      nodes: { id: string; depends_on?: string[]; when?: string; trigger_rule?: string }[];
+    };
+    const byId = (id: string) => workflow.nodes.find((n) => n.id === id);
+    const gate = "$must-fix-count.output != '0'";
+    expect(byId("must-fix-count")?.depends_on).toEqual(["triage"]);
+    expect(byId("apply-fixes")?.depends_on).toContain("must-fix-count");
+    expect(byId("apply-fixes")?.when).toBe(gate);
+    expect(byId("re-review")?.when).toBe(gate);
+    const loop = byId("review-loop");
+    expect(loop?.depends_on).toEqual(["triage", "apply-fixes", "re-review"]);
+    expect(loop?.trigger_rule).toBe("none_failed_min_one_success");
+  });
+});
+
 describe("beads-work review findings carry a repro", () => {
   type ListContract = { items?: { required?: string[] } };
   type Contract = { properties?: Record<string, ListContract> };

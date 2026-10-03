@@ -155,7 +155,8 @@ and one that does the work:
   labelled `owner` or `human`), investigates or plans, pauses for approval,
   implements in an isolated worktree, runs the project's own checks
   (discovered from its manifests), opens a draft PR, runs a three-lens review
-  loop with an independent triage judge, waits on CI, and writes the outcome
+  loop with an independent triage judge (the fix-and-verify pass is skipped
+  when triage confirms nothing), waits on CI, and writes the outcome
   back to the bead as a `bead-work run:` note, ending `(run <id>)`, that
   the board reads. The approver's
   reply at the plan gate lands on the bead too, as a `bead-work plan:` note,
@@ -179,13 +180,14 @@ and one that does the work:
   the problem, which the triage judge traces before anything else), and the
   prompts use keelson's shared directives (`$DIRECTIVES.verify`, `review`,
   `confirm`), so this workflow needs keelson 0.113.0 or later.
-  On the Copilot provider, `plan` pins `claude-opus-5.5`, `implement`
-  `gpt-6.1-sol`, the review lenses `gpt-6-sol`, `re-review` and the triage
-  judge `gpt-6-luna` (a different model from the lenses whose findings it
-  judges), and `coverage-check` and `create-pr` `mai-code-1.1-flash`; the
-  remaining judgment
-  nodes pin `gpt-6-astra` and edit nodes `gpt-5.6-sol`. Elsewhere they resolve
-  through the `deep` tier. The closing review loop always runs on Copilot's
+  On the Copilot provider, `plan` and `investigate` pin `gpt-6-astra`,
+  `implement` and `apply-fixes` `gpt-6.1-sol`, the review lenses and `fix-validation`
+  `gpt-6-sol`, `re-review` and the triage judge `gpt-6-luna` (a different
+  model from the lenses whose findings it judges), and `classify`,
+  `extract-brief-llm`, `coverage-check`, `create-pr`, `triage-ci` and `report`
+  `mai-code-1.1-flash`; `fix-ci` pins `gpt-5.6-sol`. Elsewhere `classify`,
+  `extract-brief-llm`, `create-pr` and `report` resolve through the `balanced`
+  tier, the workflow default; every other node resolves through `deep`. The closing review loop always runs on Copilot's
   `mai-code-1.1-flash`, because a loop node takes no per-provider model. Needs `gh`, `jq`,
   and a GitHub remote. Pass `review_bot=false` to skip requesting the Copilot
   reviewer.
