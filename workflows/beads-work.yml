@@ -2112,6 +2112,7 @@ nodes:
       # trailer reaches the merge.
       set -uo pipefail
       SCRUB_PUSHED=1
+      rm -f "$KEELSON_ARTIFACTS_DIR/.scrub-pushed-head"
       BASE=$(cat "$KEELSON_ARTIFACTS_DIR/.default-branch" 2>/dev/null | tr -d '[:space:]')
       if [ -z "$BASE" ]; then
         echo "TRAILER_SCRUB: skipped — no .default-branch recorded"
@@ -2174,6 +2175,7 @@ nodes:
       echo "TRAILER_SCRUB: rewrote $REWRITTEN commit(s) to drop attribution trailers"
       if [ "${SCRUB_PUSHED:-0}" = "1" ] && git rev-parse --verify --quiet '@{upstream}' >/dev/null; then
         if git push --force-with-lease >/dev/null 2>&1; then
+          git rev-parse HEAD > "$KEELSON_ARTIFACTS_DIR/.scrub-pushed-head"
           echo "TRAILER_SCRUB: force-pushed the rewritten head branch"
         else
           echo "TRAILER_SCRUB: FAILED — force-with-lease push rejected; the remote moved" >&2
@@ -2210,14 +2212,23 @@ nodes:
       COUNT_ERR="$KEELSON_ARTIFACTS_DIR/.ci-count.err"
       # Internal test-only override; production waits 10 seconds between attempts.
       CI_RECHECK_INTERVAL="${KEELSON_CI_RECHECK_INTERVAL:-10}"
+      # After scrub-trailers-final force-pushes, the old head's checks linger
+      # until the PR moves, and the new head's are not registered at once.
+      PUSHED_HEAD=$(cat "$KEELSON_ARTIFACTS_DIR/.scrub-pushed-head" 2>/dev/null | tr -d '[:space:]')
+      [ -n "$PUSHED_HEAD" ] && NO_CHECKS_MAX_ATTEMPTS=$CHECK_MAX_ATTEMPTS
+      HEAD_SETTLED=1
       while :; do
+        if [ -n "$PUSHED_HEAD" ]; then
+          PR_HEAD=$(forge pr view "$PR_NUM" --json headRefOid -q '.headRefOid' 2>/dev/null | tr -d '[:space:]')
+          if [ "$PR_HEAD" = "$PUSHED_HEAD" ]; then HEAD_SETTLED=1; else HEAD_SETTLED=0; fi
+        fi
         if CHECK_COUNT=$(forge pr checks "$PR_NUM" --json state -q 'length' 2> "$COUNT_ERR"); then
           FORGE_OK=1
-          [ "${CHECK_COUNT:-0}" -gt 0 ] 2>/dev/null && break
+          [ "$HEAD_SETTLED" -eq 1 ] && [ "${CHECK_COUNT:-0}" -gt 0 ] 2>/dev/null && break
         elif grep -qi 'no checks reported' "$COUNT_ERR" 2>/dev/null; then
           FORGE_OK=1
           CHECK_COUNT=0
-          [ "$ATTEMPT" -ge "$NO_CHECKS_MAX_ATTEMPTS" ] && break
+          [ "$HEAD_SETTLED" -eq 1 ] && [ "$ATTEMPT" -ge "$NO_CHECKS_MAX_ATTEMPTS" ] && break
         else
           FORGE_OK=0
           CHECK_COUNT=0
@@ -2229,6 +2240,11 @@ nodes:
       if [ "$FORGE_OK" -ne 1 ]; then
         echo "PR_STATE: DRAFT — could not query CI checks (forge call failed); left a draft"
         cat "$COUNT_ERR" 2>/dev/null || true
+        exit 0
+      fi
+      if [ "$HEAD_SETTLED" -ne 1 ]; then
+        printf 'UNKNOWN\n' > "$KEELSON_ARTIFACTS_DIR/.ci-final-status"
+        echo "PR_STATE: DRAFT — PR head never reached the force-pushed $PUSHED_HEAD (last saw ${PR_HEAD:-nothing}); left a draft"
         exit 0
       fi
       if [ "${CHECK_COUNT:-0}" -eq 0 ] 2>/dev/null; then
@@ -2336,7 +2352,21 @@ nodes:
 
       echo "Waiting on required checks:"
       printf '%s\n' "$REQUIRED"
-      if forge pr checks "$PR_NUM" --required --watch --interval 20 > "$KEELSON_ARTIFACTS_DIR/.ci-final.txt" 2>&1; then
+      # A fresh head can still have no runs registered; gh's watch exits on
+      # that at once, so it is re-polled rather than read as red.
+      WATCH_OK=0
+      ATTEMPT=1
+      while :; do
+        if forge pr checks "$PR_NUM" --required --watch --interval 20 > "$KEELSON_ARTIFACTS_DIR/.ci-final.txt" 2>&1; then
+          WATCH_OK=1
+          break
+        fi
+        grep -qiE 'no (required )?checks reported' "$KEELSON_ARTIFACTS_DIR/.ci-final.txt" 2>/dev/null || break
+        [ "$ATTEMPT" -ge "$CHECK_MAX_ATTEMPTS" ] && break
+        ATTEMPT=$((ATTEMPT + 1))
+        sleep "$CI_RECHECK_INTERVAL"
+      done
+      if [ "$WATCH_OK" -eq 1 ]; then
         log_advisory_checks
         stamp_ci_outcome "CI green (required checks passed)"
         if forge pr ready "$PR_NUM"; then
@@ -2345,6 +2375,12 @@ nodes:
           echo "PR_STATE: DRAFT — required CI passed but 'forge pr ready' failed; left a draft"
         fi
         printf 'PASS\n' > "$KEELSON_ARTIFACTS_DIR/.ci-final-status"
+        exit 0
+      fi
+      if grep -qiE 'no (required )?checks reported' "$KEELSON_ARTIFACTS_DIR/.ci-final.txt" 2>/dev/null; then
+        tail -n 20 "$KEELSON_ARTIFACTS_DIR/.ci-final.txt"
+        printf 'UNKNOWN\n' > "$KEELSON_ARTIFACTS_DIR/.ci-final-status"
+        echo "PR_STATE: DRAFT — required checks never registered on the PR head after $ATTEMPT watches; left a draft"
         exit 0
       fi
       echo "=== Final CI still red ==="
