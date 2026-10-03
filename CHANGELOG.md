@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.2](https://github.com/danielscholl/keelson-rib-beads/compare/v0.10.1...v0.10.2) (2026-10-03)
+
+
+### Fixed
+
+* **beads-work:** wait for the force-pushed head before the final CI check ([#57](https://github.com/danielscholl/keelson-rib-beads/issues/57)) ([e2cf813](https://github.com/danielscholl/keelson-rib-beads/commit/e2cf813ab00b2c40d1f5eb63c81be5c47b046cbb))
+
 ## [0.10.1](https://github.com/danielscholl/keelson-rib-beads/compare/v0.10.0...v0.10.1) (2026-10-03)
 
 
