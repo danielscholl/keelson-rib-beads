@@ -24,6 +24,7 @@ import {
   stageSplit,
 } from "./board";
 import { bdBelowFloor, type ProjectMeasurement } from "./measure";
+import type { LiveRun } from "./runs";
 
 const DONE_LISTED = 12;
 
@@ -83,6 +84,7 @@ body{margin:0;padding:4px 2px 8px;background:var(--bg);color:var(--fg);font:13px
 .chip .w.edge{display:none}
 .chip.working{border-color:var(--info)}.chip.review{border-color:var(--accent)}.chip.ready{border-color:var(--accent)}
 .chip.waiting .t,.chip.hold .t{color:var(--muted)}
+.chip.run{box-shadow:0 0 0 2px var(--info)}.chip.gate{box-shadow:0 0 0 2px var(--warn)}
 .chip.sel{box-shadow:0 0 0 2px var(--accent)}
 .waves.lit .chip:not(.on){opacity:.4}
 button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
@@ -93,6 +95,7 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .tag{font:600 11px var(--sans);padding:1px 6px;border-radius:4px;white-space:nowrap;background:var(--card);color:var(--fg)}
 .tag.next{background:var(--accent);color:var(--on-accent)}
 .tag.you{background:var(--warn);color:var(--on-accent)}
+.tag.run{background:var(--info);color:var(--on-accent)}
 .tag.p{color:var(--warn)}.tag.p0{color:var(--crit)}
 .alarm{border:1px solid var(--crit);border-radius:8px;padding:8px 10px;margin-bottom:10px}
 .alarm b{color:var(--crit);font:600 11px var(--mono);margin-right:8px}
@@ -193,11 +196,19 @@ function alarm(what: string, error: string): string {
   return `<div class="alarm"><b>UNMEASURED</b>${esc(what)}<pre>${esc(error.slice(0, 1000))}</pre></div>`;
 }
 
-function chip(node: EpicNode, epicId: string, common: number | undefined): string {
+function chip(
+  node: EpicNode,
+  epicId: string,
+  common: number | undefined,
+  run: LiveRun | undefined,
+): string {
   const { member, lane } = node;
   const short = (id: string) => shortId(id, epicId);
   const held = node.dam?.held.length ?? 0;
+  const gate = run?.status === "paused" && run.gate && !run.error;
   const tags = [
+    gate ? '<span class="tag you">waits on you</span>' : "",
+    run && !gate ? `<span class="tag run">${esc(run.phase)}</span>` : "",
     node.pick ? '<span class="tag next">next up</span>' : "",
     node.yours ? '<span class="tag you">your call</span>' : "",
     member.priority === 0 ? '<span class="tag p p0">P0</span>' : "",
@@ -213,15 +224,21 @@ function chip(node: EpicNode, epicId: string, common: number | undefined): strin
       ? `<span class="w edge">waits on ${esc(node.deps.map(short).join(" "))}</span>`
       : "",
   ].join("");
-  const label = `${member.id}, ${LANE_LABEL[lane]}, ${member.title}`;
+  const label = [
+    member.id,
+    LANE_LABEL[lane],
+    ...(gate ? ["run waiting on you"] : run ? [`run in ${run.phase}`] : []),
+    member.title,
+  ].join(", ");
+  const ring = gate ? " gate" : run ? " run" : "";
   return (
-    `<button type="button" class="chip ${lane}" data-id="${esc(member.id)}" data-deps="${esc(node.deps.join(" "))}" aria-label="${esc(label)}">` +
+    `<button type="button" class="chip ${lane}${ring}" data-id="${esc(member.id)}" data-deps="${esc(node.deps.join(" "))}" aria-label="${esc(label)}">` +
     `<span class="top"><i class="dot ${lane}"></i>${esc(short(member.id))}<span class="tags">${tags}</span></span>` +
     `<span class="t">${esc(clampTitle(member.title, 96))}</span>${waits}</button>`
   );
 }
 
-function epicBlock(view: EpicView): string {
+function epicBlock(view: EpicView, runs: ReadonlyMap<string, LiveRun>): string {
   const { row, nodes, done, gate, counts } = view;
   const epicId = row.epic.id;
   const meta = [
@@ -281,7 +298,7 @@ function epicBlock(view: EpicView): string {
     .map(({ w, inWave }) => {
       const note = w === 0 ? " · unblocked" : "";
       return `<div class="wave"><h3>Wave ${w + 1} <span>· ${inWave.length}${note}</span></h3>${inWave
-        .map((n) => chip(n, epicId, common))
+        .map((n) => chip(n, epicId, common, runs.get(n.member.id)))
         .join("")}</div>`;
     })
     .join("");
@@ -301,7 +318,7 @@ export function epicMapFailed(error: string): string {
 
 // The region's html fragment. Empty when there is no open epic, which hides
 // the region; a failed read renders an alarm, never an empty map.
-export function composeEpicMap(m: ProjectMeasurement): string {
+export function composeEpicMap(m: ProjectMeasurement, live: readonly LiveRun[] = []): string {
   const floor = bdBelowFloor(m);
   if (!m.epics.ok) {
     return `<style>${STYLE}</style>${alarm(
@@ -343,5 +360,6 @@ export function composeEpicMap(m: ProjectMeasurement): string {
           })(),
         ),
   ].join("");
-  return `<style>${STYLE}</style>${alarms}${views.map(epicBlock).join("")}<script>${SCRIPT}</script>`;
+  const runs = new Map(live.flatMap((r) => (r.beadId ? [[r.beadId, r] as const] : [])));
+  return `<style>${STYLE}</style>${alarms}${views.map((v) => epicBlock(v, runs)).join("")}<script>${SCRIPT}</script>`;
 }

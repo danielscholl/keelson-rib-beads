@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { Measured } from "../src/bd";
 import { composeEpicMap, esc } from "../src/map";
 import type { ProjectMeasurement } from "../src/measure";
+import type { LiveRun } from "../src/runs";
 
 function ok<T>(data: T): Measured<T> {
   return { ok: true, data };
@@ -56,7 +57,7 @@ function epicMeasurement(): ProjectMeasurement {
 }
 
 const chipIds = (html: string): string[] =>
-  [...html.matchAll(/class="chip [a-z]+" data-id="([^"]+)"/g)].map((match) => match[1] ?? "");
+  [...html.matchAll(/class="chip [a-z ]+" data-id="([^"]+)"/g)].map((match) => match[1] ?? "");
 
 describe("epic wave map", () => {
   test("open children sit in wave columns; the epic id prints once and children print short", () => {
@@ -157,5 +158,49 @@ describe("epic wave map", () => {
     const html = composeEpicMap(m);
     expect(html).toContain("See the header.");
     expect(html).not.toContain("could not be measured");
+  });
+});
+
+describe("live runs on the wave map", () => {
+  const base: LiveRun = {
+    runId: "a1b2c3d4-0000",
+    status: "running",
+    phase: "build",
+    startedAt: "2026-08-09T11:30:00Z",
+    readAt: "2026-08-09T12:00:00Z",
+    beadId: "cx.3",
+  };
+
+  test("a bead with a live run carries a ring and its phase", () => {
+    const html = composeEpicMap(epicMeasurement(), [base]);
+    expect(html).toContain('class="chip working run" data-id="cx.3"');
+    expect(html).toContain('<span class="tag run">build</span>');
+    expect(html).toContain("run in build");
+    expect(chipIds(html)).toContain("cx.3");
+  });
+
+  test("an open gate reads as waiting on you, never as a phase", () => {
+    const gate: LiveRun = { ...base, status: "paused", phase: "approval", gate: { tasks: 3 } };
+    const html = composeEpicMap(epicMeasurement(), [gate]);
+    expect(html).toContain('class="chip working gate" data-id="cx.3"');
+    expect(html).toContain('<span class="tag you">waits on you</span>');
+    expect(html).not.toContain('<span class="tag run">');
+  });
+
+  test("a gate whose last read failed shows as a run, not as waiting on you", () => {
+    const stale: LiveRun = {
+      ...base,
+      status: "paused",
+      phase: "approval",
+      gate: {},
+      error: "down",
+    };
+    const html = composeEpicMap(epicMeasurement(), [stale]);
+    expect(html).not.toContain("waits on you");
+    expect(html).toContain('<span class="tag run">approval</span>');
+  });
+
+  test("with no live run the map is unchanged", () => {
+    expect(composeEpicMap(epicMeasurement(), [])).toBe(composeEpicMap(epicMeasurement()));
   });
 });

@@ -291,6 +291,7 @@ function liveRunsFor(project: BeadsProject): LiveRun[] {
 // since the claim it just made is not in the last sweep; the run's end
 // re-measures through onRunEvent.
 const boundRuns = new Set<string>();
+let mapRunSig = "[]";
 
 function onRunsChanged(changed: readonly LiveRun[]): void {
   const live = new Set(runTracker?.all().map((r) => r.runId));
@@ -311,7 +312,25 @@ function onRunsChanged(changed: readonly LiveRun[]): void {
     }
   }
   const inspected = selectedBeadId && changed.some((r) => r.beadId === selectedBeadId);
-  const runPanels = [WIP_KEY, ATTENTION_KEY, PULSE_KEY, TRACKERS_KEY];
+  // The map is a frame whose highlight a repaint resets, so it repaints only
+  // when what it draws changes, not on the minute tick the cards use.
+  const project = scopedProject();
+  const mapSig = JSON.stringify(
+    (project ? liveRunsFor(project) : [])
+      .flatMap((r) =>
+        r.beadId ? [[r.beadId, r.phase, Boolean(r.status === "paused" && r.gate && !r.error)]] : [],
+      )
+      .sort(),
+  );
+  const mapChanged = mapSig !== mapRunSig;
+  mapRunSig = mapSig;
+  const runPanels = [
+    WIP_KEY,
+    ATTENTION_KEY,
+    PULSE_KEY,
+    TRACKERS_KEY,
+    ...(mapChanged ? [EPIC_MAP_KEY] : []),
+  ];
   recomposeKeys(remeasure ? ALL_KEYS : inspected ? [...runPanels, INSPECT_KEY] : runPanels);
 }
 
@@ -735,7 +754,12 @@ const rib: Rib = {
       // An empty fragment hides the region, at rest and while measuring.
       register(
         EPIC_MAP_KEY,
-        makePanelComposer(composeEpicMap, () => "", epicMapFailed, ""),
+        makePanelComposer(
+          (m) => composeEpicMap(m, liveRunsFor(m.project)),
+          () => "",
+          epicMapFailed,
+          "",
+        ),
       );
       register(INSPECT_KEY, async () => {
         const project = scopedProject();
@@ -927,6 +951,8 @@ const rib: Rib = {
     cleanupInFlight.clear();
     runTracker?.dispose();
     runTracker = undefined;
+    boundRuns.clear();
+    mapRunSig = "[]";
   },
 };
 
