@@ -318,9 +318,7 @@ function onRunsChanged(changed: readonly LiveRun[]): void {
   const mapSig = JSON.stringify(
     (project ? liveRunsFor(project) : [])
       .flatMap((r) =>
-        r.beadId
-          ? [[r.beadId, r.phase, Boolean(r.status === "paused" && r.gate && !r.error)]]
-          : [],
+        r.beadId ? [[r.beadId, r.phase, Boolean(r.status === "paused" && r.gate && !r.error)]] : [],
       )
       .sort(),
   );
