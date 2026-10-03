@@ -34,6 +34,7 @@ import { bdFloorLabel, unmeasured } from "./bd";
 import type { EpicMember, ProjectMeasurement, SweepProgress } from "./measure";
 import { bdBelowFloor, byPriorityThenAge, parseRunNote, STALE_DAYS } from "./measure";
 import { isMergedPR, type PrInfo } from "./pr";
+import { type LiveRun, RUN_PHASES } from "./runs";
 
 const CALLS_CAP = 8;
 const SHIPPED_CAP = 12;
@@ -54,6 +55,8 @@ type Pill = NonNullable<CardItem["pill"]>;
 
 export interface PanelContext {
   selectedId?: string;
+  // Live beads-work runs on this panel's tracker, newest first.
+  runs?: readonly LiveRun[];
 }
 
 // The CLI's own status legend: ○ open ◐ in_progress ● blocked ✓ closed ❄ deferred.
@@ -939,8 +942,15 @@ export function composeRecommend(m: ProjectMeasurement, ctx: PanelContext): Boar
 export function composeWip(m: ProjectMeasurement, ctx: PanelContext): Board {
   if (!m.inProgress.ok) return failedBoard("in-flight work", m.inProgress.error, m);
   const now = new Date(m.asOf);
+  const runs = ctx.runs ?? [];
+  const runOf = (id: string) => runs.find((r) => r.beadId === id);
+  const picking = runs.filter((r) => !r.beadId).map(pickingRow);
   if (m.inProgress.data.length === 0) {
-    return board([quiet("Nothing is claimed. Next up has the pick.")]);
+    return board(
+      picking.length
+        ? [{ kind: "rows", items: picking }]
+        : [quiet("Nothing is claimed. Next up has the pick.")],
+    );
   }
   const floor = bdBelowFloor(m);
   const blocked = m.blocked.ok ? m.blocked.data : [];
@@ -959,18 +969,22 @@ export function composeWip(m: ProjectMeasurement, ctx: PanelContext): Board {
   };
   const people = assigneeView(m.inProgress.data);
   const common = commonPriority(m.inProgress.data);
-  const runCount = m.inProgress.data.filter((i) => runInfoOf(m, i.id) !== undefined).length;
+  const runCount = m.inProgress.data.filter(
+    (i) => runOf(i.id) !== undefined || runInfoOf(m, i.id) !== undefined,
+  ).length;
   const otherCount = m.inProgress.data.length - runCount;
   const title =
-    runCount > 0
+    runCount > 0 || picking.length > 0
       ? [
-          plural(runCount, "bead-work run"),
+          ...(runCount > 0 ? [plural(runCount, "bead-work run")] : []),
+          ...(picking.length > 0 ? [`${picking.length} picking`] : []),
           ...(otherCount > 0 ? [plural(otherCount, "other claim")] : []),
         ].join(" · ")
       : people.sharedTitle;
   const cards = [...m.inProgress.data].sort(byPriorityThenAge).map((i): CardItem => {
     const entry = m.runInfo.ok ? m.runInfo.data[i.id] : undefined;
     const info = entry?.ok ? entry.data : undefined;
+    const run = runOf(i.id);
     const pr = info?.prUrl ? livePR(m, i.id) : undefined;
     // Card-level degrade: this bead's reads failed, its siblings stay measured.
     const runError = floor
@@ -1002,10 +1016,10 @@ export function composeWip(m: ProjectMeasurement, ctx: PanelContext): Board {
       meta: [
         people.perItem
           ? (person ?? (people.markUnassigned ? "unassigned" : undefined))
-          : !info && runCount > 0
+          : !info && !run && runCount > 0
             ? person
             : undefined,
-        flightStage(i, info, pr, now),
+        run ? runMeta(run) : flightStage(i, info, pr, now),
       ],
       signal: signalOf(i, {
         commonPriority: common,
@@ -1035,16 +1049,23 @@ export function composeWip(m: ProjectMeasurement, ctx: PanelContext): Board {
         ...(prError
           ? [{ value: `UNMEASURED PR: ${prError}`.slice(0, 120), tone: "error" as const }]
           : []),
+        ...(run?.error
+          ? [{ value: `UNMEASURED run: ${run.error}`.slice(0, 120), tone: "error" as const }]
+          : []),
       ],
+      ...(run ? { actions: [openRunAction(run)] } : {}),
       selectedId: ctx.selectedId,
     });
-    // The meter reads the run note, so an unread note draws no meter.
+    // A live run draws its own meter only from a good read; otherwise the
+    // meter reads the run note, so an unread note draws no meter.
+    if (run && !run.error) return { ...card, bar: runBar(run) };
     return entry?.ok ? { ...card, bar: stageBar(info, pr) } : card;
   });
   return board([
     ...(floor
       ? [{ kind: "rows" as const, items: [alarmRow("run notes and PR state", floor, m)] }]
       : []),
+    ...(picking.length ? [{ kind: "rows" as const, items: picking }] : []),
     { kind: "cards", ...(title ? { title } : {}), items: cards },
   ]);
 }
@@ -1067,6 +1088,55 @@ export function stageBar(
       n: 1,
       tone: at <= last ? (at === 2 ? STAGE_TONE.done : STAGE_TONE.working) : STAGE_TONE.waiting,
     })),
+  };
+}
+
+// A live run's six phases as a meter. The approval stop reads as waiting on
+// you while the gate is open, the one phase that waits on a person.
+export function runBar(run: LiveRun): NonNullable<CardItem["bar"]> {
+  const at = RUN_PHASES.indexOf(run.phase);
+  const gate = run.status === "paused";
+  const next = RUN_PHASES[at + 1];
+  return {
+    label: gate ? "waiting on you" : run.phase,
+    trailing: next ? `next: ${next}` : "next: writeback",
+    segments: RUN_PHASES.map((phase, idx) => ({
+      label: idx < at ? phase : idx === at ? `${phase}, now` : `${phase}, not yet`,
+      n: 1,
+      tone:
+        idx < at
+          ? STAGE_TONE.working
+          : idx === at
+            ? gate
+              ? "caution"
+              : STAGE_TONE.review
+            : STAGE_TONE.waiting,
+    })),
+  };
+}
+
+export function runMeta(run: LiveRun): string {
+  const since = ago(run.startedAt, new Date(run.readAt));
+  return [
+    `run ${run.runId.slice(0, 4)}`,
+    since === "just now" ? "just started" : since ? `${since} in run` : undefined,
+    run.pr ? `PR ${run.pr.startsWith("#") ? run.pr : prLabel(run.pr)}` : undefined,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+export function openRunAction(run: LiveRun) {
+  return { type: "open-run", label: "Open run", payload: { runId: run.runId } };
+}
+
+// A run that has not named its bead yet is still picking from the ready queue.
+function pickingRow(run: LiveRun): RowItem {
+  return {
+    glyph: STAGE_TONE.working,
+    text: "beads-work picking from the ready queue",
+    trailing: runMeta(run),
+    action: { type: "open-run", payload: { runId: run.runId } },
   };
 }
 
@@ -1497,6 +1567,7 @@ export interface InspectOptions {
   prInfo?: ProjectMeasurement["prInfo"];
   projectId?: string;
   comments?: Measured<BdComment[]>;
+  run?: LiveRun;
 }
 
 const linkedId = (l: BdLinked): string => l.id ?? l.depends_on_id ?? l.issue_id ?? "?";
@@ -1762,6 +1833,27 @@ export function composeInspect(
       ],
     });
     if (opts.projectId) left.push({ kind: "actions", items: [reconcileAction(opts.projectId)] });
+  }
+  if (opts.run) {
+    left.push({
+      kind: "rows",
+      items: [
+        {
+          glyph: opts.run.status === "paused" ? "caution" : STAGE_TONE.working,
+          chip: {
+            label: opts.run.status === "paused" ? "waiting on you" : opts.run.phase,
+            tone: opts.run.status === "paused" ? "caution" : STAGE_TONE.working,
+          },
+          text: opts.run.error
+            ? `A beads-work run holds this bead: ${runMeta(opts.run)}. UNMEASURED run: ${opts.run.error}`.slice(
+                0,
+                240,
+              )
+            : `A beads-work run holds this bead: ${runMeta(opts.run)}.`,
+        },
+      ],
+    });
+    left.push({ kind: "actions", items: [{ ...openRunAction(opts.run), tone: "brand" as const }] });
   }
   // An epic is structure, never a work item, so the inspector never offers
   // to start one.

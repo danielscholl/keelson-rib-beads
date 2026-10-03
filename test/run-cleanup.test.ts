@@ -109,11 +109,14 @@ describe("beads-work exceptional cleanup", () => {
       ],
     ]);
     expect(issue.notes).toContain("claim released");
-    expect(calls[0]).toMatchObject({
-      cmd: "keelson",
-      args: ["workflow", "status", "run-approval-1", "--json"],
-    });
-    expect(calls[1]).toMatchObject({ cmd: "bd", cwd: "/project/root" });
+    const firstBd = calls.findIndex((call) => call.cmd === "bd");
+    expect(calls.slice(0, firstBd)).toContainEqual(
+      expect.objectContaining({
+        cmd: "keelson",
+        args: ["workflow", "status", "run-approval-1", "--json"],
+      }),
+    );
+    expect(calls[firstBd]).toMatchObject({ cmd: "bd", cwd: "/project/root" });
   });
 
   test("cancellation recovers the automatically selected bead from claim JSON output", async () => {
@@ -216,16 +219,19 @@ describe("beads-work exceptional cleanup", () => {
     expect(calls.filter((call) => call.cmd === "bd")).toHaveLength(2);
   });
 
-  test("ignores other workflows and nonterminal statuses without consulting the CLI", async () => {
+  test("ignores other workflows, and touches no bead on a nonterminal or successful run", async () => {
     const { event, calls, ctx } = fixture();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const atBoot = calls.length;
     event.workflowName = "beads-next";
     await rib.onRunEvent?.(event, ctx);
+    expect(calls).toHaveLength(atBoot);
     event.workflowName = "beads-work";
     event.status = "succeeded";
     await rib.onRunEvent?.(event, ctx);
     event.status = "running";
     await rib.onRunEvent?.(event, ctx);
-    expect(calls).toEqual([]);
+    expect(calls.filter((call) => call.cmd === "bd")).toEqual([]);
   });
 
   test("duplicate events produce one note, even when delivered concurrently", async () => {
