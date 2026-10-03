@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.0](https://github.com/danielscholl/keelson-rib-beads/compare/v0.8.0...v0.9.0) (2026-10-03)
+
+
+### Added
+
+* **beads:** list a bead's beads-work runs in the inspector ([#50](https://github.com/danielscholl/keelson-rib-beads/issues/50)) ([2a123aa](https://github.com/danielscholl/keelson-rib-beads/commit/2a123aaa21007040f60c83fcb973cc61138c1fad))
+* **beads:** mark live runs and open plan gates on the wave map ([#52](https://github.com/danielscholl/keelson-rib-beads/issues/52)) ([3075c2a](https://github.com/danielscholl/keelson-rib-beads/commit/3075c2a5134ce1b9c8f34f550797b36b718b8f87))
+
 ## [0.8.0](https://github.com/danielscholl/keelson-rib-beads/compare/v0.7.1...v0.8.0) (2026-10-03)
 
 
