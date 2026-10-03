@@ -41,7 +41,7 @@ describe("rib contract shape", () => {
     // opens in the canvas drawer.
     expect(rowKeys).toEqual([
       [[PULSE_KEY]],
-      [[WIP_KEY], [RECOMMEND_KEY], [ATTENTION_KEY]],
+      [[RECOMMEND_KEY], [WIP_KEY], [ATTENTION_KEY]],
       [[EPIC_MAP_KEY]],
       [[BACKLOG_KEY], [SHIPPED_KEY]],
     ]);
@@ -56,8 +56,8 @@ describe("rib contract shape", () => {
     );
     expect(titles).toEqual([
       "Overview",
-      "In flight",
       "Next up",
+      "In flight",
       "Your calls",
       "Wave map",
       "Backlog",

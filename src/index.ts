@@ -575,8 +575,8 @@ const rib: Rib = {
           {
             zoneTitle: "Now",
             columns: [
-              { key: WIP_KEY, title: "In flight", glyph: { char: "◐", tone: "info" } },
               { key: RECOMMEND_KEY, title: "Next up", glyph: { char: "→", tone: "accent" } },
+              { key: WIP_KEY, title: "In flight", glyph: { char: "◐", tone: "info" } },
               {
                 key: ATTENTION_KEY,
                 title: "Your calls",
@@ -643,12 +643,12 @@ const rib: Rib = {
         "in progress → in review → done 7d) carries the totals, leaves out empty lanes,",
         "and reports a shared",
         "cause once: a bd older than 1.2 or a gh that fails every PR lookup. Now holds",
-        "In flight (every claim with a stage meter — claimed, PR open, merged — its",
-        "live stage, what closing it releases, and the newest comment or run remark;",
-        "a bead a live beads-work run holds shows the run's phase — brief, plan,",
-        "approval, build, review, CI — and Open run, which opens the run beside the board),",
         "Next up (one leverage-ranked pick with its unlock chain, runner-up, and",
-        "Inspect / Start actions; never a person's call) and Your calls (a run waiting",
+        "Inspect / Start actions; never a person's call), In flight (every claim with",
+        "a stage meter — claimed, PR open, merged — its live stage, what closing it",
+        "releases, and the newest comment or run remark; a bead a live beads-work run",
+        "holds shows the run's phase — brief, plan, approval, build, review, CI — and",
+        "Open run, which opens the run beside the board) and Your calls (a run waiting",
         "at its plan gate first, then beads of type decision or labelled owner or",
         "human, ranked by the work waiting on each; hidden when empty). Merged PRs to reconcile and agent housekeeping",
         "(stale claims, epic closeouts) are one line each on the Overview.",
