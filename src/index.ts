@@ -314,8 +314,15 @@ function onRunsChanged(changed: readonly LiveRun[]): void {
   const inspected = selectedBeadId && changed.some((r) => r.beadId === selectedBeadId);
   // The map is a frame whose highlight a repaint resets, so it repaints only
   // when what it draws changes, not on the minute tick the cards use.
+  const project = scopedProject();
   const mapSig = JSON.stringify(
-    (runTracker?.all() ?? []).map((r) => [r.beadId, r.phase, Boolean(r.gate && !r.error)]).sort(),
+    (project ? liveRunsFor(project) : [])
+      .flatMap((r) =>
+        r.beadId
+          ? [[r.beadId, r.phase, Boolean(r.status === "paused" && r.gate && !r.error)]]
+          : [],
+      )
+      .sort(),
   );
   const mapChanged = mapSig !== mapRunSig;
   mapRunSig = mapSig;
