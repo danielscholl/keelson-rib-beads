@@ -68,7 +68,9 @@ Below the Overview come three zones in the order the operator acts.
   what. A wave with no bead draws no column. Lines join a bead to its
   blockers; hovering a bead lights its chain, and a click keeps it lit until
   Esc or a click on empty space. A bead that holds two or more others carries
-  a `holds N` tag, and a person's call carries `your call`. Under an epic a
+  a `holds N` tag, and a person's call carries `your call`. A bead a live
+  `beads-work` run holds carries a ring and the run's phase; one waiting at
+  its plan gate carries `waits on you` instead. Under an epic a
   child prints as `.5`; the epic prints its id once. Clicking a bead in the
   map opens the inspector.
 - **Backlog and shipped.** *Backlog* is every open bead that is on no epic
