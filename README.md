@@ -13,7 +13,8 @@ the data.
 
 **A surface.** The *Beads* nav tab opens on a tracker strip: one tile per
 registered project that carries a `.beads` tracker, each with its ready,
-in flight, open and closed counts. A click switches the board, and the choice
+in flight, open and closed counts, and, while any `beads-work` run is live,
+how many runs and how many wait on you. A click switches the board, and the choice
 is remembered across restarts. The choice belongs to the server, not the
 browser: every open Beads board shows the same tracker, so a click in one tab
 (or by an agent driving a browser) switches the others too. The strip is the
@@ -35,6 +36,8 @@ Below the Overview come three zones in the order the operator acts.
   cause reports here once: a `bd` older than 1.2, or a `gh` that fails every
   PR lookup.
   Panels that depend on it point at the header instead of alarming separately.
+  A `beads-work` run waiting at its plan gate shows here as one line that
+  opens the run, or one count when several wait.
   Merged PRs whose beads are still open show here as one line with a
   confirmed **Reconcile merged PRs** action, and stale claims and epics ready
   for closeout as one housekeeping line.
@@ -55,7 +58,10 @@ Below the Overview come three zones in the order the operator acts.
   the claim whose close makes the most beads ready, and which ones. *Your
   calls* lists the beads only a person can finish: type `decision`, or
   labelled `owner` or `human`, ranked by how much work waits on each, with
-  what it unblocks. The panel hides when there are none.
+  what it unblocks. A run waiting at its plan gate leads the list whatever
+  its bead holds, since it does nothing until answered: its card names the
+  plan's task count and the first sentence of its summary when the plan has
+  one, and opens the run, approval composer included. The panel hides when there are none.
 - **Epics.** *Wave map* draws each open epic as columns: a child's column is
   one more than the deepest column among its open blockers, so wave 1
   (unblocked) holds what no open bead blocks and position says what waits on

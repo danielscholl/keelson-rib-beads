@@ -311,7 +311,8 @@ function onRunsChanged(changed: readonly LiveRun[]): void {
     }
   }
   const inspected = selectedBeadId && changed.some((r) => r.beadId === selectedBeadId);
-  recomposeKeys(remeasure ? ALL_KEYS : inspected ? [WIP_KEY, INSPECT_KEY] : [WIP_KEY]);
+  const runPanels = [WIP_KEY, ATTENTION_KEY, PULSE_KEY, TRACKERS_KEY];
+  recomposeKeys(remeasure ? ALL_KEYS : inspected ? [...runPanels, INSPECT_KEY] : runPanels);
 }
 
 function startSweep(project: BeadsProject): Sweep {
@@ -503,6 +504,7 @@ function composeTrackerStrip(): unknown {
       id: p.id,
       name: p.name,
       ...(summaries.has(p.id) ? { summary: summaries.get(p.id) } : {}),
+      runs: liveRunsFor(p),
     })),
     project?.id,
   );
@@ -627,9 +629,9 @@ const rib: Rib = {
         "a bead a live beads-work run holds shows the run's phase — brief, plan,",
         "approval, build, review, CI — and Open run, which opens the run beside the board),",
         "Next up (one leverage-ranked pick with its unlock chain, runner-up, and",
-        "Inspect / Start actions; never a person's call) and Your calls (beads of",
-        "type decision or labelled owner or human, ranked by the work waiting on",
-        "each; hidden when empty). Merged PRs to reconcile and agent housekeeping",
+        "Inspect / Start actions; never a person's call) and Your calls (a run waiting",
+        "at its plan gate first, then beads of type decision or labelled owner or",
+        "human, ranked by the work waiting on each; hidden when empty). Merged PRs to reconcile and agent housekeeping",
         "(stale claims, epic closeouts) are one line each on the Overview.",
         "Epics holds the wave map: each open epic's children in columns,",
         "a column being one more than the deepest column among a bead's open",
@@ -710,7 +712,13 @@ const rib: Rib = {
       const register = (key: string, compose: () => Promise<unknown>) =>
         unregisters.push(sm.register(key, compose));
       register(TRACKERS_KEY, async () => composeTrackerStrip());
-      register(PULSE_KEY, makePanelComposer(composePulse, composeMeasuringPulse));
+      register(
+        PULSE_KEY,
+        makePanelComposer(
+          (m, refreshing) => composePulse(m, refreshing, liveRunsFor(m.project)),
+          composeMeasuringPulse,
+        ),
+      );
       const panel = (key: string, compose: (m: ProjectMeasurement, ctx: PanelContext) => unknown) =>
         register(
           key,

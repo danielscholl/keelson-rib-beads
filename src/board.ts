@@ -665,7 +665,11 @@ function staleDaysOf(m: ProjectMeasurement, i: BdIssue, now: Date): number | und
 
 // ── Header: the flow strip with the week's totals, and the preflight, so
 // one cause reads as one line.
-export function composePulse(m: ProjectMeasurement, refreshing?: SweepProgress): Board {
+export function composePulse(
+  m: ProjectMeasurement,
+  refreshing?: SweepProgress,
+  runs: readonly LiveRun[] = [],
+): Board {
   const floor = bdBelowFloor(m);
   const split = stageSplit(m);
   // The strip is a distribution, so its populations must be disjoint: a
@@ -696,7 +700,7 @@ export function composePulse(m: ProjectMeasurement, refreshing?: SweepProgress):
   // one (n: null) always stays so its hatch shows.
   const lanes = segments.some((s) => s.n !== 0) ? segments.filter((s) => s.n !== 0) : segments;
 
-  const preflight: RowItem[] = [];
+  const preflight: RowItem[] = gateLine(runs);
   if (floor && m.bd.ok && m.bd.data) {
     preflight.push({
       icon: "⚠",
@@ -1151,18 +1155,95 @@ function livePR(m: ProjectMeasurement, id: string): PrInfo | undefined {
 // housekeeping (reconciles, stale claims, closeouts) rides the header line,
 // and an empty list hides the panel.
 
+// A run paused at its plan gate does nothing until a person answers, so its
+// card leads Your calls whatever its bead holds, and opens the run directly.
+function gateCard(run: LiveRun, m: ProjectMeasurement, ctx: PanelContext): CardItem {
+  const id = run.beadId ?? `run ${run.runId.slice(0, 4)}`;
+  const bead = run.beadId ? backlogIndex(m).get(run.beadId) : undefined;
+  const waiting = ago(run.gate?.since, new Date(run.readAt));
+  const plan = [
+    run.gate?.tasks ? plural(run.gate.tasks, "task") : undefined,
+    run.gate?.summary ? firstSentence(run.gate.summary, 160) : undefined,
+  ].filter((x): x is string => Boolean(x));
+  const card = beadCard(
+    { id, title: `Approve plan: ${bead?.title ?? id}`, status: "in_progress" },
+    {
+      meta: [run.beadId ? `run ${run.runId.slice(0, 4)}` : undefined, "plan gate"],
+      signal: { label: "run waiting", tone: "caution" },
+      ...(plan.length ? { evidence: { label: "plan", text: plan.join(" · ") } } : {}),
+      actions: [{ ...openRunAction(run), label: "Review plan", tone: "brand" as const }],
+      selectedId: ctx.selectedId,
+    },
+  );
+  return {
+    ...card,
+    action: { type: "open-run", payload: { runId: run.runId } },
+    bar: {
+      ...runBar(run),
+      label: waiting && waiting !== "just now" ? `waiting on you · ${waiting}` : "waiting on you",
+    },
+  };
+}
+
+function gatesOf(runs: readonly LiveRun[] | undefined): LiveRun[] {
+  return (runs ?? [])
+    .filter((r) => r.status === "paused" && r.gate && !r.error)
+    .sort((a, b) => (a.gate?.since ?? a.startedAt).localeCompare(b.gate?.since ?? b.startedAt));
+}
+
+// The Overview's one line for every open plan gate.
+function gateLine(runs: readonly LiveRun[]): RowItem[] {
+  const gates = gatesOf(runs);
+  const first = gates[0];
+  if (!first) return [];
+  if (gates.length > 1) {
+    return [
+      {
+        glyph: "caution",
+        chip: { label: "waiting on you", tone: "caution" },
+        text: `${gates.length} beads-work runs wait on your approval. Your calls lists them, oldest first.`,
+      },
+    ];
+  }
+  const waiting = ago(first.gate?.since, new Date(first.readAt));
+  return [
+    {
+      glyph: "caution",
+      chip: { label: "waiting on you", tone: "caution" },
+      text: `A beads-work run waits on your approval for ${first.beadId ?? "its bead"}${waiting && waiting !== "just now" ? `, ${waiting}` : ""}.`,
+      trailing: "Review plan ›",
+      action: { type: "open-run", payload: { runId: first.runId } },
+    },
+  ];
+}
+
 export function composeYourCalls(m: ProjectMeasurement, ctx: PanelContext): Board {
-  if (!m.backlog.ok) return failedBoard("calls waiting on you", m.backlog.error, m);
+  // A gate needs no bd read, so it stays offered when the backlog failed.
+  const gated = gatesOf(ctx.runs);
+  const gates = gated.map((r) => gateCard(r, m, ctx));
+  if (!m.backlog.ok) {
+    const failed = failedBoard("calls waiting on you", m.backlog.error, m);
+    return gates.length
+      ? board([
+          { kind: "cards", title: `${plural(gates.length, "run")} waiting`, items: gates },
+          ...failed.sections,
+        ])
+      : failed;
+  }
+  const gatedIds = new Set(gated.map((r) => r.beadId));
   const blocked = m.blocked.ok ? m.blocked.data : [];
   const blockers = new Map<string, string[]>(blocked.map((b) => [b.id, b.blocked_by ?? []]));
   const calls = m.backlog.data
-    .filter((i) => i.status !== "closed" && i.issue_type !== "epic" && isHumanCall(i))
+    .filter(
+      (i) =>
+        i.status !== "closed" && i.issue_type !== "epic" && isHumanCall(i) && !gatedIds.has(i.id),
+    )
     .map((i) => {
       const levels = unlockLevels(i.id, blocked);
       return { i, levels, holds: levels.flat().length };
     })
     .sort((a, b) => b.holds - a.holds || byPriorityThenAge(a.i, b.i));
-  if (calls.length === 0) return HIDDEN;
+  if (calls.length === 0 && gates.length === 0) return HIDDEN;
   const shown = calls.slice(0, CALLS_CAP);
   const short = (id: string, from: string) => shortId(id, parentIdOf(from));
   const cards = shown.map(({ i, levels, holds }) => {
@@ -1203,11 +1284,12 @@ export function composeYourCalls(m: ProjectMeasurement, ctx: PanelContext): Boar
         ]),
     {
       kind: "cards",
-      title:
-        total > 0
-          ? `${plural(calls.length, "call")} · ${plural(total, "bead")} wait on them`
-          : plural(calls.length, "call"),
-      items: cards,
+      title: [
+        ...(gates.length ? [`${plural(gates.length, "run")} waiting`] : []),
+        ...(calls.length ? [plural(calls.length, "call")] : []),
+        ...(total > 0 ? [`${plural(total, "bead")} wait on them`] : []),
+      ].join(" · "),
+      items: [...gates, ...cards],
     },
     ...(calls.length > shown.length
       ? [
@@ -1986,6 +2068,7 @@ export interface TrackerTile {
   name: string;
   // Absent while the first count is still queued behind the selected sweep.
   summary?: Measured<BdSummary>;
+  runs?: readonly LiveRun[];
 }
 
 function tileCounts(summary: Measured<BdSummary> | undefined): NonNullable<CardItem["fields"]> {
@@ -2002,6 +2085,18 @@ function tileCounts(summary: Measured<BdSummary> | undefined): NonNullable<CardI
     { value: `${s.in_progress_issues} in flight` },
     { value: `${s.open_issues} open` },
     { value: `${s.closed_issues} closed` },
+  ];
+}
+
+// Named only while a run is live, so a quiet tracker reads as it always has.
+function tileRuns(runs: readonly LiveRun[] | undefined): NonNullable<CardItem["fields"]> {
+  if (!runs?.length) return [];
+  const gates = gatesOf(runs).length;
+  return [
+    {
+      value: `${plural(runs.length, "run")}${gates ? ` · ${gates} waiting on you` : ""}`,
+      tone: gates ? ("caution" as const) : ("info" as const),
+    },
   ];
 }
 
@@ -2039,7 +2134,7 @@ export function composeTrackers(tiles: readonly TrackerTile[], selectedId?: stri
         dot: t.id === selectedId ? "brand" : "neutral",
         selected: t.id === selectedId,
         action: { type: "select-project", payload: { scopeId: t.id } },
-        fields: tileCounts(t.summary),
+        fields: [...tileCounts(t.summary), ...tileRuns(t.runs)],
       })),
     },
   ]);

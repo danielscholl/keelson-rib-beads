@@ -786,6 +786,124 @@ describe("In flight", () => {
   });
 });
 
+describe("plan gates", () => {
+  const gate: LiveRun = {
+    runId: "a1b2c3d4-0000",
+    status: "paused",
+    phase: "approval",
+    startedAt: "2026-08-09T11:30:00Z",
+    readAt: "2026-08-09T12:00:00Z",
+    projectId: "p1",
+    beadId: "tl-a",
+    gate: {
+      since: "2026-08-09T11:54:00Z",
+      tasks: 7,
+      summary: "Six projects under one solution. Scaffolding only.",
+    },
+  };
+  const withBead = (): ProjectMeasurement => {
+    const m = fullMeasurement();
+    if (m.backlog.ok) {
+      m.backlog.data.push({
+        id: "tl-a",
+        title: "Solution skeleton",
+        status: "in_progress",
+        priority: 2,
+      });
+    }
+    return m;
+  };
+
+  test("an open gate leads Your calls and opens the run", () => {
+    const m = withBead();
+    const view = composeYourCalls(m, { runs: [gate] });
+    expect(() => validBoard(view)).not.toThrow();
+    const cards = view.sections.find((x) => x.kind === "cards");
+    if (cards?.kind !== "cards") throw new Error("no cards");
+    expect(cards.title?.startsWith("1 run waiting")).toBe(true);
+    const card = cards.items[0];
+    expect(card?.title).toBe("Approve plan: Solution skeleton");
+    expect(card?.pill).toEqual({ label: "run waiting", tone: "caution" });
+    expect(card?.reason).toEqual({
+      label: "plan",
+      text: "7 tasks · Six projects under one solution.",
+    });
+    expect(card?.action).toEqual({ type: "open-run", payload: { runId: gate.runId } });
+    expect(card?.actions?.[0]).toMatchObject({ type: "open-run", label: "Review plan" });
+    expect(card?.bar).toMatchObject({ label: "waiting on you · 6m" });
+  });
+
+  test("a gate shows Your calls even when no bead is a person's call", () => {
+    const m = withBead();
+    if (m.backlog.ok) m.backlog.data = m.backlog.data.filter((i) => !isHumanCall(i));
+    expect(composeYourCalls(m, {}).sections).toHaveLength(0);
+    const view = composeYourCalls(m, { runs: [gate] });
+    expect(JSON.stringify(view)).toContain("Approve plan: Solution skeleton");
+  });
+
+  test("a gate whose last read failed is not offered as waiting", () => {
+    const m = withBead();
+    const flat = JSON.stringify(composeYourCalls(m, { runs: [{ ...gate, error: "down" }] }));
+    expect(flat).not.toContain("Approve plan");
+  });
+
+  test("a gate stays offered when the backlog read failed", () => {
+    const m = withBead();
+    m.backlog = { ok: false, error: "bd list: timeout" };
+    const view = composeYourCalls(m, { runs: [gate] });
+    expect(() => validBoard(view)).not.toThrow();
+    const flat = JSON.stringify(view);
+    expect(flat).toContain("Approve plan: tl-a");
+    expect(flat).toContain("bd list: timeout");
+  });
+
+  test("a gated bead that is also a person's call shows once, as the gate", () => {
+    const m = withBead();
+    if (m.backlog.ok) {
+      m.backlog.data = m.backlog.data.map((i) =>
+        i.id === "tl-a" ? { ...i, issue_type: "decision" } : i,
+      );
+    }
+    const cards = composeYourCalls(m, { runs: [gate] }).sections.find((x) => x.kind === "cards");
+    if (cards?.kind !== "cards") throw new Error("no cards");
+    expect(cards.items.filter((c) => JSON.stringify(c).includes("tl-a"))).toHaveLength(1);
+  });
+
+  test("the Overview carries one line for open gates", () => {
+    const m = withBead();
+    const one = composePulse(m, undefined, [gate]);
+    expect(() => validBoard(one)).not.toThrow();
+    const flat = JSON.stringify(one);
+    expect(flat).toContain("A beads-work run waits on your approval for tl-a, 6m.");
+    expect(flat).toContain('"type":"open-run"');
+    const two = JSON.stringify(
+      composePulse(m, undefined, [gate, { ...gate, runId: "b2", beadId: "tl-b" }]),
+    );
+    expect(two).toContain("2 beads-work runs wait on your approval. Your calls lists them");
+    expect(JSON.stringify(composePulse(m))).not.toContain("waits on your approval");
+  });
+
+  test("a tracker tile names its live runs and gates, and nothing when quiet", () => {
+    const summary = ok({
+      total_issues: 3,
+      open_issues: 2,
+      ready_issues: 1,
+      blocked_issues: 0,
+      in_progress_issues: 1,
+      closed_issues: 1,
+    });
+    const running: LiveRun = { ...gate, runId: "r2", status: "running", phase: "build" };
+    const view = composeTrackers(
+      [{ id: "p1", name: "demo", summary, runs: [gate, running] }],
+      "p1",
+    );
+    expect(() => validBoard(view)).not.toThrow();
+    expect(JSON.stringify(view)).toContain("2 runs · 1 waiting on you");
+    const quiet = JSON.stringify(composeTrackers([{ id: "p1", name: "demo", summary }], "p1"));
+    expect(quiet).not.toContain("run");
+  });
+});
+
 describe("Your calls", () => {
   function withCalls(): ProjectMeasurement {
     const m = fullMeasurement();
