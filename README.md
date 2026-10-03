@@ -185,8 +185,9 @@ and one that does the work:
   `gpt-6-sol`, `re-review` and the triage judge `gpt-6-luna` (a different
   model from the lenses whose findings it judges), and `classify`,
   `extract-brief-llm`, `coverage-check`, `create-pr`, `triage-ci` and `report`
-  `mai-code-1.1-flash`; `fix-ci` pins `gpt-5.6-sol`. Elsewhere they resolve
-  through the `deep` tier. The closing review loop always runs on Copilot's
+  `mai-code-1.1-flash`; `fix-ci` pins `gpt-5.6-sol`. Elsewhere `classify`,
+  `extract-brief-llm`, `create-pr` and `report` resolve through the `balanced`
+  tier, the workflow default; every other node resolves through `deep`. The closing review loop always runs on Copilot's
   `mai-code-1.1-flash`, because a loop node takes no per-provider model. Needs `gh`, `jq`,
   and a GitHub remote. Pass `review_bot=false` to skip requesting the Copilot
   reviewer.
