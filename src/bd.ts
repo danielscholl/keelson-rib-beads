@@ -117,6 +117,8 @@ export interface BeadRunInfo {
   prNumber?: string;
   outcome?: string;
   note?: string;
+  // The run that wrote the note, when the note names it.
+  runId?: string;
 }
 
 // `bd epic status --json` nests the epic under an `epic` key with the child

@@ -118,8 +118,16 @@ export function recentCloses(closed: BdIssue[], now: Date, days = RECENT_CLOSE_D
 // claims rather than invents: the failure mode of a typo'd note is a bead
 // reading "in progress" instead of "in review", never the reverse.
 export function parseRunNote(notes: string | undefined): BeadRunInfo | undefined {
-  if (!notes) return undefined;
-  let found: BeadRunInfo | undefined;
+  return parseRunNotes(notes).at(-1);
+}
+
+// Every run note on a bead, oldest first. The writeback ends its note with
+// "(run <id>)"; the rib's cleanup note opens its prose with "run <id>;".
+const RUN_MARKER = /\s*\(run ([A-Za-z0-9-]*\d[A-Za-z0-9-]*)\)\s*$/;
+const CLEANUP_MARKER = /^run ([A-Za-z0-9-]*\d[A-Za-z0-9-]*);/;
+export function parseRunNotes(notes: string | undefined): BeadRunInfo[] {
+  if (!notes) return [];
+  const found: BeadRunInfo[] = [];
   for (const raw of notes.split("\n")) {
     const match = /^bead-work run:\s*PR\s+(\S+)\s*(.*)$/.exec(raw.trim());
     if (!match) continue;
@@ -134,13 +142,16 @@ export function parseRunNote(notes: string | undefined): BeadRunInfo | undefined
       .map((s) => s.trim())
       .filter((s) => s.length > 0);
     const outcome = cells[0];
-    const note = cells.slice(1).join(" — ");
-    found = {
+    const prose = cells.slice(1).join(" — ");
+    const runId = (RUN_MARKER.exec(prose) ?? CLEANUP_MARKER.exec(prose))?.[1];
+    const note = prose.replace(RUN_MARKER, "").replace(/\s*\(run unknown\)\s*$/, "");
+    found.push({
       ...(!state ? { prUrl: pr } : { prState: state }),
       ...(number ? { prNumber: number } : {}),
       ...(outcome ? { outcome } : {}),
       ...(note ? { note } : {}),
-    };
+      ...(runId ? { runId } : {}),
+    });
   }
   return found;
 }

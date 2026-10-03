@@ -2598,7 +2598,7 @@ nodes:
       fi
       # The `bead-work run:` prefix is the note convention the rib's board
       # parses (src/measure.ts parseRunNote) — keep it verbatim.
-      bd note "$BEAD" "bead-work run: PR ${PR_URL} — ${RUN_STATUS} — ${DETAIL}"
+      bd note "$BEAD" "bead-work run: PR ${PR_URL} — ${RUN_STATUS} — ${DETAIL} (run ${KEELSON_RUN_ID:-unknown})"
       if [ "$RUN_STATUS" = "failed" ]; then
         # Release the claim so the queue does not deadlock. NEVER `bd close` —
         # confirmed reconciliation follows a verified merge, not this run.

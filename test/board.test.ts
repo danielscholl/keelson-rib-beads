@@ -30,6 +30,7 @@ import {
   parentIdOf,
   prLabel,
   recommendNext,
+  runRows,
   shippedPR,
   shortId,
   shortPerson,
@@ -40,7 +41,7 @@ import {
   unlockChain,
   unlockLevels,
 } from "../src/board";
-import { type ProjectMeasurement, parseRunNote } from "../src/measure";
+import { type ProjectMeasurement, parseRunNote, parseRunNotes } from "../src/measure";
 import type { LiveRun } from "../src/runs";
 
 const project = { id: "p1", name: "demo", rootPath: "/tmp/demo" };
@@ -783,6 +784,76 @@ describe("In flight", () => {
     if (cards?.kind !== "cards") throw new Error("no cards");
     expect(JSON.stringify(cards.items[0])).not.toContain("UNMEASURED");
     expect(JSON.stringify(cards.items[1])).toContain("UNMEASURED run note");
+  });
+});
+
+describe("run history", () => {
+  const notes = [
+    "bead-work plan: approved — ok",
+    "bead-work run: PR none — cancelled — run run-41d0a; cancelled; ended 2026-09-29T10:00:00Z; claim released",
+    "bead-work run: PR https://github.com/acme/demo/pull/12 — failed — PR opened but CI was not green (run 7a1f2b3c-0000)",
+    "bead-work run: PR https://github.com/acme/demo/pull/14 — success — draft PR reviewed and CI green (run unknown)",
+  ].join("\n");
+
+  test("every run a bead's notes name, newest first, each opening its run", () => {
+    expect(parseRunNotes(notes).map((r) => r.runId)).toEqual([
+      "run-41d0a",
+      "7a1f2b3c-0000",
+      undefined,
+    ]);
+    expect(parseRunNote(notes)?.note).toBe("draft PR reviewed and CI green");
+    const rows = runRows(notes);
+    expect(rows.map((r) => r.text)).toEqual(["failed · PR demo#12", "cancelled · no PR"]);
+    expect(rows[0]).toMatchObject({
+      glyph: "error",
+      trailing: "run 7a1f ›",
+      action: { type: "open-run", payload: { runId: "7a1f2b3c-0000" } },
+    });
+  });
+
+  test("a run id comes from the note's marker, never from prose", () => {
+    const line = (tail: string) => `bead-work run: PR none — failed — ${tail}`;
+    expect(parseRunNote(line("CI run 12345678 failed (run c2ecde81-0000)"))?.runId).toBe(
+      "c2ecde81-0000",
+    );
+    expect(parseRunNote(line("re-run 2nd-attempt failed"))?.runId).toBeUndefined();
+    expect(parseRunNote(line("flaky (run tests again)"))?.note).toBe("flaky (run tests again)");
+  });
+
+  test("a run with two notes is one row, read from the newest", () => {
+    const twice = [
+      "bead-work run: PR https://github.com/acme/demo/pull/9 — success — green (run aa11bb22-0000)",
+      "bead-work run: PR https://github.com/acme/demo/pull/9 — cancelled — run aa11bb22-0000; cancelled; ended x; claim retained",
+    ].join("\n");
+    expect(runRows(twice).map((r) => r.text)).toEqual(["cancelled · PR demo#9"]);
+  });
+
+  test("the inspector lists earlier runs under the live one without repeating it", () => {
+    const bead = {
+      id: "tl-a",
+      title: "x",
+      status: "in_progress",
+      priority: 2,
+      dependencies: [],
+      notes: `${notes}\nbead-work run: PR none — failed — retry (run 99aa0000-0000)`,
+    };
+    const live: LiveRun = {
+      runId: "99aa0000-0000",
+      status: "running",
+      phase: "build",
+      startedAt: "2026-08-09T11:45:00Z",
+      readAt: "2026-08-09T12:00:00Z",
+      beadId: "tl-a",
+    };
+    const view = composeInspect(ok(bead), [], undefined, { run: live });
+    expect(() => validBoard(view)).not.toThrow();
+    const flat = JSON.stringify(view);
+    expect(flat).toContain('"title":"Earlier runs"');
+    expect(flat).not.toContain("run 99aa ›");
+    expect(JSON.stringify(composeInspect(ok(bead), []))).toContain('"title":"Runs"');
+    expect(JSON.stringify(composeInspect(ok({ ...bead, notes: "" }), []))).not.toContain(
+      '"title":"Runs"',
+    );
   });
 });
 
