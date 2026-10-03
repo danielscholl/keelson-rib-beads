@@ -102,7 +102,7 @@ describe("rib contract shape", () => {
       ctx,
     );
     expect(flag?.ok).toBe(false);
-    for (const type of ["claim-bead", "sync-merged-beads", "select-project"]) {
+    for (const type of ["claim-bead", "sync-merged-beads", "select-project", "open-run"]) {
       const res = await rib.onAction?.(
         { type, payload: { id: "tl-x" }, origin: "canvas-html" },
         ctx,
@@ -110,6 +110,17 @@ describe("rib contract shape", () => {
       expect(res?.ok).toBe(false);
       expect((res as { error?: string }).error).toContain("from a frame");
     }
+  });
+
+  test("open-run hands the host the run to open beside the board", async () => {
+    const ctx = { getExec: () => ({}) as never };
+    const open = await rib.onAction?.({ type: "open-run", payload: { runId: "run-1" } }, ctx);
+    expect(open).toEqual({
+      ok: true,
+      data: { effect: "open-run", runId: "run-1", workflow: "beads-work" },
+    });
+    const bad = await rib.onAction?.({ type: "open-run", payload: {} }, ctx);
+    expect(bad?.ok).toBe(false);
   });
 
   test("the surface owns its scope instead of the host's all-projects picker", () => {

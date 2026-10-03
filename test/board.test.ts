@@ -41,6 +41,7 @@ import {
   unlockLevels,
 } from "../src/board";
 import { type ProjectMeasurement, parseRunNote } from "../src/measure";
+import type { LiveRun } from "../src/runs";
 
 const project = { id: "p1", name: "demo", rootPath: "/tmp/demo" };
 
@@ -540,6 +541,97 @@ describe("Next up", () => {
     const flat = JSON.stringify(composeRecommend(m, {}));
     expect(flat).toContain("Your calls has it");
     expect(flat).not.toContain("next to unlock");
+  });
+});
+
+describe("In flight with live runs", () => {
+  const claim: BdIssue = {
+    id: "tl-a",
+    title: "Solution skeleton",
+    status: "in_progress",
+    priority: 2,
+    assignee: "dan@x.dev",
+    started_at: "2026-08-09T11:45:00Z",
+  };
+  const run: LiveRun = {
+    runId: "c2ecde81-0000",
+    status: "running",
+    phase: "build",
+    startedAt: "2026-08-09T11:45:00Z",
+    readAt: "2026-08-09T12:00:00Z",
+    projectId: "p1",
+    beadId: "tl-a",
+  };
+
+  test("a live run draws its phase meter, names the run, and offers Open run", () => {
+    const m = fullMeasurement();
+    setWip(m, [claim]);
+    const wip = composeWip(m, { runs: [run] });
+    expect(() => validBoard(wip)).not.toThrow();
+    const cards = wip.sections[0];
+    if (cards?.kind !== "cards") throw new Error("no cards");
+    expect(cards.title).toBe("1 bead-work run");
+    const card = cards.items[0];
+    expect(card?.fields?.[0]?.value).toBe("tl-a · run c2ec · 15m in run");
+    expect(card?.bar).toMatchObject({ label: "build", trailing: "next: review" });
+    const bar = card?.bar;
+    if (!bar || !("segments" in bar)) throw new Error("no segments");
+    expect(bar.segments.map((s) => s.label)).toEqual([
+      "brief",
+      "plan",
+      "approval",
+      "build, now",
+      "review, not yet",
+      "CI, not yet",
+    ]);
+    expect(card?.actions).toEqual([
+      { type: "open-run", label: "Open run", payload: { runId: run.runId } },
+    ]);
+  });
+
+  test("an open gate reads as waiting on you", () => {
+    const m = fullMeasurement();
+    setWip(m, [claim]);
+    const cards = composeWip(m, { runs: [{ ...run, status: "paused", phase: "approval" }] })
+      .sections[0];
+    if (cards?.kind !== "cards") throw new Error("no cards");
+    const bar = cards.items[0]?.bar;
+    if (!bar || !("segments" in bar)) throw new Error("no segments");
+    expect(bar.label).toBe("waiting on you");
+    expect(bar.segments[2]).toEqual({ label: "approval, now", n: 1, tone: "caution" });
+  });
+
+  test("a failed status read falls back to the claim meter and says why on its card", () => {
+    const m = fullMeasurement();
+    setWip(m, [claim]);
+    const cards = composeWip(m, { runs: [{ ...run, error: "server down" }] }).sections[0];
+    if (cards?.kind !== "cards") throw new Error("no cards");
+    const card = cards.items[0];
+    expect(JSON.stringify(card)).toContain("UNMEASURED run: server down");
+    expect(card?.bar).toMatchObject({ label: "claimed" });
+    const view = composeInspect(ok({ ...claim, dependencies: [] }), [], undefined, {
+      run: { ...run, error: "server down" },
+    });
+    expect(JSON.stringify(view)).toContain("UNMEASURED run: server down");
+  });
+
+  test("a run still picking its bead is a row, even with nothing claimed", () => {
+    const m = fullMeasurement();
+    setWip(m, []);
+    const picking = { ...run, beadId: undefined, startedAt: "2026-08-09T11:59:40Z" };
+    const wip = composeWip(m, { runs: [picking] });
+    expect(() => validBoard(wip)).not.toThrow();
+    const flat = JSON.stringify(wip);
+    expect(flat).toContain("beads-work picking from the ready queue");
+    expect(flat).not.toContain("Nothing is claimed");
+  });
+
+  test("the inspector says a run holds the bead and opens it", () => {
+    const view = composeInspect(ok({ ...claim, dependencies: [] }), [], undefined, { run });
+    expect(() => validBoard(view)).not.toThrow();
+    const flat = JSON.stringify(view);
+    expect(flat).toContain("A beads-work run holds this bead: run c2ec · 15m in run.");
+    expect(flat).toContain('"type":"open-run"');
   });
 });
 

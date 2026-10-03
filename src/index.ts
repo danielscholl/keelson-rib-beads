@@ -40,6 +40,7 @@ import {
   composeWip,
   composeYourCalls,
   EMPTY_PANEL,
+  type PanelContext,
   recommendNext,
 } from "./board";
 import {
@@ -66,6 +67,7 @@ import {
   type SweepProgress,
 } from "./measure";
 import { GhClient } from "./pr";
+import { type LiveRun, prFromOutput, RUN_WORKFLOW, RunTracker, runsFor } from "./runs";
 import { type SyncReport, syncMergedPRs } from "./sync";
 import { makeBeadsTools } from "./tools";
 
@@ -80,6 +82,7 @@ const syncingProjects = new Set<string>();
 let listBeadsProjects: (() => BeadsProject[]) | undefined;
 let dataDir: string | undefined;
 const cleanupInFlight = new Map<string, Promise<void>>();
+let runTracker: RunTracker | undefined;
 
 // The rib owns its scope: the tracker strip posts `select-project` with a
 // beads project id, the choice persists across restarts and is shared by every
@@ -120,6 +123,7 @@ let summariesRunning = false;
 const FRAME_BEAD_ID = new RegExp(`^${BEAD_ID_PATTERN}$`);
 const selectProjectPayload = z.object({ scopeId: z.string().min(1).optional() });
 const beadPayload = z.object({ id: z.string().min(1) });
+const runPayload = z.object({ runId: z.string().min(1) });
 const runDetailPayload = z.object({
   data: z.object({
     run: z.object({
@@ -151,16 +155,6 @@ const cleanupIssue = z.object({
   assignee: z.string().nullable().optional(),
   notes: z.string().nullable().optional(),
 });
-
-function prFromOutput(output: string, nodeId: string): string | undefined {
-  const url = /https?:\/\/[^\s"'<>]+\/pull\/\d+/.exec(output)?.[0];
-  if (url) return url;
-  const number =
-    /\b(?:PR|pull request)\s*(?:number|#|:|=)\s*#?(\d+)\b/i.exec(output)?.[1] ??
-    /\bpr[_-]?number\s*["']?\s*[:=]\s*["']?(\d+)\b/i.exec(output)?.[1] ??
-    (nodeId === "create-pr" ? /"number"\s*:\s*"?(\d+)"?/.exec(output)?.[1] : undefined);
-  return number ? `#${number}` : undefined;
-}
 
 async function cleanupEndedRun(event: RibRunEvent, ctx: RibContext): Promise<void> {
   const exec = ctx.getExec();
@@ -246,7 +240,6 @@ async function cleanupEndedRun(event: RibRunEvent, ctx: RibContext): Promise<voi
   const updated = await bd.mutate(cwd, args);
   if (!updated.ok)
     throw new Error(`beads-work ${event.runId}: bd update ${beadId}: ${updated.error}`);
-  refreshAll();
 }
 const syncPayload = z.object({ projectId: z.string().min(1) });
 
@@ -288,6 +281,37 @@ function scopedProject(): BeadsProject | undefined {
   const fallback = trackers.find((p) => p.id === saved) ?? trackers[0];
   scopeId = fallback?.id;
   return fallback;
+}
+
+function liveRunsFor(project: BeadsProject): LiveRun[] {
+  return runTracker ? runsFor(runTracker.all(), project) : [];
+}
+
+// Runs that have named their bead. A newly bound run re-measures its tracker,
+// since the claim it just made is not in the last sweep; the run's end
+// re-measures through onRunEvent.
+const boundRuns = new Set<string>();
+
+function onRunsChanged(changed: readonly LiveRun[]): void {
+  const live = new Set(runTracker?.all().map((r) => r.runId));
+  let remeasure = false;
+  for (const run of changed) {
+    if (!live.has(run.runId)) {
+      boundRuns.delete(run.runId);
+      continue;
+    }
+    if (!run.beadId || boundRuns.has(run.runId)) continue;
+    boundRuns.add(run.runId);
+    const project = (listBeadsProjects?.() ?? []).find(
+      (p) => p.id === run.projectId || (!run.projectId && p.rootPath === run.workingDir),
+    );
+    if (project) {
+      sweeps.delete(project.id);
+      remeasure = true;
+    }
+  }
+  const inspected = selectedBeadId && changed.some((r) => r.beadId === selectedBeadId);
+  recomposeKeys(remeasure ? ALL_KEYS : inspected ? [WIP_KEY, INSPECT_KEY] : [WIP_KEY]);
 }
 
 function startSweep(project: BeadsProject): Sweep {
@@ -599,7 +623,9 @@ const rib: Rib = {
         "and reports a shared",
         "cause once: a bd older than 1.2 or a gh that fails every PR lookup. Now holds",
         "In flight (every claim with a stage meter — claimed, PR open, merged — its",
-        "live stage, what closing it releases, and the newest comment or run remark),",
+        "live stage, what closing it releases, and the newest comment or run remark;",
+        "a bead a live beads-work run holds shows the run's phase — brief, plan,",
+        "approval, build, review, CI — and Open run, which opens the run beside the board),",
         "Next up (one leverage-ranked pick with its unlock chain, runner-up, and",
         "Inspect / Start actions; never a person's call) and Your calls (beads of",
         "type decision or labelled owner or human, ranked by the work waiting on",
@@ -677,20 +703,19 @@ const rib: Rib = {
     for (const un of unregisters) un();
     unregisters = [];
     snapshots = ctx.getSnapshotManager?.();
+    runTracker?.dispose();
+    runTracker = new RunTracker({ exec: () => ctx.getExec(), onChange: onRunsChanged });
     if (snapshots) {
       const sm = snapshots;
       const register = (key: string, compose: () => Promise<unknown>) =>
         unregisters.push(sm.register(key, compose));
       register(TRACKERS_KEY, async () => composeTrackerStrip());
       register(PULSE_KEY, makePanelComposer(composePulse, composeMeasuringPulse));
-      const panel = (
-        key: string,
-        compose: (m: ProjectMeasurement, ctx: { selectedId?: string }) => unknown,
-      ) =>
+      const panel = (key: string, compose: (m: ProjectMeasurement, ctx: PanelContext) => unknown) =>
         register(
           key,
           makePanelComposer(
-            (m) => compose(m, { selectedId: selectedBeadId }),
+            (m) => compose(m, { selectedId: selectedBeadId, runs: liveRunsFor(m.project) }),
             composeMeasuringPanel,
           ),
         );
@@ -724,6 +749,7 @@ const rib: Rib = {
           epicRow,
           prInfo: m.prInfo,
           projectId: project.id,
+          run: liveRunsFor(project).find((r) => r.beadId === id),
           ...(comments ? { comments } : {}),
         });
       });
@@ -739,9 +765,10 @@ const rib: Rib = {
   },
 
   onRunEvent: async (event: RibRunEvent, ctx: RibContext) => {
-    if (event.workflowName !== "beads-work" || !["cancelled", "failed"].includes(event.status)) {
-      return;
-    }
+    if (event.workflowName !== RUN_WORKFLOW) return;
+    await runTracker?.event(event).catch(() => undefined);
+    if (event.status === "succeeded") refreshAll();
+    if (!["cancelled", "failed"].includes(event.status)) return;
     const key = `${event.runId}:${event.status}:${event.completedAt ?? ""}`;
     const pending = cleanupInFlight.get(key);
     if (pending) return pending;
@@ -751,6 +778,7 @@ const rib: Rib = {
       await task;
     } finally {
       if (cleanupInFlight.get(key) === task) cleanupInFlight.delete(key);
+      refreshAll();
     }
   },
 
@@ -809,6 +837,16 @@ const rib: Rib = {
             title: "Bead",
             placement: "side" as const,
           },
+        };
+      }
+      case "open-run": {
+        const parsed = runPayload.safeParse(action.payload ?? {});
+        if (!parsed.success) {
+          return { ok: false as const, error: "open-run payload must be { runId: string }" };
+        }
+        return {
+          ok: true as const,
+          data: { effect: "open-run" as const, runId: parsed.data.runId, workflow: RUN_WORKFLOW },
         };
       }
       case "claim-bead": {
@@ -879,6 +917,8 @@ const rib: Rib = {
     listBeadsProjects = undefined;
     dataDir = undefined;
     cleanupInFlight.clear();
+    runTracker?.dispose();
+    runTracker = undefined;
   },
 };
 
