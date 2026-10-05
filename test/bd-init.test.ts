@@ -386,7 +386,9 @@ describe("init fixtures", () => {
       state.readError = "sample metadata read failure";
       const result = await bd.init(demo, "cos");
       const head = (await git(["rev-parse", "HEAD"])).trim();
-      expect(!result.ok && result.error).toContain("prefix read failed: sample metadata read failure");
+      expect(!result.ok && result.error).toContain(
+        "prefix read failed: sample metadata read failure",
+      );
       expect(!result.ok && result.error).toContain(`made commit ${head}`);
       expect(readFileSync(join(cwd, ".beads", "config.yaml"), "utf8")).toBe("issue-prefix: cos\n");
       expect(readFileSync(join(cwd, ".gitignore"), "utf8")).toBe("# bd init entries\n");

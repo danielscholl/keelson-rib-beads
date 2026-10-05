@@ -283,7 +283,12 @@ export class BdClient {
         return unmeasured(`Git HEAD read failed: ${head.ok ? head.data : head.error}`);
       }
       const ignorePath = join(cwd, ".gitignore");
-      const ignore = existsSync(ignorePath) ? readFileSync(ignorePath) : undefined;
+      let ignore: Buffer | undefined;
+      try {
+        ignore = readFileSync(ignorePath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
       const args = ["init", "--quiet", "--skip-agents", "--skip-hooks", "--non-interactive"];
       if (prefix !== undefined) args.push("--prefix", prefix);
       let failure: string;
