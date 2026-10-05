@@ -87,6 +87,34 @@ function initFixture() {
   return { demo, calls, state, exec, bd: new BdClient(exec) };
 }
 
+async function realGitInitFixture() {
+  const fixture = initFixture();
+  const { demo, exec } = fixture;
+  const cwd = realpathSync(demo.rootPath);
+  const git = async (args: string[]) => {
+    const result = await runText("git", args, { cwd });
+    if (!result.ok) throw new Error(result.error);
+    return result.data;
+  };
+  await git(["init", "--quiet"]);
+  await git(["config", "user.name", "Sample Operator"]);
+  await git(["config", "user.email", "sample@example.invalid"]);
+  const realGitExec: RibExec = {
+    runJSON: exec.runJSON,
+    async runText(cmd, args, opts) {
+      if (cmd === "git") return runText(cmd, args, opts);
+      const result = await exec.runText(cmd, args, opts);
+      if (args[0] === "init") {
+        await git(["config", "beads.role", "maintainer"]);
+        await git(["add", ".beads/config.yaml", ".gitignore"]);
+        await git(["commit", "--quiet", "-m", "chore(beads): initialize sample tracker"]);
+      }
+      return result;
+    },
+  };
+  return { ...fixture, cwd, git, bd: new BdClient(realGitExec) };
+}
+
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -281,9 +309,35 @@ describe("init fixtures", () => {
       const result = await bd.init(demo);
       expect(!result.ok && result.error).toContain(`made commit ${state.newHead}`);
       expect(state.head).toBe(state.newHead);
+      expect(readFileSync(join(demo.rootPath, ".beads", "config.yaml"), "utf8")).toBe(
+        "issue-prefix: cos\n",
+      );
+      expect(readFileSync(join(demo.rootPath, ".gitignore"), "utf8")).toBe("# bd init entries\n");
       expect(
         calls.filter((call) => call.cmd === "git").every((call) => !call.args.includes("reset")),
       ).toBe(true);
+    });
+
+    test("preserves newly created files when the post-init HEAD read fails", async () => {
+      const { demo, exec, state } = initFixture();
+      state.initError = "sample init failure";
+      const bd = new BdClient({
+        ...exec,
+        async runText(cmd, args, opts) {
+          const result = await exec.runText(cmd, args, opts);
+          if (cmd === "bd" && args[0] === "init") state.gitError = "sample HEAD read failure";
+          return result;
+        },
+      });
+      const result = await bd.init(demo);
+      expect(!result.ok && result.error).toContain("sample init failure");
+      expect(!result.ok && result.error).toContain(
+        "Git commit state could not be read: sample HEAD read failure",
+      );
+      expect(readFileSync(join(demo.rootPath, ".beads", "config.yaml"), "utf8")).toBe(
+        "issue-prefix: cos\n",
+      );
+      expect(readFileSync(join(demo.rootPath, ".gitignore"), "utf8")).toBe("# bd init entries\n");
     });
 
     test("concurrent init, another project's read and a write cannot interleave", async () => {
@@ -305,31 +359,8 @@ describe("init fixtures", () => {
     });
 
     test("the happy path uses a clean real Git repository and accepts bd's local effects", async () => {
-      const { demo, exec, calls } = initFixture();
-      const cwd = realpathSync(demo.rootPath);
-      const git = async (args: string[]) => {
-        const result = await runText("git", args, { cwd });
-        if (!result.ok) throw new Error(result.error);
-        return result.data;
-      };
-      await git(["init", "--quiet"]);
-      await git(["config", "user.name", "Sample Operator"]);
-      await git(["config", "user.email", "sample@example.invalid"]);
+      const { demo, bd, calls, cwd, git } = await realGitInitFixture();
       expect(await git(["status", "--porcelain"])).toBe("");
-      const realGitExec: RibExec = {
-        runJSON: exec.runJSON,
-        async runText(cmd, args, opts) {
-          if (cmd === "git") return runText(cmd, args, opts);
-          const result = await exec.runText(cmd, args, opts);
-          if (args[0] === "init") {
-            await git(["config", "beads.role", "maintainer"]);
-            await git(["add", ".beads/config.yaml", ".gitignore"]);
-            await git(["commit", "--quiet", "-m", "chore(beads): initialize sample tracker"]);
-          }
-          return result;
-        },
-      };
-      const bd = new BdClient(realGitExec);
       const result = await bd.init(demo, "cos");
       expect(result.ok && result.data.result).toBe("initialized");
       expect(await git(["status", "--porcelain"])).toBe("");
@@ -340,6 +371,29 @@ describe("init fixtures", () => {
       expect((await bd.readJSON(cwd, ["ready"])).ok).toBe(true);
       expect((await bd.init(demo, "different")).ok).toBe(true);
       expect(calls.filter((call) => call.args[0] === "init")).toHaveLength(1);
+    });
+
+    test.each([
+      undefined,
+      "sample ignores\n",
+    ])("metadata failure preserves committed tracker files in real Git: %s", async (ignore) => {
+      const { demo, bd, state, cwd, git } = await realGitInitFixture();
+      if (ignore !== undefined) {
+        writeFileSync(join(cwd, ".gitignore"), ignore);
+        await git(["add", ".gitignore"]);
+        await git(["commit", "--quiet", "-m", "chore: add sample ignores"]);
+      }
+      state.readError = "sample metadata read failure";
+      const result = await bd.init(demo, "cos");
+      const head = (await git(["rev-parse", "HEAD"])).trim();
+      expect(!result.ok && result.error).toContain("prefix read failed: sample metadata read failure");
+      expect(!result.ok && result.error).toContain(`made commit ${head}`);
+      expect(readFileSync(join(cwd, ".beads", "config.yaml"), "utf8")).toBe("issue-prefix: cos\n");
+      expect(readFileSync(join(cwd, ".gitignore"), "utf8")).toBe("# bd init entries\n");
+      expect(await git(["status", "--porcelain"])).toBe("");
+      expect((await git(["log", "-1", "--format=%s"])).trim()).toBe(
+        "chore(beads): initialize sample tracker",
+      );
     });
   });
 

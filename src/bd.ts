@@ -298,9 +298,6 @@ export class BdClient {
         failure = `bd init failed: ${error instanceof Error ? error.message : String(error)}`;
       }
 
-      rmSync(path, { recursive: true, force: true });
-      if (ignore === undefined) rmSync(ignorePath, { force: true });
-      else writeFileSync(ignorePath, ignore);
       const after = await this.exec.runText("git", ["rev-parse", "--verify", "--quiet", "HEAD"], {
         ...opts,
         acceptNonZeroExit: true,
@@ -312,6 +309,10 @@ export class BdClient {
         failure += ` Git commit state could not be read: ${after.ok ? after.data : after.error}`;
       } else if (after.data.trim() && after.data.trim() !== head.data.trim()) {
         failure += ` bd init made commit ${after.data.trim()}; history was not rewritten.`;
+      } else {
+        rmSync(path, { recursive: true, force: true });
+        if (ignore === undefined) rmSync(ignorePath, { force: true });
+        else writeFileSync(ignorePath, ignore);
       }
       return unmeasured(failure);
     });
