@@ -6,9 +6,10 @@
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 
-import type { ToolContext, ToolDefinition } from "@keelson/shared";
+import type { Project, ToolContext, ToolDefinition } from "@keelson/shared";
 import { z } from "zod";
 import type { BdClient, BeadsProject } from "./bd";
+import { resolveRegisteredProject } from "./bd";
 import type { SyncReport } from "./sync";
 
 // The tool layer's seams, injected so the module stays pure and testable:
@@ -16,6 +17,7 @@ import type { SyncReport } from "./sync";
 export interface ToolDeps {
   bd: BdClient;
   beadsProjects: () => BeadsProject[];
+  registeredProjects?: () => readonly Project[];
   // Fail-soft nudge: a mutation recomposes the board so the surface tracks
   // the tracker without waiting for the next cadence tick.
   refreshBoard: () => void;
@@ -28,6 +30,18 @@ const projectArg = z
   .describe(
     "Beads project name (as registered in keelson). Omit when exactly one project carries a .beads tracker.",
   );
+
+const initSchema = z.object({
+  project: z
+    .string()
+    .refine((value) => value.trim().length > 0, "A registered project name or ID is required.")
+    .describe("Required exact registered project ID or unique name, not a filesystem path."),
+  prefix: z
+    .string()
+    .refine((value) => value.trim().length > 0, "Prefix must be nonempty.")
+    .optional()
+    .describe("Optional issue prefix, passed unchanged to bd; omit for bd's default."),
+});
 
 function resolveProject(
   deps: ToolDeps,
@@ -102,11 +116,44 @@ export function makeBeadsTools(deps: ToolDeps): ToolDefinition[] {
     {
       name: "beads_projects",
       description:
-        "List the registered keelson projects that carry a beads (.beads) tracker — the projects every other beads_* tool can target.",
+        "List registered keelson projects that carry a beads (.beads) tracker. Backlog tools target these; beads_init instead targets any explicitly named registered project.",
       inputSchema: z.object({}),
       execute: guarded(async (_input, ctx) => {
         const projects = deps.beadsProjects();
         emitText(ctx, JSON.stringify(projects, null, 1));
+      }),
+    },
+    {
+      name: "beads_init",
+      description:
+        "Initialize a missing tracker in an explicitly registered project at a clean Git repository root. bd may change .gitignore/local Git config and commit tracker files. An existing tracker is read-only: report its actual prefix and status without reinitializing.",
+      inputSchema: initSchema,
+      state_changing: true,
+      execute: guarded(async (input, ctx) => {
+        const parsed = initSchema.safeParse(input);
+        if (!parsed.success)
+          return emitText(ctx, `beads_init input invalid: ${parsed.error.message}`, true);
+        const resolved = resolveRegisteredProject(deps.registeredProjects?.(), parsed.data.project);
+        if (!resolved.ok)
+          return emitText(ctx, `beads_init project resolution failed: ${resolved.error}`, true);
+        const project = resolved.data;
+        let phase = "initialization";
+        try {
+          const result = await deps.bd.init(project, parsed.data.prefix);
+          if (!result.ok)
+            return emitText(ctx, `beads_init '${project.name}' failed: ${result.error}`, true);
+          if (result.data.result === "initialized") {
+            phase = "board refresh after initialization (tracker remains initialized)";
+            deps.refreshBoard();
+          }
+          emitText(ctx, JSON.stringify(result.data, null, 1));
+        } catch (error) {
+          emitText(
+            ctx,
+            `beads_init '${project.name}' ${phase} failed: ${error instanceof Error ? error.message : String(error)}`,
+            true,
+          );
+        }
       }),
     },
     {
