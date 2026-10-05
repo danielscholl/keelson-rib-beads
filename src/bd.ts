@@ -156,6 +156,28 @@ export function discoverBeadsProjects(projects: readonly Project[]): BeadsProjec
     .map((p) => ({ id: p.id, name: p.name, rootPath: p.rootPath }));
 }
 
+export function resolveRegisteredProject(
+  projects: readonly Project[] | undefined,
+  selector: string,
+): Measured<BeadsProject> {
+  if (!selector.trim()) return unmeasured("A registered project name or ID is required.");
+  if (!projects?.length) return unmeasured("No registered keelson projects are available.");
+  const byId = projects.find((project) => project.id === selector);
+  const matches = byId ? [byId] : projects.filter((project) => project.name === selector);
+  if (matches.length === 0) {
+    return unmeasured(
+      `No registered keelson project matches '${selector}'. Use a name or ID, not a path.`,
+    );
+  }
+  if (matches.length > 1) {
+    return unmeasured(
+      `Several registered projects are named '${selector}'. Use an exact project ID.`,
+    );
+  }
+  const project = matches[0]!;
+  return { ok: true, data: { id: project.id, name: project.name, rootPath: project.rootPath } };
+}
+
 // One serialized bd runner. Concurrent bd processes crash Dolt's embedded
 // mode (a beads-ui production learning), so every call — reads and writes,
 // across all projects — funnels through a single promise chain.
