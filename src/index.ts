@@ -9,6 +9,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type {
+  Project,
   Rib,
   RibAction,
   RibContext,
@@ -793,7 +794,7 @@ const rib: Rib = {
       refreshTimer = setInterval(refreshAll, REFRESH_MS);
     }
 
-    return makeBeadsToolsBound();
+    return makeBeadsToolsBound(() => ctx.getProjects?.() ?? []);
   },
 
   onRunEvent: async (event: RibRunEvent, ctx: RibContext) => {
@@ -958,11 +959,12 @@ const rib: Rib = {
 
 // The chat tools share the same client, discovery, and refresh nudge the
 // panels use.
-function makeBeadsToolsBound() {
+function makeBeadsToolsBound(registeredProjects: () => readonly Project[]) {
   if (!bdClient || !ghClient || !listBeadsProjects) return [];
   return makeBeadsTools({
     bd: bdClient,
     beadsProjects: listBeadsProjects,
+    registeredProjects,
     refreshBoard: refreshAll,
     syncMerged: reconcile,
   });

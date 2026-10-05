@@ -1,8 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { columnRegions } from "@keelson/shared";
+import {
+  columnRegions,
+  type Project,
+  type RibContext,
+  type RibExec,
+  type ToolContext,
+} from "@keelson/shared";
 import rib from "../src/index";
 import {
   ALL_KEYS,
@@ -181,6 +187,150 @@ describe("no tracker registered", () => {
         "no beads tracker registered",
       );
       expect(await composers.get(WIP_KEY)?.()).toEqual({ view: "board", sections: [] });
+    } finally {
+      rib.dispose?.();
+    }
+  });
+});
+
+describe("live tracker initialization", () => {
+  test.each([
+    false,
+    true,
+  ])("discovers a late registered tracker immediately, retaining existing selection: %s", async (hasExisting) => {
+    const roots = ["alpha", "demo"].map((name) => ({
+      id: `project-${name}`,
+      name,
+      rootPath: mkdtempSync(join(tmpdir(), `beads-rib-${name}-`)),
+      createdAt: "2026-01-01T00:00:00Z",
+    }));
+    const [alpha, demo] = roots;
+    if (hasExisting) mkdirSync(join(alpha!.rootPath, ".beads"));
+    let registered: Project[] = hasExisting ? [alpha!] : [];
+    const composers = new Map<string, () => Promise<unknown>>();
+    const refreshes: string[] = [];
+    const commands: string[][] = [];
+    const events: { content: string; isError?: boolean }[] = [];
+    const exec: RibExec = {
+      async runText(cmd, args, opts) {
+        if (cmd === "git") {
+          if (args.includes("--show-toplevel")) return { ok: true, data: realpathSync(opts!.cwd!) };
+          return { ok: true, data: "", exitCode: args[0] === "status" ? 0 : 1 };
+        }
+        commands.push(args);
+        mkdirSync(join(opts!.cwd!, ".beads"));
+        return { ok: true, data: "" };
+      },
+      async runJSON<T>(_cmd: string, args: string[]) {
+        commands.push(args);
+        const data = args.includes("config")
+          ? { key: "issue_prefix", value: "cos" }
+          : args.includes("status")
+            ? {
+                summary: {
+                  total_issues: 0,
+                  open_issues: 0,
+                  ready_issues: 0,
+                  blocked_issues: 0,
+                  in_progress_issues: 0,
+                  closed_issues: 0,
+                },
+              }
+            : args.includes("version")
+              ? { version: "1.3.0" }
+              : [];
+        return { ok: true, data: data as T };
+      },
+    };
+    const ctx = {
+      getExec: () => exec,
+      getProjects: () => registered,
+      getSnapshotManager: () => ({
+        register: (key: string, compose: () => Promise<unknown>) => {
+          composers.set(key, compose);
+          return () => {};
+        },
+        recompose: async (key: string) => {
+          refreshes.push(key);
+        },
+      }),
+    };
+    const toolCtx: ToolContext = {
+      cwd: "/unregistered/context",
+      abortSignal: new AbortController().signal,
+      emit: (event) => {
+        if (event.type === "tool_result") events.push(event);
+      },
+    };
+    try {
+      const tools = await rib.registerTools?.(ctx as never);
+      const init = tools?.find((tool) => tool.name === "beads_init");
+      if (!init) throw new Error("beads_init is missing");
+      expect(init.state_changing).toBe(true);
+      const before = JSON.stringify(await composers.get(TRACKERS_KEY)?.());
+      expect(before).toContain(hasExisting ? "alpha" : "no beads tracker registered");
+      await init.execute({ project: "demo" }, toolCtx);
+      expect(events.pop()?.isError).toBe(true);
+      registered = [...registered, demo!];
+      refreshes.length = 0;
+      await init.execute({ project: demo!.id, prefix: "cos" }, toolCtx);
+      expect(JSON.parse(events.pop()!.content).result).toBe("initialized");
+      expect(refreshes).toContain(TRACKERS_KEY);
+      await tools
+        ?.find((tool) => tool.name === "beads_ready")
+        ?.execute({ project: "demo" }, toolCtx);
+      expect(events.pop()).toMatchObject({ content: "[]" });
+      await tools?.find((tool) => tool.name === "beads_projects")?.execute({}, toolCtx);
+      expect(JSON.parse(events.pop()!.content).map((project: Project) => project.name)).toEqual(
+        hasExisting ? ["alpha", "demo"] : ["demo"],
+      );
+      const strip = (await composers.get(TRACKERS_KEY)?.()) as {
+        sections: { items: { title: string; selected?: boolean }[] }[];
+      };
+      expect(strip.sections[0]?.items.map((item) => item.title)).toEqual(
+        hasExisting ? ["alpha", "demo"] : ["demo"],
+      );
+      expect(strip.sections[0]?.items.find((item) => item.selected)?.title).toBe(
+        hasExisting ? "alpha" : "demo",
+      );
+      expect(commands.filter((args) => args[0] === "init")).toHaveLength(1);
+    } finally {
+      rib.dispose?.();
+      for (const root of roots) rmSync(root.rootPath, { recursive: true, force: true });
+    }
+  });
+
+  test("without host registry access init refuses to use the tool context directory", async () => {
+    let calls = 0;
+    const exec: RibExec = {
+      async runText() {
+        calls++;
+        return { ok: false, code: 1, error: "not used" };
+      },
+      async runJSON() {
+        calls++;
+        return { ok: false, code: 1, error: "not used" };
+      },
+    };
+    const ctx: RibContext = { getExec: () => exec };
+    const events: { content: string; isError?: boolean }[] = [];
+    try {
+      const tools = await rib.registerTools?.(ctx);
+      await tools
+        ?.find((tool) => tool.name === "beads_init")
+        ?.execute(
+          { project: "demo" },
+          {
+            cwd: "/unregistered/demo",
+            abortSignal: new AbortController().signal,
+            emit: (event) => {
+              if (event.type === "tool_result") events.push(event);
+            },
+          },
+        );
+      expect(events[0]?.isError).toBe(true);
+      expect(events[0]?.content).toContain("No registered keelson projects");
+      expect(calls).toBe(0);
     } finally {
       rib.dispose?.();
     }
