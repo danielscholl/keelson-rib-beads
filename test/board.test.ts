@@ -488,7 +488,7 @@ describe("Next up", () => {
     expect(JSON.stringify(composeRecommend(m, {}))).toContain("Nothing is ready to start");
   });
 
-  test("with nothing ready it names the claim whose close frees the most", () => {
+  test("with nothing ready it points at the claim whose close frees the most", () => {
     const m = fullMeasurement();
     m.ready = ok([]);
     setWip(m, [
@@ -505,14 +505,18 @@ describe("Next up", () => {
     const rec = composeRecommend(m, {});
     expect(() => validBoard(rec)).not.toThrow();
     const section = rec.sections[0];
-    if (section?.kind !== "cards") throw new Error("no cards");
+    if (section?.kind !== "rows") throw new Error("no rows");
     expect(section.title).toBe("Nothing is ready · next to unlock");
-    const card = section.items[0];
-    expect(card?.title).toBe("Frees two");
-    expect(card?.reason?.text).toBe("closing it makes 2 beads ready");
-    expect(card?.fields?.[1]).toEqual({ label: "frees", value: "tl-d, tl-e" });
-    expect(card?.footnote).toBe("then: tl-z frees 1 · Frees one");
-    expect(card?.actions?.map((a) => a.type)).toEqual(["select-bead"]);
+    expect(section.items.map((r) => r.text)).toEqual([
+      "Closing tl-a frees 2 beads: tl-d, tl-e",
+      "Then tl-z frees 1 bead: tl-i",
+    ]);
+    expect(section.items[0]).toMatchObject({
+      trailing: "in flight",
+      action: { type: "select-bead", payload: { id: "tl-a" } },
+    });
+    // The claim's card is In flight's; Next up never draws it twice.
+    expect(rec.sections.some((x) => x.kind === "cards")).toBe(false);
   });
 
   test("an epic or parent blocker never counts as the last hold", () => {
@@ -528,7 +532,7 @@ describe("Next up", () => {
         blocked_by: ["tl-f", "tl-a"],
       },
     ]);
-    expect(JSON.stringify(composeRecommend(m, {}))).toContain('"value":"tl-f.2"');
+    expect(JSON.stringify(composeRecommend(m, {}))).toContain("frees 1 bead: tl-f.2");
   });
 
   test("a ready human call keeps pointing at Your calls", () => {
@@ -885,59 +889,129 @@ describe("plan gates", () => {
     return m;
   };
 
-  test("an open gate leads Your calls and opens the run", () => {
+  test("an open gate leads In flight and carries the call", () => {
     const m = withBead();
-    const view = composeYourCalls(m, { runs: [gate] });
+    const other: BdIssue = {
+      id: "tl-0",
+      title: "Higher priority claim",
+      status: "in_progress",
+      priority: 0,
+    };
+    setWip(m, [
+      other,
+      { id: "tl-a", title: "Solution skeleton", status: "in_progress", priority: 2 },
+    ]);
+    const view = composeWip(m, { runs: [gate] });
     expect(() => validBoard(view)).not.toThrow();
     const cards = view.sections.find((x) => x.kind === "cards");
     if (cards?.kind !== "cards") throw new Error("no cards");
-    expect(cards.title?.startsWith("1 run waiting")).toBe(true);
+    expect(cards.title).toBe("1 bead-work run · 1 waiting on you · 1 other claim");
     const card = cards.items[0];
-    expect(card?.title).toBe("Approve plan: Solution skeleton");
-    expect(card?.pill).toEqual({ label: "run waiting", tone: "caution" });
+    expect(card?.title).toBe("Solution skeleton");
+    expect(card?.edge).toBe("caution");
+    expect(card?.pill).toEqual({ label: "plan gate", tone: "caution" });
     expect(card?.reason).toEqual({
       label: "plan",
       text: "7 tasks · Six projects under one solution.",
     });
-    expect(card?.action).toEqual({ type: "open-run", payload: { runId: gate.runId } });
-    expect(card?.actions?.[0]).toMatchObject({ type: "open-run", label: "Review plan" });
+    expect(card?.actions).toEqual([
+      { type: "open-run", label: "Review plan", tone: "brand", payload: { runId: gate.runId } },
+    ]);
     expect(card?.bar).toMatchObject({ label: "waiting on you · 6m" });
+    expect(cards.items[1]?.title).toBe("Higher priority claim");
+    expect(cards.items[1]?.edge).toBeUndefined();
   });
 
-  test("a gate shows Your calls even when no bead is a person's call", () => {
+  test("Your calls never repeats a gate, and hides with no person's call", () => {
     const m = withBead();
+    expect(JSON.stringify(composeYourCalls(m, { runs: [gate] }))).not.toContain("plan gate");
     if (m.backlog.ok) m.backlog.data = m.backlog.data.filter((i) => !isHumanCall(i));
-    expect(composeYourCalls(m, {}).sections).toHaveLength(0);
-    const view = composeYourCalls(m, { runs: [gate] });
-    expect(JSON.stringify(view)).toContain("Approve plan: Solution skeleton");
+    expect(composeYourCalls(m, { runs: [gate] }).sections).toHaveLength(0);
   });
 
   test("a gate whose last read failed is not offered as waiting", () => {
     const m = withBead();
-    const flat = JSON.stringify(composeYourCalls(m, { runs: [{ ...gate, error: "down" }] }));
-    expect(flat).not.toContain("Approve plan");
+    setWip(m, [{ id: "tl-a", title: "Solution skeleton", status: "in_progress", priority: 2 }]);
+    const flat = JSON.stringify(composeWip(m, { runs: [{ ...gate, error: "down" }] }));
+    expect(flat).not.toContain("Review plan");
+    expect(flat).not.toContain("plan gate");
   });
 
-  test("a gate stays offered when the backlog read failed", () => {
+  test("a gate stays offered when the in-flight read failed", () => {
     const m = withBead();
-    m.backlog = { ok: false, error: "bd list: timeout" };
-    const view = composeYourCalls(m, { runs: [gate] });
+    m.inProgress = { ok: false, error: "bd list: timeout" };
+    const view = composeWip(m, { runs: [gate] });
     expect(() => validBoard(view)).not.toThrow();
     const flat = JSON.stringify(view);
-    expect(flat).toContain("Approve plan: tl-a");
+    expect(flat).toContain("1 run waiting on you");
+    expect(flat).toContain("Review plan");
     expect(flat).toContain("bd list: timeout");
   });
 
-  test("a gated bead that is also a person's call shows once, as the gate", () => {
+  test("a gate whose bead bd does not show as claimed still gets its card", () => {
+    const m = withBead();
+    setWip(m, []);
+    const cards = composeWip(m, { runs: [gate] }).sections.find((x) => x.kind === "cards");
+    if (cards?.kind !== "cards") throw new Error("no cards");
+    expect(cards.items[0]?.title).toBe("Solution skeleton");
+    expect(cards.items[0]?.action).toEqual({ type: "open-run", payload: { runId: gate.runId } });
+    expect(JSON.stringify(composeWip(m, { runs: [gate] }))).not.toContain("Nothing is claimed");
+  });
+
+  test("claimed and unclaimed gates share one oldest-first order", () => {
+    const m = withBead();
+    setWip(m, [
+      { id: "tl-0", title: "Plain claim", status: "in_progress", priority: 0 },
+      { id: "tl-a", title: "Solution skeleton", status: "in_progress", priority: 2 },
+    ]);
+    const stray: LiveRun = {
+      ...gate,
+      runId: "e5f6a7b8-0000",
+      beadId: "tl-x",
+      gate: { since: "2026-08-09T11:58:00Z" },
+    };
+    const view = composeWip(m, { runs: [stray, gate] });
+    expect(() => validBoard(view)).not.toThrow();
+    const cards = view.sections.filter((x) => x.kind === "cards");
+    expect(cards).toHaveLength(1);
+    const only = cards[0];
+    if (only?.kind !== "cards") throw new Error("no cards");
+    expect(only.title).toBe("1 bead-work run · 2 waiting on you · 1 other claim");
+    expect(only.items.map((c) => c.title)).toEqual(["Solution skeleton", "tl-x", "Plain claim"]);
+  });
+
+  test("every waiting run gets a card, even two on one bead", () => {
+    const m = withBead();
+    setWip(m, [{ id: "tl-a", title: "Solution skeleton", status: "in_progress", priority: 2 }]);
+    const second: LiveRun = {
+      ...gate,
+      runId: "f9e8d7c6-0000",
+      gate: { since: "2026-08-09T11:58:00Z" },
+    };
+    for (const view of [
+      composeWip(m, { runs: [second, gate] }),
+      composeWip(
+        { ...m, inProgress: { ok: false, error: "bd list: timeout" } },
+        { runs: [second, gate] },
+      ),
+    ]) {
+      const opened = view.sections
+        .flatMap((x) => (x.kind === "cards" ? x.items : []))
+        .flatMap((c) => c.actions ?? [])
+        .filter((a) => a.label === "Review plan")
+        .map((a) => (a.payload as { runId: string }).runId);
+      expect(opened).toEqual([gate.runId, second.runId]);
+    }
+  });
+
+  test("a gated bead that is also a person's call shows only in In flight", () => {
     const m = withBead();
     if (m.backlog.ok) {
       m.backlog.data = m.backlog.data.map((i) =>
         i.id === "tl-a" ? { ...i, issue_type: "decision" } : i,
       );
     }
-    const cards = composeYourCalls(m, { runs: [gate] }).sections.find((x) => x.kind === "cards");
-    if (cards?.kind !== "cards") throw new Error("no cards");
-    expect(cards.items.filter((c) => JSON.stringify(c).includes("tl-a"))).toHaveLength(1);
+    expect(JSON.stringify(composeYourCalls(m, { runs: [gate] }))).not.toContain('"tl-a');
   });
 
   test("the Overview carries one line for open gates", () => {
@@ -950,7 +1024,7 @@ describe("plan gates", () => {
     const two = JSON.stringify(
       composePulse(m, undefined, [gate, { ...gate, runId: "b2", beadId: "tl-b" }]),
     );
-    expect(two).toContain("2 beads-work runs wait on your approval. Your calls lists them");
+    expect(two).toContain("2 beads-work runs wait on your approval. In flight lists them");
     expect(JSON.stringify(composePulse(m))).not.toContain("waits on your approval");
   });
 

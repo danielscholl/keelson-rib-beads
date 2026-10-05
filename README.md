@@ -39,31 +39,33 @@ Below the Overview come three zones in the order the operator acts.
   PR lookup.
   Panels that depend on it point at the header instead of alarming separately.
   A `beads-work` run waiting at its plan gate shows here as one line that
-  opens the run, or one count when several wait.
+  opens the run, or one count pointing at *In flight* when several wait.
   Merged PRs whose beads are still open show here as one line with a
   confirmed **Reconcile merged PRs** action, and stale claims and epics ready
   for closeout as one housekeeping line.
 - **Now.** *Next up* is one pick, ranked by `dependent_count` before
   priority, with its unlock chain and runner-up; it never picks a person's
-  call. With nothing ready it names the claim whose close makes the most
-  beads ready, and which ones. *In flight* lists every claim with a
-  three-stop stage meter (claimed, PR open, merged) captioned with the stop
-  reached and the next one, how far along it is (claimed N ago, PR open with
-  draft, CI and review state, merged and waiting on the close), what still
+  call. With nothing ready it names, in a line, the claim whose close makes
+  the most beads ready and which ones; that claim's card is In flight's.
+  *In flight* lists every claim with a three-stop stage meter (claimed, PR
+  open, merged) captioned with the stop reached and the next one, how far
+  along it is (claimed N ago, PR open with draft, CI and review state,
+  merged and waiting on the close), what still
   holds it when a claim waits on an open bead, what closing it releases, and
   its newest comment or run remark. While a `beads-work` run holds a bead,
   its card swaps the stage meter for the run's six phases (brief, plan,
   approval, build, review, CI), names the run and how long it has been
-  going, and carries **Open run**, which opens the run beside the board. An
-  open plan gate reads as waiting on you. A run that has not picked its bead
-  yet is a row above the cards. The rib reads each live run's status every
+  going, and carries **Open run**, which opens the run beside the board. A
+  run waiting at its plan gate leads the panel with a caution edge: its
+  card names the plan's task count and the first sentence of its summary
+  when the plan has one, how long it has waited, and carries **Review
+  plan**, which opens the run with its approval composer. A run that has
+  not picked its bead yet is a row above the cards. The rib reads each live run's status every
   15 seconds, and not at all when no run is live; a run that ends
   re-measures its tracker. *Your calls* lists the beads only a person can finish: type `decision`, or
   labelled `owner` or `human`, ranked by how much work waits on each, with
-  what it unblocks. A run waiting at its plan gate leads the list whatever
-  its bead holds, since it does nothing until answered: its card names the
-  plan's task count and the first sentence of its summary when the plan has
-  one, and opens the run, approval composer included. The panel hides when there are none.
+  what it unblocks. A plan gate stays on its run's *In flight* card and never
+  repeats here, so the panel hides when no bead is a person's call.
 - **Epics.** *Wave map* draws each open epic as columns: a child's column is
   one more than the deepest column among its open blockers, so wave 1
   (unblocked) holds what no open bead blocks and position says what waits on
