@@ -6,9 +6,10 @@
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Project, RibExec } from "@keelson/shared";
+import { z } from "zod";
 
 // A measurement either happened or it didn't. Rendering must be able to tell
 // "the query failed" from "there is nothing there" at a glance, so a failed
@@ -143,6 +144,34 @@ export interface BdSummary {
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
+const initEnv = { BD_DISABLE_METRICS: "1", OTEL_SDK_DISABLED: "true" };
+const prefixSchema = z.object({ key: z.literal("issue_prefix"), value: z.string().trim().min(1) });
+const count = z.number().int().nonnegative();
+const statusSchema = z
+  .object({
+    summary: z
+      .object({
+        total_issues: count,
+        open_issues: count,
+        ready_issues: count,
+        blocked_issues: count,
+        in_progress_issues: count,
+        closed_issues: count,
+        deferred_issues: count.optional(),
+        epics_eligible_for_closure: count.optional(),
+      })
+      .passthrough(),
+  })
+  .passthrough();
+
+export interface BdInitResult {
+  result: "initialized" | "existing";
+  project: { id: string; name: string };
+  path: string;
+  prefix: string;
+  status: { summary: BdSummary };
+}
+
 // A keelson project whose repository carries a beads tracker.
 export interface BeadsProject {
   id: string;
@@ -194,6 +223,98 @@ export class BdClient {
       () => undefined,
     );
     return next;
+  }
+
+  init(project: BeadsProject, prefix?: string): Promise<Measured<BdInitResult>> {
+    return this.enqueue(async () => {
+      const cwd = realpathSync(project.rootPath);
+      const path = join(cwd, ".beads");
+      const opts = { cwd, timeoutMs: DEFAULT_TIMEOUT_MS, env: initEnv };
+      const metadata = async (result: BdInitResult["result"]): Promise<Measured<BdInitResult>> => {
+        if (!existsSync(path) || !statSync(path).isDirectory()) {
+          return unmeasured("bd init did not produce a .beads directory.");
+        }
+        const config = await this.exec.runJSON<unknown>(
+          "bd",
+          ["--sandbox", "config", "get", "issue_prefix", "--json"],
+          opts,
+        );
+        if (!config.ok) return unmeasured(`prefix read failed: ${config.error}`);
+        const actualPrefix = prefixSchema.safeParse(config.data);
+        if (!actualPrefix.success) return unmeasured("bd config returned no valid issue_prefix.");
+        const status = await this.exec.runJSON<unknown>(
+          "bd",
+          ["--sandbox", "status", "--json"],
+          opts,
+        );
+        if (!status.ok) return unmeasured(`status read failed: ${status.error}`);
+        const measuredStatus = statusSchema.safeParse(status.data);
+        if (!measuredStatus.success) return unmeasured("bd status returned no valid summary.");
+        return {
+          ok: true,
+          data: {
+            result,
+            project: { id: project.id, name: project.name },
+            path,
+            prefix: actualPrefix.data.value,
+            status: measuredStatus.data,
+          },
+        };
+      };
+
+      if (existsSync(path)) return metadata("existing");
+      if (prefix !== undefined && !prefix.trim()) return unmeasured("Prefix must be nonempty.");
+      const top = await this.exec.runText("git", ["rev-parse", "--show-toplevel"], opts);
+      if (!top.ok) return unmeasured(`Git precondition failed: ${top.error}`);
+      if (realpathSync(top.data.trim()) !== cwd) {
+        return unmeasured("The registered project root must be the Git repository's top level.");
+      }
+      const tree = await this.exec.runText("git", ["status", "--porcelain"], opts);
+      if (!tree.ok) return unmeasured(`Git status failed: ${tree.error}`);
+      if (tree.data.length) {
+        return unmeasured("Initialization requires a clean Git working tree and index.");
+      }
+      // A successful empty read with exit 1 means this repository has no commit yet.
+      const head = await this.exec.runText("git", ["rev-parse", "--verify", "--quiet", "HEAD"], {
+        ...opts,
+        acceptNonZeroExit: true,
+      });
+      if (!head.ok || (head.exitCode !== undefined && head.exitCode !== 0 && head.exitCode !== 1)) {
+        return unmeasured(`Git HEAD read failed: ${head.ok ? head.data : head.error}`);
+      }
+      const ignorePath = join(cwd, ".gitignore");
+      const ignore = existsSync(ignorePath) ? readFileSync(ignorePath) : undefined;
+      const args = ["init", "--quiet", "--skip-agents", "--skip-hooks", "--non-interactive"];
+      if (prefix !== undefined) args.push("--prefix", prefix);
+      let failure: string;
+      try {
+        const initialized = await this.exec.runText("bd", args, opts);
+        const measured = initialized.ok
+          ? await metadata("initialized")
+          : unmeasured<BdInitResult>(`bd init failed: ${initialized.error}`);
+        if (measured.ok) return measured;
+        failure = measured.error;
+      } catch (error) {
+        failure = `bd init failed: ${error instanceof Error ? error.message : String(error)}`;
+      }
+
+      rmSync(path, { recursive: true, force: true });
+      if (ignore === undefined) rmSync(ignorePath, { force: true });
+      else writeFileSync(ignorePath, ignore);
+      const after = await this.exec.runText("git", ["rev-parse", "--verify", "--quiet", "HEAD"], {
+        ...opts,
+        acceptNonZeroExit: true,
+      });
+      if (
+        !after.ok ||
+        (after.exitCode !== undefined && after.exitCode !== 0 && after.exitCode !== 1)
+      ) {
+        failure += ` Git commit state could not be read: ${after.ok ? after.data : after.error}`;
+      } else if (after.data.trim() && after.data.trim() !== head.data.trim()) {
+        failure += ` bd init made commit ${after.data.trim()}; history was not rewritten.`;
+      }
+      return unmeasured(failure);
+    });
   }
 
   // Read-only query. `--sandbox` disables Dolt auto-push so an interactive
