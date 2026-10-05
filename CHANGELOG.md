@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/danielscholl/keelson-rib-beads/compare/v0.10.2...v0.11.0) (2026-10-05)
+
+
+### Added
+
+* initialize trackers in registered projects ([#59](https://github.com/danielscholl/keelson-rib-beads/issues/59)) ([41b9aac](https://github.com/danielscholl/keelson-rib-beads/commit/41b9aacf9fbd60436a8ee4c4ee73d73ab21e1022))
+
 ## [0.10.2](https://github.com/danielscholl/keelson-rib-beads/compare/v0.10.1...v0.10.2) (2026-10-03)
 
 
