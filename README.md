@@ -8,6 +8,8 @@ surface, and workflows that drive work from the dependency-ready queue.
 Any registered keelson project whose repository carries a `.beads/` directory
 is discovered automatically — the rib owns the capability, the projects own
 the data.
+Use `beads_init` to initialize a missing tracker in an explicitly registered,
+clean Git project.
 
 ## What it contributes
 
@@ -121,15 +123,47 @@ Every section is **fail-closed**: a failed `bd` query renders UNMEASURED,
 never an empty-but-healthy board.
 
 **Tools.** Tools that target a backlog take an optional project name; omit it
-only when exactly one registered project has a `.beads` tracker.
+only when exactly one registered project has a `.beads` tracker. `beads_init`
+instead requires an exact registered project ID or unique name, including
+projects without trackers; filesystem paths are not accepted.
 
 | Tool | Use |
 | --- | --- |
 | `beads_projects`, `beads_status`, `beads_ready`, `beads_blocked`, `beads_show`, `beads_list`, `beads_epics`, `beads_stale` | Read the registered backlogs and their tracker state. |
+| `beads_init` | Policy-gated initialization: required registered `project`, optional `prefix`. Existing trackers are read-only no-ops reporting actual prefix/status. |
 | `beads_create`, `beads_update`, `beads_dep` | Policy-gated tracker writes. |
 | `beads_close` | Manually close one bead with a reason (confirmation-required). |
 | `beads_sync_merged` | State-changing tool: without `confirm: true`, read-only preview listing each proposed bead ID, canonical PR URL and merge timestamp, plus skipped/error reasons. With `confirm: true`, recheck and close eligible beads; return closed/skipped/error results. |
 | `beads_board_refresh` | Re-measure the board on demand, without writes. |
+
+For example, `beads_init({ project: "demo", prefix: "cos" })` initializes the
+registered project `demo`; omit `prefix` to use bd's default. New initialization
+requires the registered root to be the Git repository's top level and
+`git status --porcelain` to be empty: nothing staged, modified or untracked.
+The serialized runner invokes this command in that root (adding `--prefix cos`
+only when requested), with a 30-second timeout:
+
+```bash
+BD_DISABLE_METRICS=1 OTEL_SDK_DISABLED=true \
+  bd init --quiet --skip-agents --skip-hooks --non-interactive
+```
+
+Telemetry and metrics are disabled; `--stealth` is never used. As with running
+`bd init` by hand, its repository-local effects are accepted: the `.beads/`
+directory, `.gitignore` entries, local Git configuration and a commit of the
+tracker files. Agent instructions and hooks are skipped. On failure, the rib
+removes only the `.beads/` directory created by this call and restores the
+`.gitignore` copy taken just before init. Git configuration and any commit are
+not rolled back; a new commit is reported in the error, never reset or rewritten.
+This is not a transaction or protection against concurrent external edits.
+
+The result contains `result` (`initialized` or `existing`), registered
+`project` (`id`, `name`), absolute tracker `path`, actual `prefix`, and measured
+`status`. Failed metadata reads are errors, not empty success. Repeat calls
+never reinitialize or change an existing prefix. Successful creation refreshes
+the board immediately and makes the project available to backlog tools without
+a restart. Calling init as a lead tool requires the operator's existing
+`crossRibGrants`; the rib creates no grants and changes no chat launcher behavior.
 
 The board reads linked PRs on its five-minute cadence without writing to
 `bd`. It requires an authenticated `gh` CLI for PR-linked data; failed lookups

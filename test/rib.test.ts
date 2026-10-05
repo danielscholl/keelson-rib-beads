@@ -161,6 +161,13 @@ describe("rib contract shape", () => {
     const docs = rib.contributeDocs?.({ getExec: () => ({}) as never });
     expect(docs?.[0]?.title).toBe("Beads");
     expect(docs?.[0]?.content).toContain("beads_ready");
+    expect(docs?.[0]?.content).toContain('beads_init({ project: "demo", prefix: "cos" })');
+    expect(docs?.[0]?.content).toContain("Required `project`");
+    expect(docs?.[0]?.content).toContain("Optional `prefix`");
+    expect(docs?.[0]?.content).toContain("git status --porcelain");
+    expect(docs?.[0]?.content).toContain("commit of the tracker files");
+    expect(docs?.[0]?.content).toContain("without rewriting history");
+    expect(docs?.[0]?.content).toContain("crossRibGrants");
     expect(docs?.[0]?.content).toContain("retains claims with a recorded or unknown PR state");
     expect(docs?.[0]?.content).not.toContain("releases the claim on failure");
   });
