@@ -980,6 +980,30 @@ describe("plan gates", () => {
     expect(only.items.map((c) => c.title)).toEqual(["Solution skeleton", "tl-x", "Plain claim"]);
   });
 
+  test("every waiting run gets a card, even two on one bead", () => {
+    const m = withBead();
+    setWip(m, [{ id: "tl-a", title: "Solution skeleton", status: "in_progress", priority: 2 }]);
+    const second: LiveRun = {
+      ...gate,
+      runId: "f9e8d7c6-0000",
+      gate: { since: "2026-08-09T11:58:00Z" },
+    };
+    for (const view of [
+      composeWip(m, { runs: [second, gate] }),
+      composeWip(
+        { ...m, inProgress: { ok: false, error: "bd list: timeout" } },
+        { runs: [second, gate] },
+      ),
+    ]) {
+      const opened = view.sections
+        .flatMap((x) => (x.kind === "cards" ? x.items : []))
+        .flatMap((c) => c.actions ?? [])
+        .filter((a) => a.label === "Review plan")
+        .map((a) => (a.payload as { runId: string }).runId);
+      expect(opened).toEqual([gate.runId, second.runId]);
+    }
+  });
+
   test("a gated bead that is also a person's call shows only in In flight", () => {
     const m = withBead();
     if (m.backlog.ok) {

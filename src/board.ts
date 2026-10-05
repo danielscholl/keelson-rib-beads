@@ -1149,11 +1149,13 @@ export function composeWip(m: ProjectMeasurement, ctx: PanelContext): Board {
   });
   const cardOf = new Map(ordered.flatMap((i, k) => (cards[k] ? [[i.id, cards[k]] as const] : [])));
   const shown = new Set<string>();
-  const gateCards = gated.flatMap((r) => {
-    if (!r.beadId || !claimed.has(r.beadId)) return [gateCard(r, m, ctx)];
-    const card = shown.has(r.beadId) ? undefined : cardOf.get(r.beadId);
+  // One card per waiting run: a bead's first gate rides its claim card, and
+  // any other run on it still needs its own answer.
+  const gateCards = gated.map((r) => {
+    const card = r.beadId && !shown.has(r.beadId) ? cardOf.get(r.beadId) : undefined;
+    if (!card || !r.beadId) return gateCard(r, m, ctx);
     shown.add(r.beadId);
-    return card ? [card] : [];
+    return card;
   });
   const rest = ordered.flatMap((i) => {
     const card = shown.has(i.id) ? undefined : cardOf.get(i.id);
