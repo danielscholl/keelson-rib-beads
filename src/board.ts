@@ -841,26 +841,23 @@ export function composeRecommend(m: ProjectMeasurement, ctx: PanelContext): Boar
         : [];
     const [first, second] = unlock;
     if (first) {
-      const short = (id: string) => shortId(id, parentIdOf(first.claim.id));
+      // Every claim here already has its card in In flight, so Next up points
+      // at it rather than drawing a second copy.
+      const unlockRow = ({ claim, freed }: (typeof unlock)[number], lead: string): RowItem => {
+        const short = (id: string) => shortId(id, parentIdOf(claim.id));
+        return {
+          glyph: STAGE_TONE.working,
+          text: `${lead} ${short(claim.id)} frees ${plural(freed.length, "bead")}: ${freed.map((b) => short(b.id)).join(", ")}`,
+          trailing: "in flight",
+          action: { type: "select-bead", payload: { id: claim.id } },
+          selected: ctx.selectedId === claim.id,
+        };
+      };
       return board([
         {
-          kind: "cards",
+          kind: "rows",
           title: "Nothing is ready · next to unlock",
-          items: [
-            beadCard(first.claim, {
-              meta: ["in flight", shortPerson(personOf(first.claim)), `P${first.claim.priority}`],
-              evidence: {
-                label: "why",
-                text: `closing it makes ${plural(first.freed.length, "bead")} ready`,
-              },
-              fields: [{ label: "frees", value: first.freed.map((b) => short(b.id)).join(", ") }],
-              selectedId: ctx.selectedId,
-              actions: [{ type: "select-bead", label: "Inspect", payload: { id: first.claim.id } }],
-              footnote: second
-                ? `then: ${short(second.claim.id)} frees ${second.freed.length} · ${clampTitle(second.claim.title, 80)}`
-                : "no other claim frees work on its own",
-            }),
-          ],
+          items: [unlockRow(first, "Closing"), ...(second ? [unlockRow(second, "Then")] : [])],
         },
       ]);
     }
@@ -946,21 +943,92 @@ export function composeRecommend(m: ProjectMeasurement, ctx: PanelContext): Boar
   ]);
 }
 
+// A run paused at its plan gate, as In flight shows it: the plan's size and
+// first sentence, how long it has waited, and Review plan to answer it.
+const GATE_PILL = { label: "plan gate", tone: "caution" } as const;
+
+function gatesOf(runs: readonly LiveRun[] | undefined): LiveRun[] {
+  return (runs ?? [])
+    .filter((r) => r.status === "paused" && r.gate && !r.error)
+    .sort((a, b) => (a.gate?.since ?? a.startedAt).localeCompare(b.gate?.since ?? b.startedAt));
+}
+
+function gatePlan(run: LiveRun): { label: string; text: string } | undefined {
+  const plan = [
+    run.gate?.tasks ? plural(run.gate.tasks, "task") : undefined,
+    run.gate?.summary ? firstSentence(run.gate.summary, 160) : undefined,
+  ].filter((x): x is string => Boolean(x));
+  return plan.length ? { label: "plan", text: plan.join(" · ") } : undefined;
+}
+
+function gateBar(run: LiveRun): NonNullable<CardItem["bar"]> {
+  const waiting = ago(run.gate?.since, new Date(run.readAt));
+  return {
+    ...runBar(run),
+    label: waiting && waiting !== "just now" ? `waiting on you · ${waiting}` : "waiting on you",
+  };
+}
+
+function reviewPlanAction(run: LiveRun) {
+  return { ...openRunAction(run), label: "Review plan", tone: "brand" as const };
+}
+
+// A gate whose claim bd does not show (or could not read) still needs its
+// answer, so it gets a card of its own that opens the run.
+function gateCard(run: LiveRun, m: ProjectMeasurement, ctx: PanelContext): CardItem {
+  const id = run.beadId ?? `run ${run.runId.slice(0, 4)}`;
+  const bead = run.beadId ? backlogIndex(m).get(run.beadId) : undefined;
+  const plan = gatePlan(run);
+  const card = beadCard(
+    { id, title: bead?.title ?? id, status: "in_progress" },
+    {
+      meta: [run.beadId ? runMeta(run) : undefined],
+      signal: GATE_PILL,
+      ...(plan ? { evidence: plan } : {}),
+      actions: [reviewPlanAction(run)],
+      selectedId: ctx.selectedId,
+    },
+  );
+  return {
+    ...card,
+    action: { type: "open-run", payload: { runId: run.runId } },
+    edge: "caution",
+    bar: gateBar(run),
+  };
+}
+
 // ── In flight: every claim, how far along it is, and the newest evidence.
 // bd attributes every claim to a human even when a bead-work run holds it,
-// so the title counts runs whenever a run note exists.
+// so the title counts runs whenever a run note exists. A run paused at its
+// plan gate does nothing until a person answers, so its card leads the panel
+// and carries the call.
 export function composeWip(m: ProjectMeasurement, ctx: PanelContext): Board {
-  if (!m.inProgress.ok) return failedBoard("in-flight work", m.inProgress.error, m);
-  const now = new Date(m.asOf);
   const runs = ctx.runs ?? [];
-  const runOf = (id: string) => runs.find((r) => r.beadId === id);
-  const picking = runs.filter((r) => !r.beadId).map(pickingRow);
+  const gated = gatesOf(runs);
+  const claimed = new Set(m.inProgress.ok ? m.inProgress.data.map((i) => i.id) : []);
+  const strays = gated
+    .filter((r) => !r.beadId || !claimed.has(r.beadId))
+    .map((r) => gateCard(r, m, ctx));
+  const strayCards: BoardSection[] = strays.length
+    ? [{ kind: "cards", title: `${plural(strays.length, "run")} waiting on you`, items: strays }]
+    : [];
+  if (!m.inProgress.ok) {
+    return board([...strayCards, ...failedBoard("in-flight work", m.inProgress.error, m).sections]);
+  }
+  const now = new Date(m.asOf);
+  const runOf = (id: string) =>
+    gated.find((r) => r.beadId === id) ?? runs.find((r) => r.beadId === id);
+  const gateRank = (id: string) => gated.findIndex((r) => r.beadId === id);
+  const picking = runs.filter((r) => !r.beadId && !gated.includes(r)).map(pickingRow);
   if (m.inProgress.data.length === 0) {
-    return board(
-      picking.length
-        ? [{ kind: "rows", items: picking }]
-        : [quiet("Nothing is claimed. Next up has the pick.")],
-    );
+    return board([
+      ...strayCards,
+      ...(picking.length
+        ? [{ kind: "rows" as const, items: picking }]
+        : strays.length
+          ? []
+          : [quiet("Nothing is claimed. Next up has the pick.")]),
+    ]);
   }
   const floor = bdBelowFloor(m);
   const blocked = m.blocked.ok ? m.blocked.data : [];
@@ -983,18 +1051,27 @@ export function composeWip(m: ProjectMeasurement, ctx: PanelContext): Board {
     (i) => runOf(i.id) !== undefined || runInfoOf(m, i.id) !== undefined,
   ).length;
   const otherCount = m.inProgress.data.length - runCount;
+  const waiting = gated.length - strays.length;
   const title =
     runCount > 0 || picking.length > 0
       ? [
           ...(runCount > 0 ? [plural(runCount, "bead-work run")] : []),
+          ...(waiting > 0 ? [`${waiting} waiting on you`] : []),
           ...(picking.length > 0 ? [`${picking.length} picking`] : []),
           ...(otherCount > 0 ? [plural(otherCount, "other claim")] : []),
         ].join(" · ")
       : people.sharedTitle;
-  const cards = [...m.inProgress.data].sort(byPriorityThenAge).map((i): CardItem => {
+  const byGateFirst = (a: BdIssue, b: BdIssue): number => {
+    const ga = gateRank(a.id);
+    const gb = gateRank(b.id);
+    if (ga !== gb) return ga < 0 ? 1 : gb < 0 ? -1 : ga - gb;
+    return byPriorityThenAge(a, b);
+  };
+  const cards = [...m.inProgress.data].sort(byGateFirst).map((i): CardItem => {
     const entry = m.runInfo.ok ? m.runInfo.data[i.id] : undefined;
     const info = entry?.ok ? entry.data : undefined;
     const run = runOf(i.id);
+    const gate = run && gated.includes(run) ? run : undefined;
     const pr = info?.prUrl ? livePR(m, i.id) : undefined;
     // Card-level degrade: this bead's reads failed, its siblings stay measured.
     const runError = floor
@@ -1009,11 +1086,13 @@ export function composeWip(m: ProjectMeasurement, ctx: PanelContext): Board {
     const prError = floor || ghHealth(m).failing ? undefined : prFailure(m, i.id);
     const person = shortPerson(personOf(i));
     const comment = latestCommentOf(m, i.id);
-    const evidence = comment
-      ? commentEvidence(comment, now)
-      : info?.note
-        ? { label: `run ${info.outcome ?? "note"}`, text: firstSentence(info.note) }
-        : undefined;
+    const evidence =
+      (gate && gatePlan(gate)) ??
+      (comment
+        ? commentEvidence(comment, now)
+        : info?.note
+          ? { label: `run ${info.outcome ?? "note"}`, text: firstSentence(info.note) }
+          : undefined);
     const releases = unlockLevels(i.id, blocked)[0] ?? [];
     const holds = holdsOf(i);
     const short = (id: string) => shortId(id, parentIdOf(i.id));
@@ -1031,12 +1110,14 @@ export function composeWip(m: ProjectMeasurement, ctx: PanelContext): Board {
             : undefined,
         run ? runMeta(run) : flightStage(i, info, pr, now),
       ],
-      signal: signalOf(i, {
-        commonPriority: common,
-        mergePending: Boolean(mergedPR(m.prInfo, i.id)),
-        waitingOn: holds,
-        staleDays: staleDaysOf(m, i, now),
-      }),
+      signal: gate
+        ? GATE_PILL
+        : signalOf(i, {
+            commonPriority: common,
+            mergePending: Boolean(mergedPR(m.prInfo, i.id)),
+            waitingOn: holds,
+            staleDays: staleDaysOf(m, i, now),
+          }),
       ...(evidence ? { evidence } : {}),
       fields: [
         // A no-break space: the host lets a field label wrap at phone width.
@@ -1063,9 +1144,10 @@ export function composeWip(m: ProjectMeasurement, ctx: PanelContext): Board {
           ? [{ value: `UNMEASURED run: ${run.error}`.slice(0, 120), tone: "error" as const }]
           : []),
       ],
-      ...(run ? { actions: [openRunAction(run)] } : {}),
+      ...(run ? { actions: [gate ? reviewPlanAction(gate) : openRunAction(run)] } : {}),
       selectedId: ctx.selectedId,
     });
+    if (gate) return { ...card, edge: "caution", bar: gateBar(gate) };
     // A live run draws its own meter only from a good read; otherwise the
     // meter reads the run note, so an unread note draws no meter.
     if (run && !run.error) return { ...card, bar: runBar(run) };
@@ -1075,6 +1157,7 @@ export function composeWip(m: ProjectMeasurement, ctx: PanelContext): Board {
     ...(floor
       ? [{ kind: "rows" as const, items: [alarmRow("run notes and PR state", floor, m)] }]
       : []),
+    ...strayCards,
     ...(picking.length ? [{ kind: "rows" as const, items: picking }] : []),
     { kind: "cards", ...(title ? { title } : {}), items: cards },
   ]);
@@ -1161,42 +1244,6 @@ function livePR(m: ProjectMeasurement, id: string): PrInfo | undefined {
 // housekeeping (reconciles, stale claims, closeouts) rides the header line,
 // and an empty list hides the panel.
 
-// A run paused at its plan gate does nothing until a person answers, so its
-// card leads Your calls whatever its bead holds, and opens the run directly.
-function gateCard(run: LiveRun, m: ProjectMeasurement, ctx: PanelContext): CardItem {
-  const id = run.beadId ?? `run ${run.runId.slice(0, 4)}`;
-  const bead = run.beadId ? backlogIndex(m).get(run.beadId) : undefined;
-  const waiting = ago(run.gate?.since, new Date(run.readAt));
-  const plan = [
-    run.gate?.tasks ? plural(run.gate.tasks, "task") : undefined,
-    run.gate?.summary ? firstSentence(run.gate.summary, 160) : undefined,
-  ].filter((x): x is string => Boolean(x));
-  const card = beadCard(
-    { id, title: `Approve plan: ${bead?.title ?? id}`, status: "in_progress" },
-    {
-      meta: [run.beadId ? `run ${run.runId.slice(0, 4)}` : undefined, "plan gate"],
-      signal: { label: "run waiting", tone: "caution" },
-      ...(plan.length ? { evidence: { label: "plan", text: plan.join(" · ") } } : {}),
-      actions: [{ ...openRunAction(run), label: "Review plan", tone: "brand" as const }],
-      selectedId: ctx.selectedId,
-    },
-  );
-  return {
-    ...card,
-    action: { type: "open-run", payload: { runId: run.runId } },
-    bar: {
-      ...runBar(run),
-      label: waiting && waiting !== "just now" ? `waiting on you · ${waiting}` : "waiting on you",
-    },
-  };
-}
-
-function gatesOf(runs: readonly LiveRun[] | undefined): LiveRun[] {
-  return (runs ?? [])
-    .filter((r) => r.status === "paused" && r.gate && !r.error)
-    .sort((a, b) => (a.gate?.since ?? a.startedAt).localeCompare(b.gate?.since ?? b.startedAt));
-}
-
 // The Overview's one line for every open plan gate.
 function gateLine(runs: readonly LiveRun[]): RowItem[] {
   const gates = gatesOf(runs);
@@ -1207,7 +1254,7 @@ function gateLine(runs: readonly LiveRun[]): RowItem[] {
       {
         glyph: "caution",
         chip: { label: "waiting on you", tone: "caution" },
-        text: `${gates.length} beads-work runs wait on your approval. Your calls lists them, oldest first.`,
+        text: `${gates.length} beads-work runs wait on your approval. In flight lists them, oldest first.`,
       },
     ];
   }
@@ -1224,19 +1271,9 @@ function gateLine(runs: readonly LiveRun[]): RowItem[] {
 }
 
 export function composeYourCalls(m: ProjectMeasurement, ctx: PanelContext): Board {
-  // A gate needs no bd read, so it stays offered when the backlog failed.
-  const gated = gatesOf(ctx.runs);
-  const gates = gated.map((r) => gateCard(r, m, ctx));
-  if (!m.backlog.ok) {
-    const failed = failedBoard("calls waiting on you", m.backlog.error, m);
-    return gates.length
-      ? board([
-          { kind: "cards", title: `${plural(gates.length, "run")} waiting`, items: gates },
-          ...failed.sections,
-        ])
-      : failed;
-  }
-  const gatedIds = new Set(gated.map((r) => r.beadId));
+  if (!m.backlog.ok) return failedBoard("calls waiting on you", m.backlog.error, m);
+  // In flight carries a gated bead's call, so it never shows here twice.
+  const gatedIds = new Set(gatesOf(ctx.runs).map((r) => r.beadId));
   const blocked = m.blocked.ok ? m.blocked.data : [];
   const blockers = new Map<string, string[]>(blocked.map((b) => [b.id, b.blocked_by ?? []]));
   const calls = m.backlog.data
@@ -1249,7 +1286,7 @@ export function composeYourCalls(m: ProjectMeasurement, ctx: PanelContext): Boar
       return { i, levels, holds: levels.flat().length };
     })
     .sort((a, b) => b.holds - a.holds || byPriorityThenAge(a.i, b.i));
-  if (calls.length === 0 && gates.length === 0) return HIDDEN;
+  if (calls.length === 0) return HIDDEN;
   const shown = calls.slice(0, CALLS_CAP);
   const short = (id: string, from: string) => shortId(id, parentIdOf(from));
   const cards = shown.map(({ i, levels, holds }) => {
@@ -1291,11 +1328,10 @@ export function composeYourCalls(m: ProjectMeasurement, ctx: PanelContext): Boar
     {
       kind: "cards",
       title: [
-        ...(gates.length ? [`${plural(gates.length, "run")} waiting`] : []),
         ...(calls.length ? [plural(calls.length, "call")] : []),
         ...(total > 0 ? [`${plural(total, "bead")} wait on them`] : []),
       ].join(" · "),
-      items: [...gates, ...cards],
+      items: cards,
     },
     ...(calls.length > shown.length
       ? [
