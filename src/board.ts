@@ -1018,7 +1018,6 @@ export function composeWip(m: ProjectMeasurement, ctx: PanelContext): Board {
   const now = new Date(m.asOf);
   const runOf = (id: string) =>
     gated.find((r) => r.beadId === id) ?? runs.find((r) => r.beadId === id);
-  const gateRank = (id: string) => gated.findIndex((r) => r.beadId === id);
   const picking = runs.filter((r) => !r.beadId && !gated.includes(r)).map(pickingRow);
   if (m.inProgress.data.length === 0) {
     return board([
@@ -1051,9 +1050,9 @@ export function composeWip(m: ProjectMeasurement, ctx: PanelContext): Board {
     (i) => runOf(i.id) !== undefined || runInfoOf(m, i.id) !== undefined,
   ).length;
   const otherCount = m.inProgress.data.length - runCount;
-  const waiting = gated.length - strays.length;
+  const waiting = gated.length;
   const title =
-    runCount > 0 || picking.length > 0
+    runCount > 0 || picking.length > 0 || waiting > 0
       ? [
           ...(runCount > 0 ? [plural(runCount, "bead-work run")] : []),
           ...(waiting > 0 ? [`${waiting} waiting on you`] : []),
@@ -1061,13 +1060,8 @@ export function composeWip(m: ProjectMeasurement, ctx: PanelContext): Board {
           ...(otherCount > 0 ? [plural(otherCount, "other claim")] : []),
         ].join(" · ")
       : people.sharedTitle;
-  const byGateFirst = (a: BdIssue, b: BdIssue): number => {
-    const ga = gateRank(a.id);
-    const gb = gateRank(b.id);
-    if (ga !== gb) return ga < 0 ? 1 : gb < 0 ? -1 : ga - gb;
-    return byPriorityThenAge(a, b);
-  };
-  const cards = [...m.inProgress.data].sort(byGateFirst).map((i): CardItem => {
+  const ordered = [...m.inProgress.data].sort(byPriorityThenAge);
+  const cards = ordered.map((i): CardItem => {
     const entry = m.runInfo.ok ? m.runInfo.data[i.id] : undefined;
     const info = entry?.ok ? entry.data : undefined;
     const run = runOf(i.id);
@@ -1153,13 +1147,24 @@ export function composeWip(m: ProjectMeasurement, ctx: PanelContext): Board {
     if (run && !run.error) return { ...card, bar: runBar(run) };
     return entry?.ok ? { ...card, bar: stageBar(info, pr) } : card;
   });
+  const cardOf = new Map(ordered.flatMap((i, k) => (cards[k] ? [[i.id, cards[k]] as const] : [])));
+  const shown = new Set<string>();
+  const gateCards = gated.flatMap((r) => {
+    if (!r.beadId || !claimed.has(r.beadId)) return [gateCard(r, m, ctx)];
+    const card = shown.has(r.beadId) ? undefined : cardOf.get(r.beadId);
+    shown.add(r.beadId);
+    return card ? [card] : [];
+  });
+  const rest = ordered.flatMap((i) => {
+    const card = shown.has(i.id) ? undefined : cardOf.get(i.id);
+    return card ? [card] : [];
+  });
   return board([
     ...(floor
       ? [{ kind: "rows" as const, items: [alarmRow("run notes and PR state", floor, m)] }]
       : []),
-    ...strayCards,
     ...(picking.length ? [{ kind: "rows" as const, items: picking }] : []),
-    { kind: "cards", ...(title ? { title } : {}), items: cards },
+    { kind: "cards", ...(title ? { title } : {}), items: [...gateCards, ...rest] },
   ]);
 }
 

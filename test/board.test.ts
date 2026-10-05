@@ -958,6 +958,28 @@ describe("plan gates", () => {
     expect(JSON.stringify(composeWip(m, { runs: [gate] }))).not.toContain("Nothing is claimed");
   });
 
+  test("claimed and unclaimed gates share one oldest-first order", () => {
+    const m = withBead();
+    setWip(m, [
+      { id: "tl-0", title: "Plain claim", status: "in_progress", priority: 0 },
+      { id: "tl-a", title: "Solution skeleton", status: "in_progress", priority: 2 },
+    ]);
+    const stray: LiveRun = {
+      ...gate,
+      runId: "e5f6a7b8-0000",
+      beadId: "tl-x",
+      gate: { since: "2026-08-09T11:58:00Z" },
+    };
+    const view = composeWip(m, { runs: [stray, gate] });
+    expect(() => validBoard(view)).not.toThrow();
+    const cards = view.sections.filter((x) => x.kind === "cards");
+    expect(cards).toHaveLength(1);
+    const only = cards[0];
+    if (only?.kind !== "cards") throw new Error("no cards");
+    expect(only.title).toBe("1 bead-work run · 2 waiting on you · 1 other claim");
+    expect(only.items.map((c) => c.title)).toEqual(["Solution skeleton", "tl-x", "Plain claim"]);
+  });
+
   test("a gated bead that is also a person's call shows only in In flight", () => {
     const m = withBead();
     if (m.backlog.ok) {
