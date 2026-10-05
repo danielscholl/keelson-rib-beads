@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0](https://github.com/danielscholl/keelson-rib-beads/compare/v0.11.0...v0.12.0) (2026-10-05)
+
+
+### Added
+
+* **beads:** fold the plan gate into In flight and drop the duplicate Now cards ([#61](https://github.com/danielscholl/keelson-rib-beads/issues/61)) ([f0e0876](https://github.com/danielscholl/keelson-rib-beads/commit/f0e087652897d6dbb2988759757868471e539c3a))
+
 ## [0.11.0](https://github.com/danielscholl/keelson-rib-beads/compare/v0.10.2...v0.11.0) (2026-10-05)
 
 
