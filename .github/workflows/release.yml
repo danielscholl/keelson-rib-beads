@@ -8,6 +8,11 @@ name: Release
 on:
   push:
     branches: [master]
+  # A release run that never gets a runner leaves the merged release untagged
+  # until the next push; once a workflow file changes after the release commit,
+  # GITHUB_TOKEN can no longer tag it. The daily run retries well inside that.
+  schedule:
+    - cron: "17 6 * * *"
   workflow_dispatch:
 
 permissions:
@@ -29,6 +34,8 @@ jobs:
         with:
           # A RELEASE_PLEASE_TOKEN PAT (optional) makes CI run on the release
           # PR; with the default GITHUB_TOKEN the PR gets no workflow runs.
+          # Give it Contents, Pull requests, Issues and Workflows write: only
+          # Workflows lets it tag a release commit older than a workflow change.
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
@@ -70,5 +77,5 @@ jobs:
             echo "attempt ${attempt}: ${tag} not visible yet; retrying in 5s"
             sleep 5
           done
-          echo "::error::.release-please-manifest.json is at ${version} but no ${tag} release exists — a release was silently dropped. Most likely a release PR merged without its 'autorelease: pending' label; re-label the merged release PR and re-run this workflow to recover it." >&2
+          echo "::error::.release-please-manifest.json is at ${version} but no ${tag} release exists — a release was silently dropped. If release-please failed with 'Resource not accessible by integration', the release commit predates a workflow-file change and GITHUB_TOKEN cannot tag it: set RELEASE_PLEASE_TOKEN, or create the release from an account with workflow access, then re-run this workflow. Otherwise the release PR merged without its 'autorelease: pending' label; re-label it and re-run." >&2
           exit 1
