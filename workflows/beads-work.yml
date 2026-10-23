@@ -46,6 +46,30 @@ nodes:
     timeout: 120000
     bash: |
       set -euo pipefail
+      # Worktree runs take no keelson project lock, and two runs building one
+      # repo push each other's suites past their timeouts. The oldest live run
+      # on a project keeps it; a status read that fails never blocks a run.
+      if [ -n "${KEELSON_RUN_ID:-}" ]; then
+        HOLDER=$(keelson --json workflow status --workflow beads-work 2>/dev/null | jq -r --arg me "$KEELSON_RUN_ID" '
+          (.data.runs // []) as $runs
+          | ($runs | map(select(.runId == $me)) | .[0]) as $self
+          | if $self == null then empty else
+              $runs
+              | map(select(.runId != $me
+                  and (.status == "running" or .status == "paused")
+                  and (if .projectId and $self.projectId
+                       then .projectId == $self.projectId
+                       else .workingDir == $self.workingDir end)
+                  and ([.startedAt, .runId] < [$self.startedAt, $self.runId])))
+              | sort_by(.startedAt) | .[0].runId // empty
+            end' 2>/dev/null || true)
+        if [ -n "$HOLDER" ]; then
+          jq -nc --arg run "$HOLDER" '
+            {status:"busy", holder:$run,
+             message:("another beads-work run (\($run)) is live on this project; nothing claimed")}'
+          exit 0
+        fi
+      fi
       # Keelson's bash channel exposes the free-form argument string as
       # $KEELSON_ARGUMENTS. The bare-ARGUMENTS marker is a PROMPT-body form only —
       # in a bash node it expands to nothing, silently ignoring an explicit bead id.
@@ -2712,7 +2736,7 @@ nodes:
       set -uo pipefail
       BEAD_FILE="$KEELSON_ARTIFACTS_DIR/.bead-id"
       if [ ! -f "$BEAD_FILE" ]; then
-        echo "BEADS_WRITEBACK: skipped — no bead was claimed (empty queue, open blockers, or claim failed)"
+        echo "BEADS_WRITEBACK: skipped — no bead was claimed (empty queue, open blockers, another run on the project, or claim failed)"
         exit 0
       fi
       BEAD=$(cat "$BEAD_FILE")
