@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.13.0](https://github.com/danielscholl/keelson-rib-beads/compare/v0.12.0...v0.13.0) (2026-10-23)
+
+
+### Added
+
+* **beads:** hold back a second beads-work run on one project ([#67](https://github.com/danielscholl/keelson-rib-beads/issues/67)) ([01d9d89](https://github.com/danielscholl/keelson-rib-beads/commit/01d9d89e8a7396990ec64c4544146be78a7fadeb))
+
+
+### Fixed
+
+* **beads:** end CI watches inside the node timeout ([#66](https://github.com/danielscholl/keelson-rib-beads/issues/66)) ([eae74b8](https://github.com/danielscholl/keelson-rib-beads/commit/eae74b8718bb713be2a546c2e7dff41b5b59ab1d))
+* **beads:** skip the gate rerun when nothing changed since it passed ([#65](https://github.com/danielscholl/keelson-rib-beads/issues/65)) ([e8b3165](https://github.com/danielscholl/keelson-rib-beads/commit/e8b3165e9bbef85f2c4b9169d5a288494179a8f5))
+
 ## [0.12.0](https://github.com/danielscholl/keelson-rib-beads/compare/v0.11.0...v0.12.0) (2026-10-05)
 
 
