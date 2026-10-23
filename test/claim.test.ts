@@ -72,7 +72,10 @@ function calls(): string[] {
   }
 }
 
-async function runClaim(bead: string): Promise<{ stdout: string; exitCode: number }> {
+async function runClaim(
+  bead: string,
+  env: Record<string, string> = {},
+): Promise<{ stdout: string; exitCode: number }> {
   const proc = Bun.spawn(["bash", "-c", await claimScript()], {
     cwd: sandbox,
     env: {
@@ -80,6 +83,7 @@ async function runClaim(bead: string): Promise<{ stdout: string; exitCode: numbe
       PATH: `${binDir}:${process.env.PATH ?? ""}`,
       KEELSON_ARTIFACTS_DIR: artifacts,
       KEELSON_INPUTS_bead: bead,
+      ...env,
     },
     stdout: "pipe",
     stderr: "pipe",
@@ -128,5 +132,90 @@ describe("beads-work claim node with an explicit bead id", () => {
     installFakeBd([{ id: "cos-abc", status: "open", dependency_type: "related" }]);
     const { stdout } = await runClaim("cos-hjf.2");
     expect(JSON.parse(stdout).status).toBe("claimed");
+  });
+});
+
+describe("beads-work claim node with another run on the project", () => {
+  type Run = {
+    runId: string;
+    status: string;
+    startedAt: string;
+    projectId?: string | null;
+    workingDir?: string;
+  };
+
+  const self: Run = {
+    runId: "run-self",
+    status: "running",
+    startedAt: "2026-01-02T10:05:00.000Z",
+    projectId: "proj-a",
+    workingDir: "/src/demo",
+  };
+
+  // `exitCode` lets a test make the status read fail the way a down server does.
+  function installFakeKeelson(runs: Run[], exitCode = 0): void {
+    const path = join(binDir, "keelson");
+    writeFileSync(
+      path,
+      `#!/bin/bash\necho '${JSON.stringify({ data: { runs: runs.map((r) => ({ workflowName: "beads-work", ...r })) } })}'\nexit ${exitCode}\n`,
+    );
+    chmodSync(path, 0o755);
+  }
+
+  const claimAsSelf = (bead = "cos-hjf.2") => runClaim(bead, { KEELSON_RUN_ID: self.runId });
+
+  test("an older live run on the same project keeps it and nothing is claimed", async () => {
+    installFakeBd([]);
+    installFakeKeelson([
+      self,
+      { ...self, runId: "run-older", status: "paused", startedAt: "2026-01-02T09:00:00.000Z" },
+    ]);
+    const { stdout, exitCode } = await claimAsSelf();
+    expect(exitCode).toBe(0);
+    const out = JSON.parse(stdout);
+    expect(out.status).toBe("busy");
+    expect(out.holder).toBe("run-older");
+    expect(calls()).toEqual([]);
+    expect(existsSync(join(artifacts, ".bead-id"))).toBe(false);
+  });
+
+  test("the older of two runs started together proceeds", async () => {
+    installFakeBd([]);
+    installFakeKeelson([
+      self,
+      { ...self, runId: "run-younger", startedAt: "2026-01-02T10:05:01.000Z" },
+    ]);
+    expect(JSON.parse((await claimAsSelf()).stdout).status).toBe("claimed");
+  });
+
+  test("finished runs and runs on other projects do not hold it", async () => {
+    installFakeBd([]);
+    installFakeKeelson([
+      self,
+      { ...self, runId: "run-done", status: "failed", startedAt: "2026-01-02T09:00:00.000Z" },
+      {
+        ...self,
+        runId: "run-elsewhere",
+        projectId: "proj-b",
+        workingDir: "/src/other",
+        startedAt: "2026-01-02T09:00:00.000Z",
+      },
+    ]);
+    expect(JSON.parse((await claimAsSelf()).stdout).status).toBe("claimed");
+  });
+
+  test("a run without a project matches on its working directory", async () => {
+    installFakeBd([]);
+    installFakeKeelson([
+      { ...self, projectId: null },
+      { ...self, runId: "run-older", projectId: null, startedAt: "2026-01-02T09:00:00.000Z" },
+    ]);
+    expect(JSON.parse((await claimAsSelf()).stdout).status).toBe("busy");
+  });
+
+  test("a failed status read lets the run claim", async () => {
+    installFakeBd([]);
+    installFakeKeelson([], 3);
+    expect(JSON.parse((await claimAsSelf()).stdout).status).toBe("claimed");
   });
 });

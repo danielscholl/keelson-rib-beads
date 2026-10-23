@@ -188,7 +188,9 @@ and one that does the work:
 - `beads-work` — takes one bead from the ready queue to a reviewed draft PR:
   claims it (or the bead id you pass, refused while any of its `blocks`
   dependencies is still open; with no id it skips decisions and beads
-  labelled `owner` or `human`), investigates or plans, pauses for approval,
+  labelled `owner` or `human`; while an older `beads-work` run on the same
+  project is still live, running or at its plan gate, it claims nothing and
+  names that run), investigates or plans, pauses for approval,
   implements in an isolated worktree, runs the project's own checks
   (discovered from its manifests), opens a draft PR, runs a three-lens review
   loop with an independent triage judge (the fix-and-verify pass is skipped
