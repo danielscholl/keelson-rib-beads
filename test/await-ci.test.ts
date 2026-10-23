@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -45,7 +53,10 @@ function callCount(): number {
   }
 }
 
-async function runNode(id = "await-ci"): Promise<{ stdout: string; exitCode: number }> {
+async function runNode(
+  id = "await-ci",
+  env: Record<string, string> = {},
+): Promise<{ stdout: string; exitCode: number }> {
   const proc = Bun.spawn(["bash", "-c", await nodeScript(id)], {
     cwd: sandbox,
     env: {
@@ -53,6 +64,7 @@ async function runNode(id = "await-ci"): Promise<{ stdout: string; exitCode: num
       PATH: `${binDir}:${process.env.PATH ?? ""}`,
       KEELSON_ARTIFACTS_DIR: artifacts,
       KEELSON_CI_RECHECK_INTERVAL: "0",
+      ...env,
     },
     stdout: "pipe",
     stderr: "pipe",
@@ -193,5 +205,52 @@ esac`);
     expect(stdout).toContain("never reached the force-pushed");
     expect(finalStatus()).toBe("UNKNOWN");
     expect(forgeCalls("--required --watch")).toBe(0);
+  });
+});
+
+describe("a required-check watch that outlives its budget", () => {
+  // The watch records its pid and then never returns, like a pipeline
+  // slower than the node timeout.
+  function installHangingForge(): string {
+    const pidFile = join(sandbox, "watch.pid");
+    installFakeForge(`
+case "$*" in
+  *"--required --watch"*) echo $$ > "${pidFile}"; sleep 30 ;;
+  "pr checks 6 --json state"*) echo 2 ;;
+  "pr checks 6 --json name,bucket,state"*) echo '[{"name":"test:unit","bucket":"pending","state":"RUNNING"}]' ;;
+  "pr required-checks"*) echo "test:unit" ;;
+  "pr view 6 --json body"*) echo "pending CI" ;;
+  "pr ready"*) echo ready >> "${join(sandbox, "ready")}" ;;
+esac`);
+    return pidFile;
+  }
+
+  function stillRunning(pidFile: string): boolean {
+    const pid = Number(readFileSync(pidFile, "utf-8").trim());
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  test("await-ci reports UNKNOWN and exits 0 instead of hitting the node timeout", async () => {
+    const pidFile = installHangingForge();
+    const { stdout, exitCode } = await runNode("await-ci", { KEELSON_CI_WATCH_BUDGET: "2" });
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("CI_STATUS: UNKNOWN — required checks still running");
+    expect(stdout).not.toContain("CI failed on first pass");
+    expect(stillRunning(pidFile)).toBe(false);
+  });
+
+  test("finalize-pr leaves a draft with CI unknown", async () => {
+    const pidFile = installHangingForge();
+    const { stdout, exitCode } = await runNode("finalize-pr", { KEELSON_CI_WATCH_BUDGET: "2" });
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("PR_STATE: DRAFT — required checks still running");
+    expect(readFileSync(join(artifacts, ".ci-final-status"), "utf-8").trim()).toBe("UNKNOWN");
+    expect(existsSync(join(sandbox, "ready"))).toBe(false);
+    expect(stillRunning(pidFile)).toBe(false);
   });
 });

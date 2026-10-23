@@ -1972,14 +1972,47 @@ nodes:
         exit 0
       fi
 
+      # Bounded inside the node timeout: a timed-out node fails the run, while
+      # a watch cut short leaves CI UNKNOWN and lets finalize-pr watch again.
+      WATCH_BUDGET="${KEELSON_CI_WATCH_BUDGET:-1380}"
+      kill_tree() {
+        local child
+        for child in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$child"; done
+        kill "$1" 2>/dev/null || true
+      }
+      watch_required() {
+        local remaining=$((WATCH_BUDGET - SECONDS)) pid dog rc
+        rm -f "$1.timeout"
+        [ "$remaining" -le 0 ] && return 124
+        forge pr checks "$PR_NUM" --required --watch --interval 20 > "$1" 2>&1 &
+        pid=$!
+        ( sleep "$remaining"; touch "$1.timeout"; kill_tree "$pid" ) &
+        dog=$!
+        wait "$pid" 2>/dev/null
+        rc=$?
+        kill_tree "$dog"
+        wait "$dog" 2>/dev/null
+        [ -f "$1.timeout" ] && return 124
+        return "$rc"
+      }
+      watch_ran_out() {
+        tail -n 20 "$1"
+        log_advisory_checks
+        echo "CI_STATUS: UNKNOWN — required checks still running after $((SECONDS / 60)) min; finalize-pr watches again"
+        exit 0
+      }
+
       echo "Waiting on required checks:"
       printf '%s\n' "$REQUIRED"
-      if forge pr checks "$PR_NUM" --required --watch --interval 20 > "$KEELSON_ARTIFACTS_DIR/.ci-1.txt" 2>&1; then
+      watch_required "$KEELSON_ARTIFACTS_DIR/.ci-1.txt"
+      WATCH_RC=$?
+      if [ "$WATCH_RC" -eq 0 ]; then
         cat "$KEELSON_ARTIFACTS_DIR/.ci-1.txt"
         log_advisory_checks
         echo "CI_STATUS: PASS"
         exit 0
       fi
+      [ "$WATCH_RC" -eq 124 ] && watch_ran_out "$KEELSON_ARTIFACTS_DIR/.ci-1.txt"
       echo "=== CI failed on first pass ==="
       cat "$KEELSON_ARTIFACTS_DIR/.ci-1.txt"
       echo "Rerunning failed jobs once to rule out flakes ..."
@@ -1989,12 +2022,15 @@ nodes:
         -q ".[] | select(.headSha==\"$HEAD_SHA\" and .conclusion==\"failure\") | .databaseId" \
         | while read -r RID; do [ -n "$RID" ] && forge run rerun "$RID" --failed || true; done
       sleep 20
-      if forge pr checks "$PR_NUM" --required --watch --interval 20 > "$KEELSON_ARTIFACTS_DIR/.ci-2.txt" 2>&1; then
+      watch_required "$KEELSON_ARTIFACTS_DIR/.ci-2.txt"
+      WATCH_RC=$?
+      if [ "$WATCH_RC" -eq 0 ]; then
         cat "$KEELSON_ARTIFACTS_DIR/.ci-2.txt"
         log_advisory_checks
         echo "CI_STATUS: PASS"
         exit 0
       fi
+      [ "$WATCH_RC" -eq 124 ] && watch_ran_out "$KEELSON_ARTIFACTS_DIR/.ci-2.txt"
       echo "=== CI still failing after one rerun ==="
       cat "$KEELSON_ARTIFACTS_DIR/.ci-2.txt"
       log_advisory_checks
@@ -2408,13 +2444,39 @@ nodes:
       printf '%s\n' "$REQUIRED"
       # A fresh head can still have no runs registered; gh's watch exits on
       # that at once, so it is re-polled rather than read as red.
+      # See await-ci: bounded inside the node timeout so slow CI leaves a draft.
+      WATCH_BUDGET="${KEELSON_CI_WATCH_BUDGET:-1380}"
+      kill_tree() {
+        local child
+        for child in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$child"; done
+        kill "$1" 2>/dev/null || true
+      }
+      watch_required() {
+        local remaining=$((WATCH_BUDGET - SECONDS)) pid dog rc
+        rm -f "$1.timeout"
+        [ "$remaining" -le 0 ] && return 124
+        forge pr checks "$PR_NUM" --required --watch --interval 20 > "$1" 2>&1 &
+        pid=$!
+        ( sleep "$remaining"; touch "$1.timeout"; kill_tree "$pid" ) &
+        dog=$!
+        wait "$pid" 2>/dev/null
+        rc=$?
+        kill_tree "$dog"
+        wait "$dog" 2>/dev/null
+        [ -f "$1.timeout" ] && return 124
+        return "$rc"
+      }
       WATCH_OK=0
+      WATCH_RC=1
       ATTEMPT=1
       while :; do
-        if forge pr checks "$PR_NUM" --required --watch --interval 20 > "$KEELSON_ARTIFACTS_DIR/.ci-final.txt" 2>&1; then
+        watch_required "$KEELSON_ARTIFACTS_DIR/.ci-final.txt"
+        WATCH_RC=$?
+        if [ "$WATCH_RC" -eq 0 ]; then
           WATCH_OK=1
           break
         fi
+        [ "$WATCH_RC" -eq 124 ] && break
         grep -qiE 'no (required )?checks reported' "$KEELSON_ARTIFACTS_DIR/.ci-final.txt" 2>/dev/null || break
         [ "$ATTEMPT" -ge "$CHECK_MAX_ATTEMPTS" ] && break
         ATTEMPT=$((ATTEMPT + 1))
@@ -2429,6 +2491,13 @@ nodes:
           echo "PR_STATE: DRAFT — required CI passed but 'forge pr ready' failed; left a draft"
         fi
         printf 'PASS\n' > "$KEELSON_ARTIFACTS_DIR/.ci-final-status"
+        exit 0
+      fi
+      if [ "$WATCH_RC" -eq 124 ]; then
+        tail -n 20 "$KEELSON_ARTIFACTS_DIR/.ci-final.txt"
+        log_advisory_checks
+        printf 'UNKNOWN\n' > "$KEELSON_ARTIFACTS_DIR/.ci-final-status"
+        echo "PR_STATE: DRAFT — required checks still running after $((SECONDS / 60)) min; left a draft"
         exit 0
       fi
       if grep -qiE 'no (required )?checks reported' "$KEELSON_ARTIFACTS_DIR/.ci-final.txt" 2>/dev/null; then

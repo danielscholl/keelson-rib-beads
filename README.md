@@ -196,7 +196,9 @@ and one that does the work:
   back to the bead as a `bead-work run:` note, ending `(run <id>)`, that
   the board reads. A recheck of the project's checks on a tree unchanged
   since they last passed (same commit, working tree and `verify.sh`) reuses
-  that pass rather than running the suite again. The approver's
+  that pass rather than running the suite again. Each CI watch ends inside
+  its node's timeout: a pipeline still running then leaves the PR a draft
+  with CI unknown, never a failed run. The approver's
   reply at the plan gate lands on the bead too, as a `bead-work plan:` note,
   so the decision record shows what was approved and with what changes.
   Two deterministic guards run around the agent nodes: attribution trailers
