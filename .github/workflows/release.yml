@@ -48,6 +48,8 @@ jobs:
   verify-release:
     name: Verify release exists for manifest version
     needs: release-please
+    # Also runs when release-please fails: a release it can't tag is what this reports.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
