@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.1](https://github.com/danielscholl/keelson-rib-beads/compare/v0.13.0...v0.13.1) (2026-10-26)
+
+
+### Fixed
+
+* **beads:** set per-node sandbox rules in beads-work workflow ([#71](https://github.com/danielscholl/keelson-rib-beads/issues/71)) ([9ca1539](https://github.com/danielscholl/keelson-rib-beads/commit/9ca1539e87f5fa46e66cb1e38303f4af80e7ff21))
+
 ## [0.13.0](https://github.com/danielscholl/keelson-rib-beads/compare/v0.12.0...v0.13.0) (2026-10-23)
 
 
