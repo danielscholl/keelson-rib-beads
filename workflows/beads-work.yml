@@ -43,6 +43,8 @@ nodes:
   # ─────────────────────────────────────────────────────────────────────────
 
   - id: claim
+    # the keelson CLI needs server.json and loopback, and bd's tracker sits in the main checkout
+    sandbox: { enabled: false }
     timeout: 120000
     bash: |
       set -euo pipefail
@@ -127,6 +129,8 @@ nodes:
          labels:(.labels // []), external_ref:(.external_ref // null)}'
 
   - id: context
+    # bd's tracker sits in the main checkout, and gh needs the keychain-held token and the network
+    sandbox: { enabled: false }
     depends_on: [claim]
     when: "$claim.output.status == 'claimed'"
     timeout: 120000
@@ -154,6 +158,8 @@ nodes:
           depends_on: ($bead.dependencies // [])}'
 
   - id: detect-base
+    # gh and git fetch need the keychain-held token and the network; the sandbox clears both
+    sandbox: { enabled: false }
     depends_on: [claim]
     when: "$claim.output.status == 'claimed'"
     bash: |
@@ -750,6 +756,10 @@ nodes:
   # Write it to the bead so the decision survives the run's artifacts dir.
   # Bookkeeping never blocks implementation: a failed note warns and exits 0.
   - id: record-approval
+    # bd's tracker and its gate lock sit in the main checkout, outside the worktree
+    sandbox:
+      filesystem:
+        readwrite: ["$REPO_ROOT/.beads", "$REPO_ROOT/.beads.gate.lock"]
     depends_on: [approve-plan]
     timeout: 60000
     bash: |
@@ -769,6 +779,8 @@ nodes:
   # ─────────────────────────────────────────────────────────────────────────
 
   - id: implement
+    # runs the project's tests, and nested bun sees an empty env under the sandbox
+    sandbox: { enabled: false }
     depends_on: [approve-plan, detect-base, seed-verify]
     context: fresh
     model: deep
@@ -883,6 +895,8 @@ nodes:
   # ─────────────────────────────────────────────────────────────────────────
 
   - id: validate
+    # runs the project's tests, and nested bun sees an empty env under the sandbox
+    sandbox: { enabled: false }
     depends_on: [implement]
     timeout: 1200000
     bash: |
@@ -919,6 +933,8 @@ nodes:
       fi
 
   - id: fix-validation
+    # runs the project's tests, and nested bun sees an empty env under the sandbox
+    sandbox: { enabled: false }
     depends_on: [validate]
     context: fresh
     model: deep
@@ -951,6 +967,8 @@ nodes:
         create-pr later pushes HEAD: `git add <files>; git commit -m "<message>"`.
 
   - id: revalidate
+    # runs the project's tests, and nested bun sees an empty env under the sandbox
+    sandbox: { enabled: false }
     depends_on: [fix-validation]
     timeout: 1200000
     bash: |
@@ -1140,6 +1158,8 @@ nodes:
       echo "Details: $OUT"
 
   - id: create-pr
+    # gh and git push need the keychain-held token and the network; the sandbox clears both
+    sandbox: { enabled: false }
     depends_on: [dependency-audit]
     context: fresh
     model_by_provider:
@@ -1224,6 +1244,8 @@ nodes:
          `gh pr edit <num> --base "$(cat $ARTIFACTS_DIR/.default-branch)"`.
 
   - id: enforce-draft
+    # forge needs the keychain-held token and the network; the sandbox clears both
+    sandbox: { enabled: false }
     depends_on: [create-pr]
     bash: |
       set -uo pipefail
@@ -1634,6 +1656,8 @@ nodes:
       echo "${COUNT:-unknown}"
 
   - id: apply-fixes
+    # git push needs the network and keychain credentials
+    sandbox: { enabled: false }
     depends_on: [triage, must-fix-count]
     when: "$must-fix-count.output != '0'"
     context: fresh
@@ -1669,6 +1693,8 @@ nodes:
       - After committing, `git push`.
 
   - id: re-review
+    # git push needs the network and keychain credentials
+    sandbox: { enabled: false }
     depends_on: [apply-fixes]
     when: "$must-fix-count.output != '0'"
     context: fresh
@@ -1710,6 +1736,8 @@ nodes:
   # rule needs, a skipped pair is not a failure, and both halves of the pair
   # are joined directly because a failed apply-fixes only skips re-review.
   - id: review-loop
+    # git push needs the network and keychain credentials
+    sandbox: { enabled: false }
     depends_on: [triage, apply-fixes, re-review]
     trigger_rule: none_failed_min_one_success
     provider: copilot
@@ -1762,6 +1790,8 @@ nodes:
   # ─────────────────────────────────────────────────────────────────────────
 
   - id: post-fix-validate
+    # runs the project's tests, and nested bun sees an empty env under the sandbox
+    sandbox: { enabled: false }
     depends_on: [review-loop]
     timeout: 1200000
     bash: |
@@ -1868,6 +1898,8 @@ nodes:
       echo "Details: $OUT"
 
   - id: await-ci
+    # forge needs the keychain-held token and the network; the sandbox clears both
+    sandbox: { enabled: false }
     depends_on: [dependency-audit-final]
     timeout: 1500000
     bash: |
@@ -2062,6 +2094,8 @@ nodes:
       exit 0
 
   - id: triage-ci
+    # forge needs the keychain-held token and the network; the sandbox clears both
+    sandbox: { enabled: false }
     depends_on: [await-ci, brief-ready, criteria-count]
     context: fresh
     model: deep
@@ -2165,6 +2199,8 @@ nodes:
   # the fixer. A pass, an unknown (no CI to gate on), or an empty triage
   # skips the node; the final scrub below tolerates that skip.
   - id: fix-ci
+    # git push needs the network and keychain credentials; also runs the tests
+    sandbox: { enabled: false }
     depends_on: [triage-ci]
     when: "$triage-ci.output.ci_status == 'fail' || $triage-ci.output.ci_status == 'conflict'"
     context: fresh
@@ -2217,6 +2253,8 @@ nodes:
         and then `git push` — staging alone is dropped.
 
   - id: scrub-trailers-final
+    # git push needs the network and keychain credentials
+    sandbox: { enabled: false }
     depends_on: [triage-ci, fix-ci]
     trigger_rule: none_failed_min_one_success
     timeout: 120000
@@ -2298,6 +2336,8 @@ nodes:
       fi
 
   - id: finalize-pr
+    # forge needs the keychain-held token and the network; the sandbox clears both
+    sandbox: { enabled: false }
     depends_on: [scrub-trailers-final]
     timeout: 1500000
     bash: |
@@ -2539,6 +2579,8 @@ nodes:
       exit 0
 
   - id: request-review-bot
+    # gh needs the keychain-held token and the network; the sandbox clears both
+    sandbox: { enabled: false }
     depends_on: [finalize-pr]
     bash: |
       # Copilot review does not auto-trigger on most repos, so request it here
@@ -2729,6 +2771,10 @@ nodes:
   # otherwise a dead run would leave the issue in_progress forever and the
   # dependency-aware queue would deadlock behind it.
   - id: beads-writeback
+    # bd's tracker and its gate lock sit in the main checkout, outside the worktree
+    sandbox:
+      filesystem:
+        readwrite: ["$REPO_ROOT/.beads", "$REPO_ROOT/.beads.gate.lock"]
     depends_on: [ci-green-gate]
     always_run: true
     trigger_rule: all_done
