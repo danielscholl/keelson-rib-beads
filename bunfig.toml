@@ -3,3 +3,6 @@
 # installable through corporate vetting feeds that quarantine fresh publishes,
 # and shields the lockfile from just-published supply-chain attacks.
 minimumReleaseAge = 604800
+
+[test]
+preload = ["./test/setup.ts"]

@@ -46,69 +46,98 @@ export function esc(text: string): string {
     .replace(/'/g, "&#39;");
 }
 
-// Host palette values (keelson design tokens), dark first like the SPA; the
-// host stamps data-theme on the frame's root and pushes later toggles.
+// Keelson's palette, dark first like the SPA. Hosts stamp the operator's live
+// palette as --keelson-<token> and data-theme on the root; the hex values are
+// the fallback for an older host.
+const t = (token: string, fallback: string) => `var(--keelson-${token},${fallback})`;
 const STYLE = `
-:root{--bg:#161e3b;--card:#1f2a4d;--border:#2a3258;--fg:#d8def0;--fg-strong:#f0f3ff;--muted:#8993b2;
---accent:#9b8eff;--good:#6dd28d;--warn:#f5c352;--crit:#f08793;--info:#7cc0ff;--on-accent:#0d1429;
+:root{--card:${t("card", "#161e3b")};--card-2:${t("card-2", "#1f2a4d")};--border:${t("border", "#2a3258")};
+--fg:${t("fg", "#d8def0")};--fg-strong:${t("fg-strong", "#f0f3ff")};--muted:${t("muted", "#8993b2")};
+--accent:${t("accent", "#9b8eff")};--good:${t("green", "#6dd28d")};--warn:${t("yellow", "#f5c352")};
+--crit:${t("red", "#f08793")};--info:${t("cyan", "#7cc0ff")};
 --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,system-ui,sans-serif;
---mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;color-scheme:dark}
-:root[data-theme="light"]{--bg:#ffffff;--card:#f3f0fa;--border:#c8bfdc;--fg:#161b31;--fg-strong:#0b0f1e;--muted:#5d5876;
---accent:#6d4fe0;--good:#15834f;--warn:#b57a00;--crit:#d9385e;--info:#2e6fd8;--on-accent:#ffffff;color-scheme:light}
+--mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+--line:color-mix(in srgb,var(--border) 85%,transparent);--well:var(--card-2);--muted-2:color-mix(in srgb,var(--muted) 78%,var(--fg));
+--chip:color-mix(in srgb,var(--card-2) 38%,var(--card));color-scheme:dark}
+:root[data-theme="light"]{--card:${t("card", "#ffffff")};--card-2:${t("card-2", "#eeeaf7")};--border:${t("border", "#c8bfdc")};
+--fg:${t("fg", "#161b31")};--fg-strong:${t("fg-strong", "#0b0f1e")};--muted:${t("muted", "#5d5876")};
+--accent:${t("accent", "#6d4fe0")};--good:${t("green", "#15834f")};--warn:${t("yellow", "#b57a00")};
+--crit:${t("red", "#d9385e")};--info:${t("cyan", "#2e6fd8")};
+--chip:color-mix(in srgb,var(--card-2) 45%,var(--card));color-scheme:light}
 *{box-sizing:border-box}
-body{margin:0;padding:4px 2px 8px;background:var(--bg);color:var(--fg);font:13px/1.4 var(--sans)}
-.epic+.epic{margin-top:22px;padding-top:18px;border-top:1px solid var(--border)}
-.head{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px}
-.head button{font:600 15px/1.3 var(--sans);color:var(--fg-strong);background:none;border:0;padding:0;cursor:pointer;text-align:left}
-.meta{font:12px var(--mono);color:var(--muted)}
-.meter{display:flex;gap:2px;height:6px;border-radius:3px;overflow:hidden;background:var(--card);margin:8px 0 2px}
+body{margin:0;padding:10px 12px 14px;background:var(--card);color:var(--fg);font:13px/1.45 var(--sans);-webkit-font-smoothing:antialiased}
+.legend{display:flex;flex-wrap:wrap;align-items:center;gap:6px 16px;margin:0 0 16px;font-size:12px;color:var(--muted-2)}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.legend .hint{margin-left:auto}
+.epic+.epic{margin-top:26px;padding-top:22px;border-top:1px solid var(--line)}
+.head{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:4px 20px}
+.ttl{display:flex;align-items:baseline;gap:10px;min-width:0}
+.ttl button{font:600 15px/1.3 var(--sans);color:var(--fg-strong);background:none;border:0;padding:0;cursor:pointer;text-align:left}
+.ttl button:hover{color:var(--accent)}
+.eid{font:11.5px var(--mono);color:var(--muted-2)}
+.facts{display:flex;flex-wrap:wrap;align-items:center;gap:4px 14px;font-size:12.5px;color:var(--muted-2);font-variant-numeric:tabular-nums}
+.facts span{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.facts b{font-weight:600;color:var(--fg-strong)}
+.facts .flag{color:var(--warn);font-weight:600}
+.meter{display:flex;gap:2px;height:6px;border-radius:999px;overflow:hidden;background:var(--well);margin:10px 0 0}
 .meter i{display:block;height:100%}
-.m-done{background:var(--good)}.m-review{background:var(--accent);opacity:.6}.m-working{background:var(--info)}
-.m-ready{background:var(--accent)}.m-waiting{background:transparent}
-.done{display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin-top:10px;font-size:12px;color:var(--muted)}
-.done button{font:12px var(--mono);color:var(--fg);background:none;border:1px solid var(--border);border-radius:4px;padding:0 5px;cursor:pointer}
-.scroll{overflow-x:auto;margin-top:12px}
-.waves{position:relative;display:grid;grid-auto-flow:column;grid-auto-columns:minmax(190px,1fr);gap:8px 48px;align-items:start}
+.m-done{background:var(--good)}.m-review{background:color-mix(in srgb,var(--accent) 55%,var(--card))}.m-working{background:var(--info)}
+.m-ready{background:var(--accent)}.m-waiting{background:color-mix(in srgb,var(--muted) 75%,var(--well))}
+.donelist{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:10px;font-size:12px;color:var(--muted)}
+.donelist .lbl{display:inline-flex;align-items:center;gap:6px;margin-right:2px}
+.donelist button{font:11.5px var(--mono);color:var(--fg);background:var(--well);border:0;border-radius:999px;padding:1px 8px;cursor:pointer}
+.donelist button:hover{color:var(--accent)}
+.scroll{overflow-x:auto;margin-top:14px;padding:2px}
+.waves{position:relative;display:grid;grid-auto-flow:column;grid-auto-columns:minmax(210px,300px);gap:8px 56px;align-items:start;justify-content:start}
 .waves svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}
-.waves path{fill:none;stroke:var(--muted);stroke-width:1.1;opacity:.35}
-.waves path.hot{stroke:var(--accent);stroke-width:2;opacity:1}
-.waves.lit path:not(.hot){opacity:.07}
-.wave{display:flex;flex-direction:column;gap:8px;position:relative;z-index:1;min-width:0}
-.wave h3{margin:0 0 2px;font:600 11px var(--sans);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
-.wave h3 span{font-weight:400;letter-spacing:0;text-transform:none}
-.chip{display:block;width:100%;text-align:left;font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:7px 10px;cursor:pointer}
-.chip .top{display:flex;align-items:center;gap:6px;font:12px var(--mono);color:var(--muted)}
+.waves path{fill:none;stroke:var(--muted-2);stroke-width:1.5;opacity:.75;marker-end:url(#ah)}
+.waves path.hot{stroke:var(--accent);stroke-width:2;opacity:1;marker-end:url(#ah-hot)}
+.waves.lit path:not(.hot){opacity:.1}
+.waves marker path{stroke:none;opacity:1!important;marker-end:none}
+.wave{display:flex;flex-direction:column;gap:6px;position:relative;z-index:1;min-width:0}
+.wave h3{margin:0 0 2px;font:600 12px var(--sans);color:var(--fg)}
+.wave h3 span{font-weight:400;color:var(--muted-2)}
+.chip{display:block;width:100%;text-align:left;font:inherit;color:var(--fg);background:var(--chip);border:1px solid var(--line);border-radius:10px;padding:8px 11px 9px;cursor:pointer}
+.chip:hover{border-color:color-mix(in srgb,var(--accent) 45%,var(--line))}
+.chip .top{display:flex;align-items:center;gap:7px;font:11.5px var(--mono);color:var(--muted)}
 .chip .tags{margin-left:auto;display:flex;flex-wrap:wrap;justify-content:flex-end;gap:4px}
-.chip .t{display:block;margin-top:3px;line-height:1.3}
-.chip .w{display:block;margin-top:3px;font:11.5px var(--mono);color:var(--muted)}
+.chip .t{display:block;margin-top:4px;line-height:1.35;color:var(--fg-strong)}
+.chip .w{display:block;margin-top:4px;font-size:12px;color:var(--muted)}
 .chip .w.edge{display:none}
-.chip.working{border-color:var(--info)}.chip.review{border-color:var(--accent)}.chip.ready{border-color:var(--accent)}
-.chip.waiting .t,.chip.hold .t{color:var(--muted)}
-.chip.run{box-shadow:0 0 0 2px var(--info)}.chip.gate{box-shadow:0 0 0 2px var(--warn)}
-.chip.sel{box-shadow:0 0 0 2px var(--accent)}
-.waves.lit .chip:not(.on){opacity:.4}
+.chip.working{box-shadow:inset 3px 0 0 var(--info)}.chip.review{box-shadow:inset 3px 0 0 color-mix(in srgb,var(--accent) 60%,var(--card))}
+.chip.waiting,.chip.hold{background:transparent}
+:root:not([data-theme="light"]) .chip.waiting,:root:not([data-theme="light"]) .chip.hold{border-color:color-mix(in srgb,var(--muted) 45%,var(--line))}
+.chip.hold{border-style:dashed}
+.chip.run{border-color:color-mix(in srgb,var(--info) 70%,transparent)}
+.chip.gate{border-color:color-mix(in srgb,var(--warn) 80%,transparent);box-shadow:inset 3px 0 0 var(--warn)}
+.chip.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.chip.working.sel{box-shadow:inset 3px 0 0 var(--info),0 0 0 1px var(--accent)}
+.waves.lit .chip:not(.on){opacity:.35}
 button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-.dot{width:10px;height:10px;border-radius:50%;flex:none;display:inline-block}
+.dot{width:9px;height:9px;border-radius:50%;flex:none;display:inline-block}
+.dot.done{background:var(--good)}
 .dot.working{background:linear-gradient(90deg,var(--info) 50%,transparent 50%);border:1.5px solid var(--info)}
-.dot.review{background:var(--accent);opacity:.6}.dot.ready{background:var(--accent)}
+.dot.review{background:color-mix(in srgb,var(--accent) 55%,var(--card));border:1.5px solid var(--accent)}.dot.ready{background:var(--accent)}
 .dot.waiting{border:1.5px solid var(--muted)}.dot.hold{border:1.5px dashed var(--muted)}
-.tag{font:600 11px var(--sans);padding:1px 6px;border-radius:4px;white-space:nowrap;background:var(--card);color:var(--fg)}
-.tag.next{background:var(--accent);color:var(--on-accent)}
-.tag.you{background:var(--warn);color:var(--on-accent)}
-.tag.run{background:var(--info);color:var(--on-accent)}
-.tag.p{color:var(--warn)}.tag.p0{color:var(--crit)}
-.alarm{border:1px solid var(--crit);border-radius:8px;padding:8px 10px;margin-bottom:10px}
-.alarm b{color:var(--crit);font:600 11px var(--mono);margin-right:8px}
+.tag{--c:var(--muted);font:600 11px/1.5 var(--sans);padding:0 7px;border-radius:999px;white-space:nowrap;color:color-mix(in srgb,var(--c) 85%,var(--fg-strong));background:color-mix(in srgb,var(--c) 16%,transparent)}
+.tag.next{--c:var(--accent)}.tag.you{--c:var(--warn)}.tag.run{--c:var(--info)}
+.tag.p{--c:var(--warn)}.tag.p0{--c:var(--crit)}
+:root[data-theme="light"] .tag{color:color-mix(in srgb,var(--c) 88%,#000)}
+.alarm{border:1px solid color-mix(in srgb,var(--crit) 55%,var(--line));background:color-mix(in srgb,var(--crit) 7%,var(--card));border-radius:10px;padding:10px 12px;margin-bottom:12px}
+.alarm b{color:var(--crit);font:600 11px var(--mono);letter-spacing:.06em;margin-right:8px}
 .alarm pre{margin:6px 0 0;font:11.5px var(--mono);color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere}
-@media (max-width:720px){.waves{grid-auto-flow:row;grid-auto-columns:auto;min-width:0!important;gap:14px}
-.waves svg{display:none}.chip .w.edge{display:block}}
-@media (prefers-reduced-motion:no-preference){.chip{transition:opacity .12s}}
+@media (max-width:720px){.waves{grid-auto-flow:row;grid-auto-columns:auto;grid-template-columns:minmax(0,1fr);justify-content:stretch;min-width:0!important;gap:14px}
+.waves svg{display:none}.chip .w.edge{display:block}.legend .hint{display:none}}
+@media (prefers-reduced-motion:no-preference){.chip{transition:opacity .12s,border-color .12s}}
 `;
 
 // Draws one curve per blocking edge, lights a bead's chain on hover or focus,
 // and posts select-bead (the one verb the rib honours from a frame).
 const SCRIPT = `
 (function(){
+  var DEFS='<defs>'+[["ah","var(--muted-2)"],["ah-hot","var(--accent)"]].map(function(m){
+    return '<marker id="'+m[0]+'" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 1L9 5L0 9z" style="fill:'+m[1]+'"/></marker>';
+  }).join("")+'</defs>';
   var sel=null;
   document.querySelectorAll(".waves").forEach(function(map){
     var svg=map.querySelector("svg"),chips=Object.create(null),edges=[];
@@ -133,10 +162,14 @@ const SCRIPT = `
       return ys.reduce(function(b,y){return Math.abs(y-want)<Math.abs(b-want)?y:b;});
     }
     function draw(){
-      var r=map.getBoundingClientRect();svg.innerHTML="";edges=[];
-      Object.keys(deps).forEach(function(id){deps[id].forEach(function(d){
-        var a=chips[d].getBoundingClientRect(),z=chips[id].getBoundingClientRect();
-        var x=a.right-r.left,y=a.top+a.height/2-r.top,x2=z.left-r.left,y2=z.top+z.height/2-r.top;
+      var r=map.getBoundingClientRect();svg.innerHTML=DEFS;edges=[];
+      Object.keys(deps).forEach(function(id){
+        var z=chips[id].getBoundingClientRect(),n=deps[id].length;
+        // Edges into one chip land spread top to bottom, so a fan-in reads as separate lines.
+        deps[id].slice().sort(function(p,q){return chips[p].getBoundingClientRect().top-chips[q].getBoundingClientRect().top;}).forEach(function(d,j){
+        var a=chips[d].getBoundingClientRect();
+        var x=a.right-r.left,y=a.top+a.height/2-r.top,x2=z.left-r.left,y2=z.top+z.height*(j+1)/(n+1)-r.top;
+        if(Math.abs(y2-y)<4)y2=y;
         var path="M"+x+" "+y,ca=colOf[d],cb=colOf[id];
         for(var k=ca+1;k<cb;k++){
           var c=cols[k].getBoundingClientRect(),l=c.left-r.left,rt=c.right-r.left;
@@ -192,6 +225,17 @@ const SCRIPT = `
 })();
 `;
 
+const LEGEND = `<div class="legend" aria-hidden="true">${(
+  [
+    ["waiting", "Waiting"],
+    ["ready", "Ready"],
+    ["working", "In flight"],
+    ["done", "Done"],
+  ] as const
+)
+  .map(([lane, label]) => `<span><i class="dot ${lane}"></i>${label}</span>`)
+  .join("")}<span class="hint">Hover a bead to trace its chain; click to inspect it.</span></div>`;
+
 function alarm(what: string, error: string): string {
   return `<div class="alarm"><b>UNMEASURED</b>${esc(what)}<pre>${esc(error.slice(0, 1000))}</pre></div>`;
 }
@@ -241,16 +285,9 @@ function chip(
 function epicBlock(view: EpicView, runs: ReadonlyMap<string, LiveRun>): string {
   const { row, nodes, done, gate, counts } = view;
   const epicId = row.epic.id;
-  const meta = [
-    epicId,
-    `${row.closed_children} of ${row.total_children} done`,
-    ...(counts
-      ? [
-          counts.working + counts.review > 0 ? `${counts.working + counts.review} in flight` : "",
-          `${counts.ready} ready`,
-          `${counts.waiting} waiting`,
-        ]
-      : []),
+  const fact = (lane: EpicLane | "", n: number, label: string) =>
+    `<span>${lane ? `<i class="dot ${lane}"></i>` : ""}<b>${n}</b> ${esc(label)}</span>`;
+  const flags = [
     gate
       ? gate.all
         ? `gated on ${gate.blockerId}`
@@ -258,17 +295,31 @@ function epicBlock(view: EpicView, runs: ReadonlyMap<string, LiveRun>): string {
       : "",
     row.eligible_for_close ? "closeout review" : "",
   ].filter(Boolean);
+  // Waiting to done, the same left-to-right flow as the Overview strip.
+  const facts = [
+    ...(counts
+      ? [
+          counts.waiting > 0 ? fact("waiting", counts.waiting, "waiting") : "",
+          counts.ready > 0 ? fact("ready", counts.ready, "ready") : "",
+          counts.working + counts.review > 0
+            ? fact("working", counts.working + counts.review, "in flight")
+            : "",
+        ]
+      : []),
+    `<span>${row.closed_children > 0 ? '<i class="dot done"></i>' : ""}<b>${row.closed_children}</b> of ${row.total_children} done</span>`,
+    ...flags.map((f) => `<span class="flag">${esc(f)}</span>`),
+  ].join("");
   const meter =
     row.total_children > 0 && counts
       ? `<div class="meter" role="img" aria-label="${esc(
-          `${row.closed_children} done, ${counts.review} in review, ${counts.working} in progress, ${counts.ready} ready, ${counts.waiting} waiting`,
+          `${counts.waiting} waiting, ${counts.ready} ready, ${counts.working} in progress, ${counts.review} in review, ${row.closed_children} done`,
         )}">${(
           [
-            ["done", row.closed_children],
-            ["review", counts.review],
-            ["working", counts.working],
-            ["ready", counts.ready],
             ["waiting", counts.waiting],
+            ["ready", counts.ready],
+            ["working", counts.working],
+            ["review", counts.review],
+            ["done", row.closed_children],
           ] as const
         )
           .filter(([, n]) => n > 0)
@@ -276,7 +327,7 @@ function epicBlock(view: EpicView, runs: ReadonlyMap<string, LiveRun>): string {
           .join("")}</div>`
       : "";
   const doneLine = done.length
-    ? `<div class="done"><span>Done · ${done.length}</span>${done
+    ? `<div class="donelist"><span class="lbl"><i class="dot done"></i>Done · ${done.length}</span>${done
         .slice(0, DONE_LISTED)
         .map(
           (c) =>
@@ -296,7 +347,8 @@ function epicBlock(view: EpicView, runs: ReadonlyMap<string, LiveRun>): string {
   })).filter(({ inWave }) => inWave.length > 0);
   const columns = waves
     .map(({ w, inWave }) => {
-      const note = w === 0 ? " · unblocked" : "";
+      const held = inWave.every((n) => n.lane === "waiting" || n.lane === "hold");
+      const note = w === 0 ? " unblocked" : held ? " waiting" : "";
       return `<div class="wave"><h3>Wave ${w + 1} <span>· ${inWave.length}${note}</span></h3>${inWave
         .map((n) => chip(n, epicId, common, runs.get(n.member.id)))
         .join("")}</div>`;
@@ -304,11 +356,11 @@ function epicBlock(view: EpicView, runs: ReadonlyMap<string, LiveRun>): string {
     .join("");
   const shown = waves.length;
   const map = shown
-    ? `<div class="scroll"><div class="waves" style="min-width:${shown * 190 + (shown - 1) * 48}px"><svg aria-hidden="true"></svg>${columns}</div></div>`
+    ? `<div class="scroll"><div class="waves" style="min-width:${shown * 210 + (shown - 1) * 56}px"><svg aria-hidden="true"></svg>${columns}</div></div>`
     : "";
   return (
-    `<section class="epic"><div class="head"><button type="button" data-id="${esc(epicId)}">${esc(clampTitle(row.epic.title))}</button>` +
-    `<span class="meta">${esc(meta.join(" · "))}</span></div>${meter}${doneLine}${map}</section>`
+    `<section class="epic"><div class="head"><div class="ttl"><button type="button" data-id="${esc(epicId)}">${esc(clampTitle(row.epic.title))}</button>` +
+    `<span class="eid">${esc(epicId)}</span></div><div class="facts">${facts}</div></div>${meter}${doneLine}${map}</section>`
   );
 }
 
@@ -361,5 +413,5 @@ export function composeEpicMap(m: ProjectMeasurement, live: readonly LiveRun[] =
         ),
   ].join("");
   const runs = new Map(live.flatMap((r) => (r.beadId ? [[r.beadId, r] as const] : [])));
-  return `<style>${STYLE}</style>${alarms}${views.map((v) => epicBlock(v, runs)).join("")}<script>${SCRIPT}</script>`;
+  return `<style>${STYLE}</style>${alarms}${LEGEND}${views.map((v) => epicBlock(v, runs)).join("")}<script>${SCRIPT}</script>`;
 }

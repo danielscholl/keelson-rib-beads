@@ -56,15 +56,18 @@ function epicMeasurement(): ProjectMeasurement {
   };
 }
 
+const text = (html: string): string => html.replace(/<[^>]+>/g, "");
+
 const chipIds = (html: string): string[] =>
   [...html.matchAll(/class="chip [a-z ]+" data-id="([^"]+)"/g)].map((match) => match[1] ?? "");
 
 describe("epic wave map", () => {
   test("open children sit in wave columns; the epic id prints once and children print short", () => {
     const html = composeEpicMap(epicMeasurement());
-    expect(html).toContain("cx · 2 of 5 done · 1 in flight · 1 ready · 1 waiting");
-    expect(html).toContain("Wave 1 <span>· 2 · unblocked</span>");
-    expect(html).toContain("Wave 2 <span>· 1</span>");
+    expect(html).toContain('<span class="eid">cx</span>');
+    expect(text(html)).toContain("1 waiting1 ready1 in flight2 of 5 done");
+    expect(html).toContain("Wave 1 <span>· 2 unblocked</span>");
+    expect(html).toContain("Wave 2 <span>· 1 waiting</span>");
     expect(chipIds(html)).toEqual(["cx.3", "cx.4", "cx.5"]);
     // The edge the frame draws, and its text form for a stacked narrow frame.
     expect(html).toContain('data-id="cx.5" data-deps="cx.4"');
@@ -85,8 +88,8 @@ describe("epic wave map", () => {
     const html = composeEpicMap(m);
     expect(html).not.toContain("Wave 1 ");
     expect(html).toContain("Wave 2 <span>· 2</span>");
-    expect(html).toContain("Wave 3 <span>· 1</span>");
-    expect(html).toContain("min-width:428px");
+    expect(html).toContain("Wave 3 <span>· 1 waiting</span>");
+    expect(html).toContain("min-width:476px");
   });
 
   test("P1 tags drop when most of the epic is P1; P0 stays", () => {
@@ -147,7 +150,7 @@ describe("epic wave map", () => {
     noMembers.epicChildren = { ok: false, error: "bd show cx: exit 1" };
     const html = composeEpicMap(noMembers);
     expect(html).toContain("Epic membership could not be measured");
-    expect(html).toContain("cx · 2 of 5 done");
+    expect(text(html)).toContain("2 of 5 done");
     expect(chipIds(html)).toEqual([]);
   });
 
