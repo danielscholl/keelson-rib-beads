@@ -624,6 +624,23 @@ function beadCard(
   };
 }
 
+// The chain, hop by hop, so a leverage claim is auditable. Past a handful the
+// first hop stays verbatim and deeper levels compress.
+function chainText(levels: readonly { id: string }[][], short: (id: string) => string): string {
+  const CHAIN_ID_CAP = 8;
+  const total = levels.reduce((a, lvl) => a + lvl.length, 0);
+  if (total <= CHAIN_ID_CAP)
+    return levels.map((lvl) => lvl.map((b) => short(b.id)).join(", ")).join(" → ");
+  const first = levels[0] ?? [];
+  const firstShown = first.slice(0, CHAIN_ID_CAP);
+  const firstText =
+    firstShown.map((b) => short(b.id)).join(", ") +
+    (first.length > firstShown.length ? ` +${first.length - firstShown.length} more` : "");
+  const deeper = total - first.length;
+  const tail = deeper > 0 ? ` → … ${deeper} more across ${plural(levels.length - 1, "level")}` : "";
+  return `${firstText}${tail}`;
+}
+
 // The row form of a bead, for dense lists with no evidence line.
 function beadRow(
   i: { id: string; title: string; status: string },
@@ -795,7 +812,7 @@ export function composePulse(
         : []),
     ],
     {
-      status: { label: m.project.name, tone: floor || gh.failing ? "error" : "ok" },
+      status: { label: m.project.name, tone: floor || gh.failing ? "error" : "neutral" },
       chip: chip.join(" · "),
     },
   );
@@ -879,27 +896,8 @@ export function composeRecommend(m: ProjectMeasurement, ctx: PanelContext): Boar
       : "picked on priority · nothing waits on it";
   const mergedPick = mergedPR(m.prInfo, pick.id);
   const fields: NonNullable<CardItem["fields"]> = [];
-  // The chain, hop by hop, so the leverage claim is auditable. Past a
-  // handful the first hop stays verbatim and deeper levels compress.
   const short = (id: string) => shortId(id, parentIdOf(pick.id));
-  if (levels.length > 0) {
-    const CHAIN_ID_CAP = 8;
-    const total = levels.reduce((a, lvl) => a + lvl.length, 0);
-    if (total <= CHAIN_ID_CAP) {
-      const hops = levels.map((lvl) => lvl.map((b) => short(b.id)).join(", "));
-      fields.push({ label: "unblocks", value: hops.join(" → ") });
-    } else {
-      const first = levels[0] ?? [];
-      const firstShown = first.slice(0, CHAIN_ID_CAP);
-      const firstText =
-        firstShown.map((b) => short(b.id)).join(", ") +
-        (first.length > firstShown.length ? ` +${first.length - firstShown.length} more` : "");
-      const deeper = total - first.length;
-      const deeperLevels = levels.length - 1;
-      const tail = deeper > 0 ? ` → … ${deeper} more across ${plural(deeperLevels, "level")}` : "";
-      fields.push({ label: "unblocks", value: `${firstText}${tail}` });
-    }
-  }
+  if (levels.length > 0) fields.push({ label: "unblocks", value: chainText(levels, short) });
   return board([
     {
       kind: "cards",
@@ -1296,28 +1294,18 @@ export function composeYourCalls(m: ProjectMeasurement, ctx: PanelContext): Boar
   if (calls.length === 0) return HIDDEN;
   const shown = calls.slice(0, CALLS_CAP);
   const short = (id: string, from: string) => shortId(id, parentIdOf(from));
-  const cards = shown.map(({ i, levels, holds }) => {
+  const cards = shown.map(({ i, levels }) => {
     const waits = blockers.get(i.id) ?? [];
-    const first = levels[0] ?? [];
-    const deeper = holds - first.length;
     return beadCard(i, {
       meta: [
         i.issue_type === "decision" ? "decision" : "owner call",
         `P${i.priority}`,
         i.status === "in_progress" ? `on it: ${shortPerson(personOf(i)) ?? "claimed"}` : undefined,
       ],
-      signal: waits.length
-        ? { label: `waits on ${waits.length}`, tone: "caution" }
-        : holds > 0
-          ? { label: `holds ${holds}`, tone: "warn" }
-          : undefined,
-      evidence:
-        holds > 0
-          ? {
-              label: "unblocks",
-              text: `${first.map((b) => short(b.id, i.id)).join(", ")}${deeper > 0 ? ` → ${deeper} more behind them` : ""}`,
-            }
-          : { label: "unblocks", text: "nothing waits on it" },
+      ...(waits.length ? { signal: { label: `waits on ${waits.length}`, tone: "caution" } } : {}),
+      ...(levels.length
+        ? { fields: [{ label: "unblocks", value: chainText(levels, (id) => short(id, i.id)) }] }
+        : {}),
       selectedId: ctx.selectedId,
     });
   });
@@ -1633,8 +1621,7 @@ export function composeShipped(m: ProjectMeasurement, ctx: PanelContext = {}): B
     {
       label: "Shipped this week",
       value: thisWeek,
-      sub: `last week ${lastWeek}`,
-      ...(lastWeek > 0 ? { delta: delta(thisWeek, lastWeek) } : {}),
+      ...(lastWeek > 0 ? { sub: `last week ${lastWeek}`, delta: delta(thisWeek, lastWeek) } : {}),
     },
   ];
   if (m.backlog.ok) {
@@ -1654,8 +1641,9 @@ export function composeShipped(m: ProjectMeasurement, ctx: PanelContext = {}): B
     stats.push({
       label: "Created this week",
       value: createdThis,
-      sub: `last week ${createdLast}`,
-      ...(createdLast > 0 ? { delta: delta(createdThis, createdLast) } : {}),
+      ...(createdLast > 0
+        ? { sub: `last week ${createdLast}`, delta: delta(createdThis, createdLast) }
+        : {}),
     });
   } else {
     stats.push({ label: "Created this week", value: null, sub: "backlog unmeasured" });
@@ -1690,7 +1678,8 @@ export function composeShipped(m: ProjectMeasurement, ctx: PanelContext = {}): B
       items: beads.map((i) => {
         const pr = shippedPR(i);
         const at = !shared && i.closed_at ? localClock(i.closed_at) : undefined;
-        const row = beadRow(i, [pr && prLabel(pr), at], ctx);
+        // Every row here is done, so a status glyph would repeat on each one.
+        const { glyph: _done, ...row } = beadRow(i, [pr && prLabel(pr), at], ctx);
         return i.issue_type === "epic" ? { ...row, chip: { label: "epic" } } : row;
       }),
     });
@@ -1931,7 +1920,7 @@ export function composeInspect(
           {
             value: [
               i.id,
-              `${statusGlyph(i.status)} ${i.status.replace("_", " ")}`,
+              `${statusGlyph(i.status)} ${i.status === "open" ? (isBlocked || waitsOn.length ? "waiting" : "ready") : i.status.replace("_", " ")}`,
               `P${i.priority}`,
               shortPerson(personOf(i)) ?? "unassigned",
               i.issue_type,
@@ -1939,16 +1928,6 @@ export function composeInspect(
               .filter(Boolean)
               .join(" · "),
           },
-          ...(epicEdge
-            ? [
-                {
-                  label: "epic",
-                  value: epicEdge.title
-                    ? `${linkedId(epicEdge)} · ${epicEdge.title}`
-                    : linkedId(epicEdge),
-                },
-              ]
-            : []),
           ...(i.labels?.length ? [{ label: "labels", value: i.labels.join(", ") }] : []),
         ],
       },
@@ -2044,9 +2023,11 @@ export function composeInspect(
             : []
           : [claim(recommended.id, `Start ${recommended.id} instead`)]
         : []
-      : [claim(i.id, "Start this bead")];
+      : [claim(i.id, isHumanCall(i) ? "Take this call" : "Start this bead")];
     if (items.length) left.push({ kind: "actions", items });
   }
+  const epicLink = epicEdge ? linked([epicEdge])[0] : undefined;
+  if (epicLink) left.push({ kind: "rows", title: "Epic", items: [linkRow("◇", epicLink)] });
   if (waitsOn.length || blockedBy.length) {
     left.push({
       kind: "rows",

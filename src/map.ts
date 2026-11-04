@@ -82,7 +82,7 @@ body{margin:0;padding:10px 12px 14px;background:var(--card);color:var(--fg);font
 .meter{display:flex;gap:2px;height:6px;border-radius:999px;overflow:hidden;background:var(--well);margin:10px 0 0}
 .meter i{display:block;height:100%}
 .m-done{background:var(--good)}.m-review{background:color-mix(in srgb,var(--accent) 55%,var(--card))}.m-working{background:var(--info)}
-.m-ready{background:var(--accent)}.m-waiting{background:repeating-linear-gradient(135deg,color-mix(in srgb,var(--muted) 45%,transparent) 0 2px,transparent 2px 5px)}
+.m-ready{background:var(--accent)}.m-waiting{background:color-mix(in srgb,var(--muted) 40%,var(--well))}
 .donelist{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:10px;font-size:12px;color:var(--muted)}
 .donelist .lbl{display:inline-flex;align-items:center;gap:6px;margin-right:2px}
 .donelist button{font:11.5px var(--mono);color:var(--fg);background:var(--well);border:0;border-radius:999px;padding:1px 8px;cursor:pointer}
@@ -90,7 +90,7 @@ body{margin:0;padding:10px 12px 14px;background:var(--card);color:var(--fg);font
 .scroll{overflow-x:auto;margin-top:14px;padding:2px}
 .waves{position:relative;display:grid;grid-auto-flow:column;grid-auto-columns:minmax(210px,300px);gap:8px 56px;align-items:start;justify-content:start}
 .waves svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}
-.waves path{fill:none;stroke:var(--muted);stroke-width:1.25;opacity:.6;marker-end:url(#ah)}
+.waves path{fill:none;stroke:var(--muted);stroke-width:1.5;opacity:.75;marker-end:url(#ah)}
 .waves path.hot{stroke:var(--accent);stroke-width:2;opacity:1;marker-end:url(#ah-hot)}
 .waves.lit path:not(.hot){opacity:.1}
 .waves marker path{stroke:none;opacity:1!important;marker-end:none}
@@ -105,8 +105,8 @@ body{margin:0;padding:10px 12px 14px;background:var(--card);color:var(--fg);font
 .chip .w{display:block;margin-top:4px;font-size:12px;color:var(--muted)}
 .chip .w.edge{display:none}
 .chip.working{box-shadow:inset 3px 0 0 var(--info)}.chip.review{box-shadow:inset 3px 0 0 color-mix(in srgb,var(--accent) 60%,var(--card))}
-.chip.waiting,.chip.hold{background:transparent}
-.chip.waiting .t,.chip.hold .t{color:color-mix(in srgb,var(--fg) 80%,var(--card))}
+.chip.waiting,.chip.hold{background:transparent;border-color:color-mix(in srgb,var(--muted) 40%,var(--line))}
+.chip.waiting .t,.chip.hold .t{color:color-mix(in srgb,var(--fg) 92%,var(--card))}
 .chip.hold{border-style:dashed}
 .chip.run{border-color:color-mix(in srgb,var(--info) 70%,transparent)}
 .chip.gate{border-color:color-mix(in srgb,var(--warn) 80%,transparent);box-shadow:inset 3px 0 0 var(--warn)}
@@ -163,9 +163,12 @@ const SCRIPT = `
     }
     function draw(){
       var r=map.getBoundingClientRect();svg.innerHTML=DEFS;edges=[];
-      Object.keys(deps).forEach(function(id){deps[id].forEach(function(d){
-        var a=chips[d].getBoundingClientRect(),z=chips[id].getBoundingClientRect();
-        var x=a.right-r.left,y=a.top+a.height/2-r.top,x2=z.left-r.left,y2=z.top+z.height/2-r.top;
+      Object.keys(deps).forEach(function(id){
+        var z=chips[id].getBoundingClientRect(),n=deps[id].length;
+        // Edges into one chip land spread top to bottom, so a fan-in reads as separate lines.
+        deps[id].slice().sort(function(p,q){return chips[p].getBoundingClientRect().top-chips[q].getBoundingClientRect().top;}).forEach(function(d,j){
+        var a=chips[d].getBoundingClientRect(),gap=Math.min(7,z.height/(n+1));
+        var x=a.right-r.left,y=a.top+a.height/2-r.top,x2=z.left-r.left,y2=z.top+z.height/2-r.top+(j-(n-1)/2)*gap;
         var path="M"+x+" "+y,ca=colOf[d],cb=colOf[id];
         for(var k=ca+1;k<cb;k++){
           var c=cols[k].getBoundingClientRect(),l=c.left-r.left,rt=c.right-r.left;

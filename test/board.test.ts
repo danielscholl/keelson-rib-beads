@@ -304,7 +304,7 @@ describe("header", () => {
     if (strip?.kind !== "segments") throw new Error("no strip");
     expect(strip.title).toBeUndefined();
     expect(pulse.header?.chip).toMatch(/^bd 1\.2\.2 · measured \d\d:\d\d$/);
-    expect(pulse.header?.status?.tone).toBe("ok");
+    expect(pulse.header?.status?.tone).toBe("neutral");
   });
 
   test("the header renders without bd's summary", () => {
@@ -1115,12 +1115,9 @@ describe("Your calls", () => {
       "tl-o · owner call · P0",
       "tl-l · owner call · P2",
     ]);
-    expect(cards.items[0]?.pill).toEqual({ label: "holds 2", tone: "warn" });
-    expect(cards.items[0]?.reason).toEqual({
-      label: "unblocks",
-      text: "tl-x → 1 more behind them",
-    });
-    expect(cards.items[1]?.reason?.text).toBe("nothing waits on it");
+    expect(cards.items[0]?.pill).toBeUndefined();
+    expect(cards.items[0]?.fields?.[1]).toEqual({ label: "unblocks", value: "tl-x → tl-y" });
+    expect(cards.items[1]?.fields).toHaveLength(1);
     expect(cards.items[1]?.selected).toBe(true);
     expect(JSON.stringify(view)).not.toContain("claim-bead");
   });
@@ -1359,7 +1356,6 @@ describe("Shipped", () => {
     if (today?.kind !== "rows") throw new Error("no day group");
     expect(today.title).toBe("Today");
     expect(today.items[0]).toEqual({
-      glyph: "ok",
       text: "Done",
       trailing: "tl-g · demo#11 · 10:15",
       action: { type: "select-bead", payload: { id: "tl-g" } },
@@ -1471,7 +1467,7 @@ describe("inspector", () => {
     );
     expect(() => validBoard(view)).not.toThrow();
     const flat = JSON.stringify(view);
-    expect(flat).toContain('{"label":"epic","value":"cx · Cosmos v1"}');
+    expect(flat).toContain('"title":"Epic","items":[{"icon":"◇","text":"cx · Cosmos v1"');
     const waits = JSON.stringify(
       (view.sections[0]?.kind === "columns" ? view.sections[0].columns[0]?.sections : [])?.find(
         (s) => s.title === "Waits on",
@@ -1546,7 +1542,7 @@ describe("inspector", () => {
     const head = left?.sections[0];
     if (head?.kind !== "cards") throw new Error("no head card");
     expect(head.items[0]?.title).toBe("Detail view");
-    expect(head.items[0]?.fields?.[0]?.value).toBe("cx.4 · ○ open · P2 · unassigned");
+    expect(head.items[0]?.fields?.[0]?.value).toBe("cx.4 · ○ ready · P2 · unassigned");
     expect(head.items[0]?.fields?.[1]).toEqual({ label: "labels", value: "ui" });
   });
 
