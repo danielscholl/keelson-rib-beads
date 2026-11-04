@@ -458,7 +458,7 @@ describe("Next up", () => {
     expect(pick?.pill).toBeUndefined();
     expect(pick?.fields?.[0]?.value).toBe("tl-b · ready · unclaimed · P0");
     expect(pick?.reason?.text).toBe("3 downstream · releases 1 now");
-    expect(pick?.fields?.[1]).toEqual({ label: "unlocks", value: "tl-d → tl-h" });
+    expect(pick?.fields?.[1]).toEqual({ label: "unblocks", value: "tl-d → tl-h" });
     expect(pick?.footnote).toBe("runner-up: tl-c · Ready two");
     expect(pick?.actions?.map((a) => a.type)).toEqual(["select-bead", "claim-bead"]);
   });
@@ -606,14 +606,14 @@ describe("In flight with live runs", () => {
     expect(bar.segments[2]).toEqual({ label: "approval, now", n: 1, tone: "caution" });
   });
 
-  test("a failed status read falls back to the claim meter and says why on its card", () => {
+  test("a failed status read draws no run meter and says why on its card", () => {
     const m = fullMeasurement();
     setWip(m, [claim]);
     const cards = composeWip(m, { runs: [{ ...run, error: "server down" }] }).sections[0];
     if (cards?.kind !== "cards") throw new Error("no cards");
     const card = cards.items[0];
     expect(JSON.stringify(card)).toContain("UNMEASURED run: server down");
-    expect(card?.bar).toMatchObject({ label: "claimed" });
+    expect(card?.bar).toBeUndefined();
     const view = composeInspect(ok({ ...claim, dependencies: [] }), [], undefined, {
       run: { ...run, error: "server down" },
     });
@@ -1287,6 +1287,17 @@ describe("Backlog", () => {
       "tl-z · sam · on hold",
     ]);
     expect(rows[2]?.glyph).toBe("neutral");
+    expect(rows[0]?.glyph).toBe("error");
+  });
+
+  test("an owner every row shares prints on none of them", () => {
+    const m = fullMeasurement();
+    m.backlog = ok([
+      { id: "tl-p", title: "One", status: "open", priority: 2, owner: "sam@x.dev" },
+      { id: "tl-q", title: "Two", status: "open", priority: 3, owner: "sam@x.dev" },
+    ]);
+    const rows = composeBacklog(m, {}).sections.flatMap((s) => (s.kind === "rows" ? s.items : []));
+    expect(rows.map((r) => r.trailing)).toEqual(["tl-p", "tl-q"]);
   });
 
   test("unmeasured membership falls back to dotted ids rather than dropping beads", () => {
@@ -1350,7 +1361,7 @@ describe("Shipped", () => {
     expect(today.items[0]).toEqual({
       glyph: "ok",
       text: "Done",
-      trailing: "tl-g · demo#11 · 10:15Z",
+      trailing: "tl-g · demo#11 · 10:15",
       action: { type: "select-bead", payload: { id: "tl-g" } },
       selected: false,
     });
@@ -1358,7 +1369,20 @@ describe("Shipped", () => {
     const older = view.sections[2];
     if (older?.kind !== "rows") throw new Error("no older group");
     expect(older.title).toBe("Jul 30");
-    expect(older.items[0]?.trailing).toBe("tl-old · 10:00Z");
+    expect(older.items[0]?.trailing).toBe("tl-old · 10:00");
+  });
+
+  test("a batch closed in one minute says its time once, on the day", () => {
+    const m = fullMeasurement();
+    const at = "2026-08-09T10:00:00Z";
+    m.closedFortnight = ok([
+      { id: "tl-p", title: "P", status: "closed", priority: 2, closed_at: at },
+      { id: "tl-q", title: "Q", status: "closed", priority: 2, closed_at: at },
+    ]);
+    const day = composeShipped(m, {}).sections[1];
+    if (day?.kind !== "rows") throw new Error("no day group");
+    expect(day.title).toBe("Today · 10:00");
+    expect(day.items.map((r) => r.trailing)).toEqual(["tl-p", "tl-q"]);
   });
 
   test("a closed epic carries an epic chip", () => {
@@ -1499,7 +1523,7 @@ describe("inspector", () => {
       state: "MERGED",
       mergedAt: "2026-08-05T10:00:00Z",
     });
-    expect(rows.find((r) => r.icon === "↗")?.trailing).toBe("merged Aug 5 10:00Z");
+    expect(rows.find((r) => r.icon === "↗")?.trailing).toBe("merged Aug 5 10:00");
   });
 
   test("a startable bead offers the claim; a blocked one offers the pick instead", () => {
@@ -1542,7 +1566,7 @@ describe("inspector", () => {
     const flat = JSON.stringify(view);
     expect(flat).not.toContain("claim-bead");
     expect(flat).toContain("Children");
-    expect(flat).not.toContain("Unlocks when done");
+    expect(flat).not.toContain("Unblocks when done");
   });
 
   test("a merged open bead reconciles and never starts", () => {
@@ -1885,11 +1909,11 @@ describe("ids and stages said once", () => {
     if (card?.kind !== "cards") throw new Error("no pick");
     // The meta line keeps the id as bd prints it; only its siblings shorten.
     expect(card.items[0]?.fields?.[0]?.value).toContain("ep.5");
-    expect(card.items[0]?.fields?.find((f) => f.label === "unlocks")?.value).toBe(".6 → far-1");
+    expect(card.items[0]?.fields?.find((f) => f.label === "unblocks")?.value).toBe(".6 → far-1");
     expect(card.items[0]?.footnote).toBe("runner-up: .4 · Runner");
   });
 
-  test("a claim carries a three-stop stage meter and what closing it releases", () => {
+  test("a claim with a PR carries a three-stop stage meter; every claim says what it unblocks", () => {
     const pr = { url: "https://github.com/acme/demo/pull/7", state: "OPEN" as const };
     expect(stageBar(undefined, undefined)).toMatchObject({
       label: "claimed",
@@ -1916,8 +1940,8 @@ describe("ids and stages said once", () => {
     expect(() => validBoard(wip)).not.toThrow();
     const cards = wip.sections.find((s) => s.kind === "cards");
     if (cards?.kind !== "cards") throw new Error("no cards");
-    expect(cards.items[0]?.bar).toEqual(stageBar(undefined, undefined));
-    expect(cards.items[0]?.fields?.find((f) => f.label === "releases")?.value).toBe("tl-z");
+    expect(cards.items[0]?.bar).toBeUndefined();
+    expect(cards.items[0]?.fields?.find((f) => f.label === "unblocks")?.value).toBe("tl-z");
   });
 
   test("acceptance criteria list one row per criterion", () => {

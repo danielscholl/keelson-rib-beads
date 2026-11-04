@@ -6,6 +6,7 @@ import {
   byPriorityThenAge,
   measureProject,
   parseRunNote,
+  queueReadyCount,
   recentCloses,
   subtractInProgress,
   unionBlocked,
@@ -22,6 +23,12 @@ describe("measure helpers", () => {
     const status = [issue("b"), issue("c", { priority: 0 })];
     const ids = unionBlocked(dep, status).map((i) => i.id);
     expect(ids).toEqual(["c", "a", "b"]);
+  });
+
+  test("a tracker tile counts ready the way the queue does", () => {
+    const rows = [issue("a"), issue("b", { status: "in_progress" }), issue("c")];
+    expect(queueReadyCount(rows)).toBe(2);
+    expect(queueReadyCount({ not: "rows" })).toBe(0);
   });
 
   test("ready subtracts work already in flight", () => {

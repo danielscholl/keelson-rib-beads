@@ -63,9 +63,12 @@ import {
   fetchIssue,
   measureProject,
   type ProjectMeasurement,
+  queueReadyCount,
+  READY_ARGS,
   readComments,
   SWEEP_STEPS,
   type SweepProgress,
+  withQueueReady,
 } from "./measure";
 import { GhClient } from "./pr";
 import { type LiveRun, prFromOutput, RUN_WORKFLOW, RunTracker, runsFor } from "./runs";
@@ -368,7 +371,13 @@ function startSweep(project: BeadsProject): Sweep {
         if (oldest === undefined) break;
         lastGood.delete(oldest);
       }
-      summaries.set(project.id, result.data.summary);
+      const { summary, ready } = result.data;
+      summaries.set(
+        project.id,
+        summary.ok && ready.ok
+          ? { ok: true, data: withQueueReady(summary.data, ready.data.length) }
+          : summary,
+      );
     } else {
       sweep.at = Date.now() - MEASURE_TTL_MS + FAILED_TTL_MS;
     }
@@ -417,11 +426,19 @@ async function refreshSummaries(): Promise<void> {
         .catch((err: unknown) =>
           unmeasured<{ summary?: BdSummary }>(err instanceof Error ? err.message : String(err)),
         );
+      const queue = res.ok
+        ? await bd.readJSON<unknown>(project.rootPath, READY_ARGS).catch(() => undefined)
+        : undefined;
       summaries.set(
         project.id,
         res.ok
           ? res.data.summary
-            ? { ok: true, data: res.data.summary }
+            ? {
+                ok: true,
+                data: queue?.ok
+                  ? withQueueReady(res.data.summary, queueReadyCount(queue.data))
+                  : res.data.summary,
+              }
             : unmeasured("bd status carried no summary")
           : res,
       );

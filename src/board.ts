@@ -514,23 +514,17 @@ function dayLabel(iso: string, now: Date): string {
   return `${MONTHS[Number(iso.slice(5, 7)) - 1] ?? "?"} ${Number(iso.slice(8, 10))}`;
 }
 
-function stamp(iso: string | undefined): string {
+export function stamp(iso: string | undefined): string {
   if (!iso) return "";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
-  const hh = String(d.getUTCHours()).padStart(2, "0");
-  const mm = String(d.getUTCMinutes()).padStart(2, "0");
-  return `${MONTHS[d.getUTCMonth()] ?? "?"} ${d.getUTCDate()} ${hh}:${mm}Z`;
+  return `${MONTHS[d.getMonth()] ?? "?"} ${d.getDate()} ${localClock(iso)}`;
 }
 
 // The host's own wall clock: keelson runs on the operator's machine, so its
 // zone is the reader's.
 export function localClock(iso: string): string {
   return new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
-}
-
-function clock(iso: string | undefined): string {
-  return stamp(iso).split(" ").pop() ?? "";
 }
 
 // The PR a closed bead shipped through: the run note first, then any GitHub
@@ -829,6 +823,9 @@ function ghHealth(m: ProjectMeasurement): { label?: string; failing: boolean; er
 }
 
 // ── Next up: one confident pick, why, and the runner-up.
+const chainSize = (levels: readonly unknown[][]): number =>
+  levels.reduce((n, lvl) => n + lvl.length, 0);
+
 export function composeRecommend(m: ProjectMeasurement, ctx: PanelContext): Board {
   if (!m.ready.ok) return failedBoard("the ready queue", m.ready.error, m);
   const blocked = m.blocked.ok ? m.blocked.data : [];
@@ -890,7 +887,7 @@ export function composeRecommend(m: ProjectMeasurement, ctx: PanelContext): Boar
     const total = levels.reduce((a, lvl) => a + lvl.length, 0);
     if (total <= CHAIN_ID_CAP) {
       const hops = levels.map((lvl) => lvl.map((b) => short(b.id)).join(", "));
-      fields.push({ label: "unlocks", value: hops.join(" → ") });
+      fields.push({ label: "unblocks", value: hops.join(" → ") });
     } else {
       const first = levels[0] ?? [];
       const firstShown = first.slice(0, CHAIN_ID_CAP);
@@ -900,7 +897,7 @@ export function composeRecommend(m: ProjectMeasurement, ctx: PanelContext): Boar
       const deeper = total - first.length;
       const deeperLevels = levels.length - 1;
       const tail = deeper > 0 ? ` → … ${deeper} more across ${plural(deeperLevels, "level")}` : "";
-      fields.push({ label: "unlocks", value: `${firstText}${tail}` });
+      fields.push({ label: "unblocks", value: `${firstText}${tail}` });
     }
   }
   return board([
@@ -914,7 +911,9 @@ export function composeRecommend(m: ProjectMeasurement, ctx: PanelContext): Boar
             `P${pick.priority}`,
           ],
           ...(mergedPick ? { signal: { label: "merged · close pending", tone: "warn" } } : {}),
-          evidence: { label: "why", text: why },
+          ...(levels.length === 0 || downstream > chainSize(levels)
+            ? { evidence: { label: "why", text: why } }
+            : {}),
           fields,
           selectedId: ctx.selectedId,
           actions: [
@@ -1126,7 +1125,7 @@ export function composeWip(m: ProjectMeasurement, ctx: PanelContext): Board {
           : []),
         ...(info?.prUrl ? [prField(info.prUrl)] : []),
         ...(releases.length
-          ? [{ label: "releases", value: releases.map((b) => short(b.id)).join(", ") }]
+          ? [{ label: "unblocks", value: releases.map((b) => short(b.id)).join(", ") }]
           : []),
         ...(runError
           ? [{ value: `UNMEASURED run note: ${runError}`.slice(0, 120), tone: "error" as const }]
@@ -1145,7 +1144,8 @@ export function composeWip(m: ProjectMeasurement, ctx: PanelContext): Board {
     // A live run draws its own meter only from a good read; otherwise the
     // meter reads the run note, so an unread note draws no meter.
     if (run && !run.error) return { ...card, bar: runBar(run) };
-    return entry?.ok ? { ...card, bar: stageBar(info, pr) } : card;
+    // A bare claim has no stage to show beyond what its meta line says.
+    return entry?.ok && info?.prUrl ? { ...card, bar: stageBar(info, pr) } : card;
   });
   const cardOf = new Map(ordered.flatMap((i, k) => (cards[k] ? [[i.id, cards[k]] as const] : [])));
   const shown = new Set<string>();
@@ -1575,6 +1575,9 @@ export function composeBacklog(m: ProjectMeasurement, ctx: PanelContext): Board 
     byPriority.set(p, [...(byPriority.get(p) ?? []), i]);
   }
   const PRIORITY_NAME = ["urgent", "high", "normal", "low", "someday"];
+  // An owner every row shares says nothing on any one row.
+  const owners = new Set(shown.map((i) => shortPerson(personOf(i))));
+  const owner = (i: BdIssue) => (owners.size > 1 ? shortPerson(personOf(i)) : undefined);
   for (const [p, group] of [...byPriority.entries()].sort((a, b) => a[0] - b[0])) {
     sections.push({
       kind: "rows",
@@ -1592,7 +1595,12 @@ export function composeBacklog(m: ProjectMeasurement, ctx: PanelContext): Board 
                 : declaredDownstream(i, backlogIndex(m)) > 0
                   ? `${declaredDownstream(i, backlogIndex(m))} downstream`
                   : undefined;
-        return beadRow(i, [shortPerson(personOf(i)), signal, i.issue_type === "bug" && "bug"], ctx);
+        return beadRow(
+          i,
+          [owner(i), signal, i.issue_type === "bug" && "bug"],
+          ctx,
+          p === 0 ? "error" : undefined,
+        );
       }),
     });
   }
@@ -1626,7 +1634,7 @@ export function composeShipped(m: ProjectMeasurement, ctx: PanelContext = {}): B
       label: "Shipped this week",
       value: thisWeek,
       sub: `last week ${lastWeek}`,
-      delta: delta(thisWeek, lastWeek),
+      ...(lastWeek > 0 ? { delta: delta(thisWeek, lastWeek) } : {}),
     },
   ];
   if (m.backlog.ok) {
@@ -1647,7 +1655,7 @@ export function composeShipped(m: ProjectMeasurement, ctx: PanelContext = {}): B
       label: "Created this week",
       value: createdThis,
       sub: `last week ${createdLast}`,
-      delta: delta(createdThis, createdLast),
+      ...(createdLast > 0 ? { delta: delta(createdThis, createdLast) } : {}),
     });
   } else {
     stats.push({ label: "Created this week", value: null, sub: "backlog unmeasured" });
@@ -1665,16 +1673,27 @@ export function composeShipped(m: ProjectMeasurement, ctx: PanelContext = {}): B
   }
   const sections: BoardSection[] = [{ kind: "stats", items: stats }];
   const shown = closed.slice(0, SHIPPED_CAP);
-  let day: { title: string; items: RowItem[] } | undefined;
+  const days: { title: string; beads: BdIssue[] }[] = [];
   for (const i of shown) {
     const label = i.closed_at ? dayLabel(i.closed_at, now) : "Date not recorded";
-    if (!day || day.title !== label) {
-      day = { title: label, items: [] };
-      sections.push({ kind: "rows", title: day.title, items: day.items });
-    }
-    const pr = shippedPR(i);
-    const row = beadRow(i, [pr && prLabel(pr), clock(i.closed_at)], ctx);
-    day.items.push(i.issue_type === "epic" ? { ...row, chip: { label: "epic" } } : row);
+    const last = days[days.length - 1];
+    if (last?.title === label) last.beads.push(i);
+    else days.push({ title: label, beads: [i] });
+  }
+  for (const { title, beads } of days) {
+    const times = new Set(beads.map((i) => (i.closed_at ? localClock(i.closed_at) : "")));
+    // A batch closed in one minute says its time once, on the day.
+    const shared = beads.length > 1 && times.size === 1 ? [...times][0] : undefined;
+    sections.push({
+      kind: "rows",
+      title: shared ? `${title} · ${shared}` : title,
+      items: beads.map((i) => {
+        const pr = shippedPR(i);
+        const at = !shared && i.closed_at ? localClock(i.closed_at) : undefined;
+        const row = beadRow(i, [pr && prLabel(pr), at], ctx);
+        return i.issue_type === "epic" ? { ...row, chip: { label: "epic" } } : row;
+      }),
+    });
   }
   if (closed.length > shown.length) {
     sections.push({
@@ -2052,7 +2071,7 @@ export function composeInspect(
   if (unlocks.length) {
     left.push({
       kind: "rows",
-      title: "Unlocks when done",
+      title: "Unblocks when done",
       items: unlocks.map((l) => linkRow("↗", l)),
     });
   }
@@ -2217,7 +2236,7 @@ export function composeTrackers(tiles: readonly TrackerTile[], selectedId?: stri
       grid: true,
       items: tiles.map((t) => ({
         title: t.name,
-        dot: t.id === selectedId ? "brand" : "neutral",
+        ...(t.id === selectedId ? { dot: "brand" as const } : {}),
         selected: t.id === selectedId,
         action: { type: "select-project", payload: { scopeId: t.id } },
         fields: [...tileCounts(t.summary), ...tileRuns(t.runs)],

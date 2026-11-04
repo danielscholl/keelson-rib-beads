@@ -57,7 +57,7 @@ const STYLE = `
 --crit:${t("red", "#f08793")};--info:${t("cyan", "#7cc0ff")};
 --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,system-ui,sans-serif;
 --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
---line:color-mix(in srgb,var(--border) 65%,transparent);--well:color-mix(in srgb,var(--card-2) 55%,var(--card));
+--line:color-mix(in srgb,var(--border) 85%,transparent);--well:var(--card-2);
 --chip:color-mix(in srgb,var(--card-2) 38%,var(--card));color-scheme:dark}
 :root[data-theme="light"]{--card:${t("card", "#ffffff")};--card-2:${t("card-2", "#eeeaf7")};--border:${t("border", "#c8bfdc")};
 --fg:${t("fg", "#161b31")};--fg-strong:${t("fg-strong", "#0b0f1e")};--muted:${t("muted", "#5d5876")};
@@ -65,7 +65,7 @@ const STYLE = `
 --crit:${t("red", "#d9385e")};--info:${t("cyan", "#2e6fd8")};
 --chip:color-mix(in srgb,var(--card-2) 45%,var(--card));color-scheme:light}
 *{box-sizing:border-box}
-body{margin:0;padding:2px 2px 10px;background:var(--card);color:var(--fg);font:13px/1.45 var(--sans);-webkit-font-smoothing:antialiased}
+body{margin:0;padding:10px 12px 14px;background:var(--card);color:var(--fg);font:13px/1.45 var(--sans);-webkit-font-smoothing:antialiased}
 .legend{display:flex;flex-wrap:wrap;align-items:center;gap:6px 16px;margin:0 0 16px;font-size:12px;color:var(--muted)}
 .legend span{display:inline-flex;align-items:center;gap:6px}
 .legend .hint{margin-left:auto}
@@ -82,16 +82,18 @@ body{margin:0;padding:2px 2px 10px;background:var(--card);color:var(--fg);font:1
 .meter{display:flex;gap:2px;height:6px;border-radius:999px;overflow:hidden;background:var(--well);margin:10px 0 0}
 .meter i{display:block;height:100%}
 .m-done{background:var(--good)}.m-review{background:color-mix(in srgb,var(--accent) 55%,var(--card))}.m-working{background:var(--info)}
-.m-ready{background:var(--accent)}.m-waiting{background:transparent}
+.m-ready{background:var(--accent)}.m-waiting{background:repeating-linear-gradient(135deg,color-mix(in srgb,var(--muted) 45%,transparent) 0 2px,transparent 2px 5px)}
 .donelist{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:10px;font-size:12px;color:var(--muted)}
+.donelist .lbl{display:inline-flex;align-items:center;gap:6px;margin-right:2px}
 .donelist button{font:11.5px var(--mono);color:var(--fg);background:var(--well);border:0;border-radius:999px;padding:1px 8px;cursor:pointer}
 .donelist button:hover{color:var(--accent)}
 .scroll{overflow-x:auto;margin-top:14px;padding:2px}
 .waves{position:relative;display:grid;grid-auto-flow:column;grid-auto-columns:minmax(210px,300px);gap:8px 56px;align-items:start;justify-content:start}
 .waves svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}
-.waves path{fill:none;stroke:var(--muted);stroke-width:1.25;opacity:.4}
-.waves path.hot{stroke:var(--accent);stroke-width:2;opacity:1}
-.waves.lit path:not(.hot){opacity:.08}
+.waves path{fill:none;stroke:var(--muted);stroke-width:1.25;opacity:.6;marker-end:url(#ah)}
+.waves path.hot{stroke:var(--accent);stroke-width:2;opacity:1;marker-end:url(#ah-hot)}
+.waves.lit path:not(.hot){opacity:.1}
+.waves marker path{stroke:none;opacity:1!important;marker-end:none}
 .wave{display:flex;flex-direction:column;gap:6px;position:relative;z-index:1;min-width:0}
 .wave h3{margin:0 0 2px;font:600 12px var(--sans);color:var(--fg)}
 .wave h3 span{font-weight:400;color:var(--muted)}
@@ -104,7 +106,7 @@ body{margin:0;padding:2px 2px 10px;background:var(--card);color:var(--fg);font:1
 .chip .w.edge{display:none}
 .chip.working{box-shadow:inset 3px 0 0 var(--info)}.chip.review{box-shadow:inset 3px 0 0 color-mix(in srgb,var(--accent) 60%,var(--card))}
 .chip.waiting,.chip.hold{background:transparent}
-.chip.waiting .t,.chip.hold .t{color:var(--muted)}
+.chip.waiting .t,.chip.hold .t{color:color-mix(in srgb,var(--fg) 80%,var(--card))}
 .chip.hold{border-style:dashed}
 .chip.run{border-color:color-mix(in srgb,var(--info) 70%,transparent)}
 .chip.gate{border-color:color-mix(in srgb,var(--warn) 80%,transparent);box-shadow:inset 3px 0 0 var(--warn)}
@@ -133,6 +135,9 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 // and posts select-bead (the one verb the rib honours from a frame).
 const SCRIPT = `
 (function(){
+  var DEFS='<defs>'+[["ah","var(--muted)"],["ah-hot","var(--accent)"]].map(function(m){
+    return '<marker id="'+m[0]+'" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 1L9 5L0 9z" style="fill:'+m[1]+'"/></marker>';
+  }).join("")+'</defs>';
   var sel=null;
   document.querySelectorAll(".waves").forEach(function(map){
     var svg=map.querySelector("svg"),chips=Object.create(null),edges=[];
@@ -157,7 +162,7 @@ const SCRIPT = `
       return ys.reduce(function(b,y){return Math.abs(y-want)<Math.abs(b-want)?y:b;});
     }
     function draw(){
-      var r=map.getBoundingClientRect();svg.innerHTML="";edges=[];
+      var r=map.getBoundingClientRect();svg.innerHTML=DEFS;edges=[];
       Object.keys(deps).forEach(function(id){deps[id].forEach(function(d){
         var a=chips[d].getBoundingClientRect(),z=chips[id].getBoundingClientRect();
         var x=a.right-r.left,y=a.top+a.height/2-r.top,x2=z.left-r.left,y2=z.top+z.height/2-r.top;
@@ -317,7 +322,7 @@ function epicBlock(view: EpicView, runs: ReadonlyMap<string, LiveRun>): string {
           .join("")}</div>`
       : "";
   const doneLine = done.length
-    ? `<div class="donelist"><span>Done · ${done.length}</span>${done
+    ? `<div class="donelist"><span class="lbl"><i class="dot done"></i>Done · ${done.length}</span>${done
         .slice(0, DONE_LISTED)
         .map(
           (c) =>

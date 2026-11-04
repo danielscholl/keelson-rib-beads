@@ -95,6 +95,18 @@ export function unionBlocked(dep: BdIssue[], status: BdIssue[]): BdIssue[] {
   return [...seen.values()].sort(byPriorityThenAge);
 }
 
+export const READY_ARGS = ["ready", "--exclude-type=epic", "--limit", "0"];
+
+// The tracker strip's ready count, on the queue's definition: bd status counts
+// open epics and claimed beads as ready, the queue does not.
+export function queueReadyCount(rows: unknown): number {
+  return asArray(rows).filter((i) => i.status !== "in_progress").length;
+}
+
+export function withQueueReady(summary: BdSummary, ready: number): BdSummary {
+  return { ...summary, ready_issues: ready };
+}
+
 export function subtractInProgress(ready: BdIssue[], inProgress: BdIssue[]): BdIssue[] {
   // `bd ready` still returns items already claimed; the queue is what is
   // startable NOW, so work in flight is subtracted (beads-ui does the same).
@@ -335,12 +347,7 @@ export async function measureProject(
     : wipRes;
 
   step("ready queue");
-  const readyRes = await bd.readJSON<unknown>(cwd, [
-    "ready",
-    "--exclude-type=epic",
-    "--limit",
-    "0",
-  ]);
+  const readyRes = await bd.readJSON<unknown>(cwd, READY_ARGS);
   const ready: Measured<BdIssue[]> =
     readyRes.ok && inProgress.ok
       ? { ok: true, data: subtractInProgress(asArray(readyRes.data), inProgress.data) }
