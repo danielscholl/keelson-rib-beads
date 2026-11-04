@@ -905,8 +905,8 @@ export function composeRecommend(m: ProjectMeasurement, ctx: PanelContext): Boar
         beadCard(pick, {
           meta: [
             mergedPick ? "merged PR · still ready in bd" : "ready",
-            shortPerson(personOf(pick)) ?? "unclaimed",
             `P${pick.priority}`,
+            shortPerson(personOf(pick)) ?? "unclaimed",
           ],
           ...(mergedPick ? { signal: { label: "merged · close pending", tone: "warn" } } : {}),
           ...(levels.length === 0 || downstream > chainSize(levels)
@@ -1298,10 +1298,11 @@ export function composeYourCalls(m: ProjectMeasurement, ctx: PanelContext): Boar
     const waits = blockers.get(i.id) ?? [];
     return beadCard(i, {
       meta: [
-        i.issue_type === "decision" ? "decision" : "owner call",
         `P${i.priority}`,
         i.status === "in_progress" ? `on it: ${shortPerson(personOf(i)) ?? "claimed"}` : undefined,
+        i.issue_type === "decision" ? "decision" : "owner call",
       ],
+      tone: "warn",
       ...(waits.length ? { signal: { label: `waits on ${waits.length}`, tone: "caution" } } : {}),
       ...(levels.length
         ? { fields: [{ label: "unblocks", value: chainText(levels, (id) => short(id, i.id)) }] }

@@ -82,7 +82,7 @@ body{margin:0;padding:10px 12px 14px;background:var(--card);color:var(--fg);font
 .meter{display:flex;gap:2px;height:6px;border-radius:999px;overflow:hidden;background:var(--well);margin:10px 0 0}
 .meter i{display:block;height:100%}
 .m-done{background:var(--good)}.m-review{background:color-mix(in srgb,var(--accent) 55%,var(--card))}.m-working{background:var(--info)}
-.m-ready{background:var(--accent)}.m-waiting{background:color-mix(in srgb,var(--muted) 40%,var(--well))}
+.m-ready{background:var(--accent)}.m-waiting{background:color-mix(in srgb,var(--muted) 75%,var(--well))}
 .donelist{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:10px;font-size:12px;color:var(--muted)}
 .donelist .lbl{display:inline-flex;align-items:center;gap:6px;margin-right:2px}
 .donelist button{font:11.5px var(--mono);color:var(--fg);background:var(--well);border:0;border-radius:999px;padding:1px 8px;cursor:pointer}
@@ -106,6 +106,7 @@ body{margin:0;padding:10px 12px 14px;background:var(--card);color:var(--fg);font
 .chip .w.edge{display:none}
 .chip.working{box-shadow:inset 3px 0 0 var(--info)}.chip.review{box-shadow:inset 3px 0 0 color-mix(in srgb,var(--accent) 60%,var(--card))}
 .chip.waiting,.chip.hold{background:transparent}
+:root:not([data-theme="light"]) .chip.waiting,:root:not([data-theme="light"]) .chip.hold{border-color:color-mix(in srgb,var(--muted) 45%,var(--line))}
 .chip.hold{border-style:dashed}
 .chip.run{border-color:color-mix(in srgb,var(--info) 70%,transparent)}
 .chip.gate{border-color:color-mix(in srgb,var(--warn) 80%,transparent);box-shadow:inset 3px 0 0 var(--warn)}
@@ -168,6 +169,7 @@ const SCRIPT = `
         deps[id].slice().sort(function(p,q){return chips[p].getBoundingClientRect().top-chips[q].getBoundingClientRect().top;}).forEach(function(d,j){
         var a=chips[d].getBoundingClientRect();
         var x=a.right-r.left,y=a.top+a.height/2-r.top,x2=z.left-r.left,y2=z.top+z.height*(j+1)/(n+1)-r.top;
+        if(Math.abs(y2-y)<4)y2=y;
         var path="M"+x+" "+y,ca=colOf[d],cb=colOf[id];
         for(var k=ca+1;k<cb;k++){
           var c=cols[k].getBoundingClientRect(),l=c.left-r.left,rt=c.right-r.left;
@@ -304,7 +306,7 @@ function epicBlock(view: EpicView, runs: ReadonlyMap<string, LiveRun>): string {
             : "",
         ]
       : []),
-    `<span><b>${row.closed_children}</b> of ${row.total_children} done</span>`,
+    `<span>${row.closed_children > 0 ? '<i class="dot done"></i>' : ""}<b>${row.closed_children}</b> of ${row.total_children} done</span>`,
     ...flags.map((f) => `<span class="flag">${esc(f)}</span>`),
   ].join("");
   const meter =
@@ -345,7 +347,8 @@ function epicBlock(view: EpicView, runs: ReadonlyMap<string, LiveRun>): string {
   })).filter(({ inWave }) => inWave.length > 0);
   const columns = waves
     .map(({ w, inWave }) => {
-      const note = w === 0 ? " unblocked" : "";
+      const held = inWave.every((n) => n.lane === "waiting" || n.lane === "hold");
+      const note = w === 0 ? " unblocked" : held ? " waiting" : "";
       return `<div class="wave"><h3>Wave ${w + 1} <span>· ${inWave.length}${note}</span></h3>${inWave
         .map((n) => chip(n, epicId, common, runs.get(n.member.id)))
         .join("")}</div>`;

@@ -67,7 +67,7 @@ describe("epic wave map", () => {
     expect(html).toContain('<span class="eid">cx</span>');
     expect(text(html)).toContain("1 waiting1 ready1 in flight2 of 5 done");
     expect(html).toContain("Wave 1 <span>· 2 unblocked</span>");
-    expect(html).toContain("Wave 2 <span>· 1</span>");
+    expect(html).toContain("Wave 2 <span>· 1 waiting</span>");
     expect(chipIds(html)).toEqual(["cx.3", "cx.4", "cx.5"]);
     // The edge the frame draws, and its text form for a stacked narrow frame.
     expect(html).toContain('data-id="cx.5" data-deps="cx.4"');
@@ -88,7 +88,7 @@ describe("epic wave map", () => {
     const html = composeEpicMap(m);
     expect(html).not.toContain("Wave 1 ");
     expect(html).toContain("Wave 2 <span>· 2</span>");
-    expect(html).toContain("Wave 3 <span>· 1</span>");
+    expect(html).toContain("Wave 3 <span>· 1 waiting</span>");
     expect(html).toContain("min-width:476px");
   });
 

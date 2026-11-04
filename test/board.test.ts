@@ -456,7 +456,7 @@ describe("Next up", () => {
     const pick = card.items[0];
     expect(pick?.title).toBe("Ready one");
     expect(pick?.pill).toBeUndefined();
-    expect(pick?.fields?.[0]?.value).toBe("tl-b · ready · unclaimed · P0");
+    expect(pick?.fields?.[0]?.value).toBe("tl-b · ready · P0 · unclaimed");
     expect(pick?.reason?.text).toBe("3 downstream · releases 1 now");
     expect(pick?.fields?.[1]).toEqual({ label: "unblocks", value: "tl-d → tl-h" });
     expect(pick?.footnote).toBe("runner-up: tl-c · Ready two");
@@ -1111,9 +1111,9 @@ describe("Your calls", () => {
     if (shared?.kind !== "cards") throw new Error("no cards");
     expect(shared.title).toBe("3 calls · 1 bead wait on them");
     expect(cards.items.map((c) => c.fields?.[0]?.value)).toEqual([
-      "tl-q · decision · P1",
-      "tl-o · owner call · P0",
-      "tl-l · owner call · P2",
+      "tl-q · P1 · decision",
+      "tl-o · P0 · owner call",
+      "tl-l · P2 · owner call",
     ]);
     expect(cards.items[0]?.pill).toBeUndefined();
     expect(cards.items[0]?.fields?.[1]).toEqual({ label: "unblocks", value: "tl-x → tl-y" });
@@ -1131,7 +1131,7 @@ describe("Your calls", () => {
       ),
     );
     expect(JSON.stringify(composeYourCalls(m, {}))).toContain(
-      "tl-o · owner call · P0 · on it: dan",
+      "tl-o · P0 · on it: dan · owner call",
     );
   });
 
