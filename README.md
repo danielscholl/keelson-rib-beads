@@ -222,7 +222,7 @@ and one that does the work:
   the problem, which the triage judge traces before anything else), and the
   prompts use keelson's shared directives (`$DIRECTIVES.verify`, `review`,
   `confirm`), so this workflow needs keelson 0.113.0 or later.
-  On the Copilot provider, `plan` and `investigate` pin `gpt-6-astra`,
+  On the Copilot provider, `plan` and `investigate` pin `claude-opus-5.5`,
   `implement` and `apply-fixes` `gpt-6.1-sol`, the review lenses and `fix-validation`
   `gpt-6-sol`, `re-review` and the triage judge `gpt-6-luna` (a different
   model from the lenses whose findings it judges), and `classify`,
