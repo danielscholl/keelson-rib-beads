@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.0](https://github.com/danielscholl/keelson-rib-beads/compare/v0.13.1...v0.14.0) (2026-11-04)
+
+
+### Added
+
+* **beads:** UI polish overhaul ([#74](https://github.com/danielscholl/keelson-rib-beads/issues/74)) ([2bed71d](https://github.com/danielscholl/keelson-rib-beads/commit/2bed71dd91af618549bbee244ab6ba9ba394b103))
+
 ## [0.13.1](https://github.com/danielscholl/keelson-rib-beads/compare/v0.13.0...v0.13.1) (2026-10-26)
 
 
