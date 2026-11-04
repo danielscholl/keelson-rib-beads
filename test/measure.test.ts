@@ -4,6 +4,7 @@ import { BD_VERSION_FLOOR, BdClient, type BdIssue, parseBdVersion } from "../src
 import {
   bdBelowFloor,
   byPriorityThenAge,
+  combineQueueReady,
   measureProject,
   parseRunNote,
   queueReadyCount,
@@ -27,8 +28,31 @@ describe("measure helpers", () => {
 
   test("a tracker tile counts ready the way the queue does", () => {
     const rows = [issue("a"), issue("b", { status: "in_progress" }), issue("c")];
-    expect(queueReadyCount(rows)).toBe(2);
-    expect(queueReadyCount({ not: "rows" })).toBe(0);
+    expect(queueReadyCount(rows)).toEqual({ ok: true, data: 2 });
+    expect(queueReadyCount({ not: "rows" }).ok).toBe(false);
+  });
+
+  test("a failed ready read leaves the tile unmeasured, not on the status count", () => {
+    const summary = {
+      ok: true as const,
+      data: {
+        total_issues: 9,
+        open_issues: 9,
+        blocked_issues: 0,
+        in_progress_issues: 0,
+        closed_issues: 0,
+        ready_issues: 9,
+      },
+    };
+    expect(combineQueueReady(summary, { ok: true, data: 2 })).toEqual({
+      ok: true,
+      data: expect.objectContaining({ ready_issues: 2 }),
+    });
+    const failed = combineQueueReady(summary, { ok: false, error: "bd ready failed" });
+    expect(failed.ok).toBe(false);
+    expect(combineQueueReady(summary, queueReadyCount("nope")).ok).toBe(false);
+    const down = { ok: false as const, error: "status down" };
+    expect(combineQueueReady(down, { ok: true, data: 1 })).toBe(down);
   });
 
   test("ready subtracts work already in flight", () => {

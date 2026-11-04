@@ -60,6 +60,7 @@ import {
 import { composeEpicMap, epicMapFailed } from "./map";
 import {
   bdBelowFloor,
+  combineQueueReady,
   fetchIssue,
   measureProject,
   type ProjectMeasurement,
@@ -68,7 +69,6 @@ import {
   readComments,
   SWEEP_STEPS,
   type SweepProgress,
-  withQueueReady,
 } from "./measure";
 import { GhClient } from "./pr";
 import { type LiveRun, prFromOutput, RUN_WORKFLOW, RunTracker, runsFor } from "./runs";
@@ -374,9 +374,7 @@ function startSweep(project: BeadsProject): Sweep {
       const { summary, ready } = result.data;
       summaries.set(
         project.id,
-        summary.ok && ready.ok
-          ? { ok: true, data: withQueueReady(summary.data, ready.data.length) }
-          : summary,
+        combineQueueReady(summary, ready.ok ? { ok: true, data: ready.data.length } : ready),
       );
     } else {
       sweep.at = Date.now() - MEASURE_TTL_MS + FAILED_TTL_MS;
@@ -426,22 +424,21 @@ async function refreshSummaries(): Promise<void> {
         .catch((err: unknown) =>
           unmeasured<{ summary?: BdSummary }>(err instanceof Error ? err.message : String(err)),
         );
-      const queue = res.ok
-        ? await bd.readJSON<unknown>(project.rootPath, READY_ARGS).catch(() => undefined)
-        : undefined;
-      summaries.set(
-        project.id,
-        res.ok
-          ? res.data.summary
-            ? {
-                ok: true,
-                data: queue?.ok
-                  ? withQueueReady(res.data.summary, queueReadyCount(queue.data))
-                  : res.data.summary,
-              }
-            : unmeasured("bd status carried no summary")
-          : res,
-      );
+      let next: Measured<BdSummary>;
+      if (!res.ok) next = res;
+      else if (!res.data.summary) next = unmeasured("bd status carried no summary");
+      else {
+        const queue = await bd
+          .readJSON<unknown>(project.rootPath, READY_ARGS)
+          .catch((err: unknown) =>
+            unmeasured<unknown>(err instanceof Error ? err.message : String(err)),
+          );
+        next = combineQueueReady(
+          { ok: true, data: res.data.summary },
+          queue.ok ? queueReadyCount(queue.data) : queue,
+        );
+      }
+      summaries.set(project.id, next);
       recomposeKeys([TRACKERS_KEY]);
     }
     summariesAt = Date.now();

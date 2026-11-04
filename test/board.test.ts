@@ -1368,6 +1368,30 @@ describe("Shipped", () => {
     expect(older.items[0]?.trailing).toBe("tl-old · 10:00");
   });
 
+  test("dated headings use the local date, matching the clock", () => {
+    const prev = process.env.TZ;
+    process.env.TZ = "America/Los_Angeles";
+    try {
+      const m = fullMeasurement();
+      m.closedFortnight = ok([
+        {
+          id: "tl-z",
+          title: "Z",
+          status: "closed",
+          priority: 2,
+          closed_at: "2026-07-30T02:00:00Z",
+        },
+      ]);
+      const group = composeShipped(m, {}).sections[1];
+      if (group?.kind !== "rows") throw new Error("no dated group");
+      expect(group.title).toBe("Jul 29");
+      expect(group.items[0]?.trailing).toBe("tl-z · 19:00");
+    } finally {
+      if (prev === undefined) delete process.env.TZ;
+      else process.env.TZ = prev;
+    }
+  });
+
   test("a batch closed in one minute says its time once, on the day", () => {
     const m = fullMeasurement();
     const at = "2026-08-09T10:00:00Z";

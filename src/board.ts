@@ -511,7 +511,9 @@ function dayLabel(iso: string, now: Date): string {
   const days = Math.max(0, Math.floor((now.getTime() - new Date(iso).getTime()) / 86_400_000));
   if (days === 0) return "Today";
   if (days === 1) return "Yesterday";
-  return `${MONTHS[Number(iso.slice(5, 7)) - 1] ?? "?"} ${Number(iso.slice(8, 10))}`;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return `${MONTHS[d.getMonth()] ?? "?"} ${d.getDate()}`;
 }
 
 export function stamp(iso: string | undefined): string {

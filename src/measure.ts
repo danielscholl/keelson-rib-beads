@@ -99,8 +99,18 @@ export const READY_ARGS = ["ready", "--exclude-type=epic", "--limit", "0"];
 
 // The tracker strip's ready count, on the queue's definition: bd status counts
 // open epics and claimed beads as ready, the queue does not.
-export function queueReadyCount(rows: unknown): number {
-  return asArray(rows).filter((i) => i.status !== "in_progress").length;
+export function queueReadyCount(rows: unknown): Measured<number> {
+  if (!Array.isArray(rows)) return unmeasured("bd ready returned a malformed response");
+  return { ok: true, data: asArray(rows).filter((i) => i.status !== "in_progress").length };
+}
+
+export function combineQueueReady(
+  summary: Measured<BdSummary>,
+  ready: Measured<number>,
+): Measured<BdSummary> {
+  if (!summary.ok) return summary;
+  if (!ready.ok) return ready;
+  return { ok: true, data: withQueueReady(summary.data, ready.data) };
 }
 
 export function withQueueReady(summary: BdSummary, ready: number): BdSummary {
