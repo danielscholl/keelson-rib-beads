@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.1](https://github.com/danielscholl/keelson-rib-beads/compare/v0.14.0...v0.14.1) (2026-11-04)
+
+
+### Fixed
+
+* **beads-work:** stop filling the memory review queue and halve plan cost ([#76](https://github.com/danielscholl/keelson-rib-beads/issues/76)) ([57890fa](https://github.com/danielscholl/keelson-rib-beads/commit/57890fa611fdccbfc2b2484a2d82e35781def272))
+
 ## [0.14.0](https://github.com/danielscholl/keelson-rib-beads/compare/v0.13.1...v0.14.0) (2026-11-04)
 
 
