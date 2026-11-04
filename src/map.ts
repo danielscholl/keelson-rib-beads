@@ -57,7 +57,7 @@ const STYLE = `
 --crit:${t("red", "#f08793")};--info:${t("cyan", "#7cc0ff")};
 --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,system-ui,sans-serif;
 --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
---line:color-mix(in srgb,var(--border) 85%,transparent);--well:var(--card-2);
+--line:color-mix(in srgb,var(--border) 85%,transparent);--well:var(--card-2);--muted-2:color-mix(in srgb,var(--muted) 78%,var(--fg));
 --chip:color-mix(in srgb,var(--card-2) 38%,var(--card));color-scheme:dark}
 :root[data-theme="light"]{--card:${t("card", "#ffffff")};--card-2:${t("card-2", "#eeeaf7")};--border:${t("border", "#c8bfdc")};
 --fg:${t("fg", "#161b31")};--fg-strong:${t("fg-strong", "#0b0f1e")};--muted:${t("muted", "#5d5876")};
@@ -66,7 +66,7 @@ const STYLE = `
 --chip:color-mix(in srgb,var(--card-2) 45%,var(--card));color-scheme:light}
 *{box-sizing:border-box}
 body{margin:0;padding:10px 12px 14px;background:var(--card);color:var(--fg);font:13px/1.45 var(--sans);-webkit-font-smoothing:antialiased}
-.legend{display:flex;flex-wrap:wrap;align-items:center;gap:6px 16px;margin:0 0 16px;font-size:12px;color:var(--muted)}
+.legend{display:flex;flex-wrap:wrap;align-items:center;gap:6px 16px;margin:0 0 16px;font-size:12px;color:var(--muted-2)}
 .legend span{display:inline-flex;align-items:center;gap:6px}
 .legend .hint{margin-left:auto}
 .epic+.epic{margin-top:26px;padding-top:22px;border-top:1px solid var(--line)}
@@ -74,8 +74,8 @@ body{margin:0;padding:10px 12px 14px;background:var(--card);color:var(--fg);font
 .ttl{display:flex;align-items:baseline;gap:10px;min-width:0}
 .ttl button{font:600 15px/1.3 var(--sans);color:var(--fg-strong);background:none;border:0;padding:0;cursor:pointer;text-align:left}
 .ttl button:hover{color:var(--accent)}
-.eid{font:11.5px var(--mono);color:var(--muted)}
-.facts{display:flex;flex-wrap:wrap;align-items:center;gap:4px 14px;font-size:12.5px;color:var(--muted);font-variant-numeric:tabular-nums}
+.eid{font:11.5px var(--mono);color:var(--muted-2)}
+.facts{display:flex;flex-wrap:wrap;align-items:center;gap:4px 14px;font-size:12.5px;color:var(--muted-2);font-variant-numeric:tabular-nums}
 .facts span{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
 .facts b{font-weight:600;color:var(--fg-strong)}
 .facts .flag{color:var(--warn);font-weight:600}
@@ -90,13 +90,13 @@ body{margin:0;padding:10px 12px 14px;background:var(--card);color:var(--fg);font
 .scroll{overflow-x:auto;margin-top:14px;padding:2px}
 .waves{position:relative;display:grid;grid-auto-flow:column;grid-auto-columns:minmax(210px,300px);gap:8px 56px;align-items:start;justify-content:start}
 .waves svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}
-.waves path{fill:none;stroke:var(--muted);stroke-width:1.5;opacity:.75;marker-end:url(#ah)}
+.waves path{fill:none;stroke:var(--muted-2);stroke-width:1.5;opacity:.75;marker-end:url(#ah)}
 .waves path.hot{stroke:var(--accent);stroke-width:2;opacity:1;marker-end:url(#ah-hot)}
 .waves.lit path:not(.hot){opacity:.1}
 .waves marker path{stroke:none;opacity:1!important;marker-end:none}
 .wave{display:flex;flex-direction:column;gap:6px;position:relative;z-index:1;min-width:0}
 .wave h3{margin:0 0 2px;font:600 12px var(--sans);color:var(--fg)}
-.wave h3 span{font-weight:400;color:var(--muted)}
+.wave h3 span{font-weight:400;color:var(--muted-2)}
 .chip{display:block;width:100%;text-align:left;font:inherit;color:var(--fg);background:var(--chip);border:1px solid var(--line);border-radius:10px;padding:8px 11px 9px;cursor:pointer}
 .chip:hover{border-color:color-mix(in srgb,var(--accent) 45%,var(--line))}
 .chip .top{display:flex;align-items:center;gap:7px;font:11.5px var(--mono);color:var(--muted)}
@@ -105,8 +105,7 @@ body{margin:0;padding:10px 12px 14px;background:var(--card);color:var(--fg);font
 .chip .w{display:block;margin-top:4px;font-size:12px;color:var(--muted)}
 .chip .w.edge{display:none}
 .chip.working{box-shadow:inset 3px 0 0 var(--info)}.chip.review{box-shadow:inset 3px 0 0 color-mix(in srgb,var(--accent) 60%,var(--card))}
-.chip.waiting,.chip.hold{background:transparent;border-color:color-mix(in srgb,var(--muted) 40%,var(--line))}
-.chip.waiting .t,.chip.hold .t{color:color-mix(in srgb,var(--fg) 92%,var(--card))}
+.chip.waiting,.chip.hold{background:transparent}
 .chip.hold{border-style:dashed}
 .chip.run{border-color:color-mix(in srgb,var(--info) 70%,transparent)}
 .chip.gate{border-color:color-mix(in srgb,var(--warn) 80%,transparent);box-shadow:inset 3px 0 0 var(--warn)}
@@ -135,7 +134,7 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 // and posts select-bead (the one verb the rib honours from a frame).
 const SCRIPT = `
 (function(){
-  var DEFS='<defs>'+[["ah","var(--muted)"],["ah-hot","var(--accent)"]].map(function(m){
+  var DEFS='<defs>'+[["ah","var(--muted-2)"],["ah-hot","var(--accent)"]].map(function(m){
     return '<marker id="'+m[0]+'" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 1L9 5L0 9z" style="fill:'+m[1]+'"/></marker>';
   }).join("")+'</defs>';
   var sel=null;
@@ -167,8 +166,8 @@ const SCRIPT = `
         var z=chips[id].getBoundingClientRect(),n=deps[id].length;
         // Edges into one chip land spread top to bottom, so a fan-in reads as separate lines.
         deps[id].slice().sort(function(p,q){return chips[p].getBoundingClientRect().top-chips[q].getBoundingClientRect().top;}).forEach(function(d,j){
-        var a=chips[d].getBoundingClientRect(),gap=Math.min(7,z.height/(n+1));
-        var x=a.right-r.left,y=a.top+a.height/2-r.top,x2=z.left-r.left,y2=z.top+z.height/2-r.top+(j-(n-1)/2)*gap;
+        var a=chips[d].getBoundingClientRect();
+        var x=a.right-r.left,y=a.top+a.height/2-r.top,x2=z.left-r.left,y2=z.top+z.height*(j+1)/(n+1)-r.top;
         var path="M"+x+" "+y,ca=colOf[d],cb=colOf[id];
         for(var k=ca+1;k<cb;k++){
           var c=cols[k].getBoundingClientRect(),l=c.left-r.left,rt=c.right-r.left;
@@ -226,10 +225,10 @@ const SCRIPT = `
 
 const LEGEND = `<div class="legend" aria-hidden="true">${(
   [
-    ["done", "Done"],
-    ["working", "In flight"],
-    ["ready", "Ready"],
     ["waiting", "Waiting"],
+    ["ready", "Ready"],
+    ["working", "In flight"],
+    ["done", "Done"],
   ] as const
 )
   .map(([lane, label]) => `<span><i class="dot ${lane}"></i>${label}</span>`)
@@ -294,30 +293,31 @@ function epicBlock(view: EpicView, runs: ReadonlyMap<string, LiveRun>): string {
       : "",
     row.eligible_for_close ? "closeout review" : "",
   ].filter(Boolean);
+  // Waiting to done, the same left-to-right flow as the Overview strip.
   const facts = [
-    `<span><b>${row.closed_children}</b> of ${row.total_children} done</span>`,
     ...(counts
       ? [
+          counts.waiting > 0 ? fact("waiting", counts.waiting, "waiting") : "",
+          counts.ready > 0 ? fact("ready", counts.ready, "ready") : "",
           counts.working + counts.review > 0
             ? fact("working", counts.working + counts.review, "in flight")
             : "",
-          counts.ready > 0 ? fact("ready", counts.ready, "ready") : "",
-          counts.waiting > 0 ? fact("waiting", counts.waiting, "waiting") : "",
         ]
       : []),
+    `<span><b>${row.closed_children}</b> of ${row.total_children} done</span>`,
     ...flags.map((f) => `<span class="flag">${esc(f)}</span>`),
   ].join("");
   const meter =
     row.total_children > 0 && counts
       ? `<div class="meter" role="img" aria-label="${esc(
-          `${row.closed_children} done, ${counts.review} in review, ${counts.working} in progress, ${counts.ready} ready, ${counts.waiting} waiting`,
+          `${counts.waiting} waiting, ${counts.ready} ready, ${counts.working} in progress, ${counts.review} in review, ${row.closed_children} done`,
         )}">${(
           [
-            ["done", row.closed_children],
-            ["review", counts.review],
-            ["working", counts.working],
-            ["ready", counts.ready],
             ["waiting", counts.waiting],
+            ["ready", counts.ready],
+            ["working", counts.working],
+            ["review", counts.review],
+            ["done", row.closed_children],
           ] as const
         )
           .filter(([, n]) => n > 0)
@@ -345,7 +345,7 @@ function epicBlock(view: EpicView, runs: ReadonlyMap<string, LiveRun>): string {
   })).filter(({ inWave }) => inWave.length > 0);
   const columns = waves
     .map(({ w, inWave }) => {
-      const note = w === 0 ? " · unblocked" : "";
+      const note = w === 0 ? " unblocked" : "";
       return `<div class="wave"><h3>Wave ${w + 1} <span>· ${inWave.length}${note}</span></h3>${inWave
         .map((n) => chip(n, epicId, common, runs.get(n.member.id)))
         .join("")}</div>`;

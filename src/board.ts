@@ -698,7 +698,7 @@ export function composePulse(
     { label: "Waiting", n: waiting, tone: STAGE_TONE.waiting },
     { label: "Ready", n: m.ready.ok ? m.ready.data.length : null, tone: STAGE_TONE.ready },
     {
-      label: "In progress",
+      label: "In flight",
       n: split.ok ? split.data.working.length : null,
       tone: STAGE_TONE.working,
     },
@@ -1674,7 +1674,7 @@ export function composeShipped(m: ProjectMeasurement, ctx: PanelContext = {}): B
     const shared = beads.length > 1 && times.size === 1 ? [...times][0] : undefined;
     sections.push({
       kind: "rows",
-      title: shared ? `${title} · ${shared}` : title,
+      title: shared ? `${title} · closed ${shared}` : title,
       items: beads.map((i) => {
         const pr = shippedPR(i);
         const at = !shared && i.closed_at ? localClock(i.closed_at) : undefined;
@@ -1920,7 +1920,11 @@ export function composeInspect(
           {
             value: [
               i.id,
-              `${statusGlyph(i.status)} ${i.status === "open" ? (isBlocked || waitsOn.length ? "waiting" : "ready") : i.status.replace("_", " ")}`,
+              i.status === "open"
+                ? isBlocked || waitsOn.length
+                  ? "waiting"
+                  : "ready"
+                : i.status.replace("_", " "),
               `P${i.priority}`,
               shortPerson(personOf(i)) ?? "unassigned",
               i.issue_type,

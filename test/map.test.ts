@@ -65,8 +65,8 @@ describe("epic wave map", () => {
   test("open children sit in wave columns; the epic id prints once and children print short", () => {
     const html = composeEpicMap(epicMeasurement());
     expect(html).toContain('<span class="eid">cx</span>');
-    expect(text(html)).toContain("2 of 5 done1 in flight1 ready1 waiting");
-    expect(html).toContain("Wave 1 <span>· 2 · unblocked</span>");
+    expect(text(html)).toContain("1 waiting1 ready1 in flight2 of 5 done");
+    expect(html).toContain("Wave 1 <span>· 2 unblocked</span>");
     expect(html).toContain("Wave 2 <span>· 1</span>");
     expect(chipIds(html)).toEqual(["cx.3", "cx.4", "cx.5"]);
     // The edge the frame draws, and its text form for a stacked narrow frame.

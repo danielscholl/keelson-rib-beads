@@ -1377,7 +1377,7 @@ describe("Shipped", () => {
     ]);
     const day = composeShipped(m, {}).sections[1];
     if (day?.kind !== "rows") throw new Error("no day group");
-    expect(day.title).toBe("Today · 10:00");
+    expect(day.title).toBe("Today · closed 10:00");
     expect(day.items.map((r) => r.trailing)).toEqual(["tl-p", "tl-q"]);
   });
 
@@ -1542,7 +1542,7 @@ describe("inspector", () => {
     const head = left?.sections[0];
     if (head?.kind !== "cards") throw new Error("no head card");
     expect(head.items[0]?.title).toBe("Detail view");
-    expect(head.items[0]?.fields?.[0]?.value).toBe("cx.4 · ○ ready · P2 · unassigned");
+    expect(head.items[0]?.fields?.[0]?.value).toBe("cx.4 · ready · P2 · unassigned");
     expect(head.items[0]?.fields?.[1]).toEqual({ label: "labels", value: "ui" });
   });
 
@@ -1748,7 +1748,7 @@ describe("the flow strip", () => {
     expect(stripOf(pulse)).toEqual([
       { label: "Waiting", n: 3, tone: "neutral" },
       { label: "Ready", n: 2, tone: "accent" },
-      { label: "In progress", n: 1, tone: "info" },
+      { label: "In flight", n: 1, tone: "info" },
       { label: "Done 7d", n: 1, tone: "ok" },
     ]);
   });
@@ -1767,14 +1767,14 @@ describe("the flow strip", () => {
     setWip(m, [{ id: "tl-d", title: "Dep blocked", status: "in_progress", priority: 1 }]);
     const segments = stripOf(composePulse(m));
     expect(segments?.find((s) => s.label === "Waiting")?.n).toBe(2);
-    expect(segments?.find((s) => s.label === "In progress")?.n).toBe(1);
+    expect(segments?.find((s) => s.label === "In flight")?.n).toBe(1);
   });
 
   test("a run note moves a bead from in progress to in review", () => {
     const m = fullMeasurement();
     m.runInfo = ok({ "tl-a": ok({ prUrl: "https://github.com/acme/demo/pull/9" }) });
     const segments = stripOf(composePulse(m));
-    expect(segments?.find((s) => s.label === "In progress")).toBeUndefined();
+    expect(segments?.find((s) => s.label === "In flight")).toBeUndefined();
     expect(segments?.find((s) => s.label === "In review")?.n).toBe(1);
   });
 
@@ -1786,7 +1786,7 @@ describe("the flow strip", () => {
     const segments = stripOf(pulse);
     // The stage split is unmeasured, so its two segments carry n: null —
     // the host renders the hatched unmeasured slot, never a fabricated 0.
-    expect(segments?.find((s) => s.label === "In progress")?.n).toBeNull();
+    expect(segments?.find((s) => s.label === "In flight")?.n).toBeNull();
     expect(segments?.find((s) => s.label === "In review")?.n).toBeNull();
     // The independent populations stay measured.
     expect(segments?.find((s) => s.label === "Ready")?.n).toBe(2);
@@ -1803,7 +1803,7 @@ describe("the flow strip", () => {
     const segments = stripOf(composePulse(m));
     // blocked is measured, but Waiting = blocked ∖ claimed needs both.
     expect(segments?.find((s) => s.label === "Waiting")?.n).toBeNull();
-    expect(segments?.find((s) => s.label === "In progress")?.n).toBeNull();
+    expect(segments?.find((s) => s.label === "In flight")?.n).toBeNull();
     // The fixture's ready list is its own measurement, so it stays a number
     // (in the real sweep measure.ts marks ready unmeasured too — that path
     // nulls it via the same `.ok` read).
