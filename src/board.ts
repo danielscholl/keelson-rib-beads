@@ -1916,7 +1916,7 @@ export function composeInspect(
     items: [
       {
         title: i.title,
-        dot: lifecycleTone(lifecycleOf(i)),
+        dot: isHumanCall(i) && i.status !== "closed" ? "warn" : lifecycleTone(lifecycleOf(i)),
         fields: [
           {
             value: [
