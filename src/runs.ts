@@ -68,8 +68,6 @@ export const NODE_PHASE: Readonly<Record<string, RunPhase>> = {
   "finalize-pr": "CI",
   "request-review-bot": "CI",
   report: "CI",
-  "distill-trail": "CI",
-  "memory-trail": "CI",
   "ci-green-gate": "CI",
   "beads-writeback": "CI",
 };

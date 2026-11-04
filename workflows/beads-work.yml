@@ -374,13 +374,12 @@ nodes:
     context: fresh
     model: deep
     model_by_provider:
-      copilot: gpt-6-astra
+      copilot: claude-opus-5.5
     effort: xhigh
     # Bug investigation has the same chunk-sparse, single-turn shape as planning.
     idle_timeout: 1800000
-    # Start warm: surface confirmed lessons from earlier runs. Recall returns
-    # only review-approved rows, so an unattended run cannot teach this one
-    # something a human never vetted.
+    # Recall returns only review-approved project memory, so nothing an
+    # unattended run drafted reaches this prompt without a human vetting it.
     memory:
       recall:
         query: "lesson constraint failure measurement predicate data repair"
@@ -398,7 +397,7 @@ nodes:
 
       $classify.output
 
-      ## Confirmed lessons from prior runs (governed memory; may be empty)
+      ## Confirmed project memory (human-approved; may be empty)
 
       $memory.recall
 
@@ -462,14 +461,13 @@ nodes:
     context: fresh
     model: deep
     model_by_provider:
-      copilot: gpt-6-astra
+      copilot: claude-opus-5.5
     effort: high
     # Single-turn large-codebase planning can sit >600s between provider chunks.
     # Match the heavy edit nodes' idle budget so chunk-sparse work can finish.
     idle_timeout: 1800000
-    # Start warm: surface confirmed lessons from earlier runs. Recall returns
-    # only review-approved rows, so an unattended run cannot teach this one
-    # something a human never vetted.
+    # Recall returns only review-approved project memory, so nothing an
+    # unattended run drafted reaches this prompt without a human vetting it.
     memory:
       recall:
         query: "lesson constraint failure measurement predicate data repair"
@@ -486,7 +484,7 @@ nodes:
 
       $classify.output
 
-      ## Confirmed lessons from prior runs (governed memory; may be empty)
+      ## Confirmed project memory (human-approved; may be empty)
 
       $memory.recall
 
@@ -2690,31 +2688,6 @@ nodes:
 
       ===============================================================
       ```
-
-  # ───────────────────────────────────────────────────────────────────────────
-  # Governed memory trail. Two nodes on purpose: writeback text substitutes
-  # UPSTREAM node output only, and guardrails silently drop any draft over
-  # 4096 chars — so a deterministic node bounds the text first, and a separate
-  # carrier writes it back. on: always — the trail matters most when the run
-  # went wrong. The draft lands `pending`; a human review grants it influence.
-  # ───────────────────────────────────────────────────────────────────────────
-  - id: distill-trail
-    depends_on: [report]
-    trigger_rule: all_done
-    bash: |
-      set -uo pipefail
-      printf '%s' "${KEELSON_NODE_report_OUTPUT:-bead-work: report node produced no output (run likely failed upstream)}" | head -c 3000
-
-  - id: memory-trail
-    depends_on: [distill-trail]
-    bash: |
-      echo "trail recorded"
-    memory:
-      writeback:
-        on: always
-        type: work_log
-        summary: "bead-work run outcome (operator summary)"
-        content: "$distill-trail.output"
 
   - id: ci-green-gate
     depends_on: [report]
