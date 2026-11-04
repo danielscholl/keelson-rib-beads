@@ -124,7 +124,7 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .alarm{border:1px solid color-mix(in srgb,var(--crit) 55%,var(--line));background:color-mix(in srgb,var(--crit) 7%,var(--card));border-radius:10px;padding:10px 12px;margin-bottom:12px}
 .alarm b{color:var(--crit);font:600 11px var(--mono);letter-spacing:.06em;margin-right:8px}
 .alarm pre{margin:6px 0 0;font:11.5px var(--mono);color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere}
-@media (max-width:720px){.waves{grid-auto-flow:row;grid-auto-columns:auto;min-width:0!important;gap:14px}
+@media (max-width:720px){.waves{grid-auto-flow:row;grid-auto-columns:auto;grid-template-columns:minmax(0,1fr);justify-content:stretch;min-width:0!important;gap:14px}
 .waves svg{display:none}.chip .w.edge{display:block}.legend .hint{display:none}}
 @media (prefers-reduced-motion:no-preference){.chip{transition:opacity .12s,border-color .12s}}
 `;
